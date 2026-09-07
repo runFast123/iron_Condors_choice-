@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# Confidential Choice / FINX documentation — MUST NOT be pushed.
+# The target GitHub repo is PUBLIC and these PDFs are stamped
+# "Confidential — For External Distribution". They stay on this machine only.
+# ---------------------------------------------------------------------------
+*.pdf
+*.tar.gz
+docs/vendor/
+
+# Secrets — Integration Guide Sec 11.2 forbids committing credentials
+.env
+.env.*
+!.env.example
+session.json
+*.session
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+dist/
+build/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
+*.tsbuildinfo
+.turbo/
+npm-debug.log*
+yarn-error.log*
+
+# Data caches
+data/cache/
+*.parquet
+*.csv
+!engine/tests/fixtures/*.csv
+scripmaster_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+logs/
+*.log

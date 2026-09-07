@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Iron Condor Ladder — design tokens
+
+   Brand chrome is taken from choiceindia.com's own stylesheets (surface
+   #0f1621, action #2777f3, accent #ffce02, Onest typeface).
+
+   The DATA colours are deliberately NOT the raw brand hues. They are the same
+   brand hues re-stepped into the OKLCH lightness band each mode requires, and
+   validated for colour-vision-deficiency separation, chroma, and contrast.
+   Raw #ffce02/#0cbcb7 sit far too light for a dark surface, and the brand
+   green/red pair fails deutan separation outright (ΔE 4.0) — so green and red
+   are reserved here as *status* colours for P&L sign, always accompanied by a
+   sign or label, never used to distinguish one series from another.
+--------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces & ink */
+  --surface:        #ffffff;
+  --surface-2:      #f7f9fb;
+  --surface-3:      #eef2f6;
+  --border:         #dfe7ec;
+  --border-strong:  #c6d3dd;
+  --ink:            #0f1621;
+  --ink-2:          #3f454d;
+  --ink-muted:      #667485;
+
+  /* Brand chrome (UI, not data) */
+  --brand:          #2777f3;
+  --brand-ink:      #ffffff;
+  --brand-soft:     #e1eeff;
+  --accent:         #ffce02;
+
+  /* Status — reserved. Never reused as a series colour. */
+  --pos:            #1f7a35;
+  --neg:            #c92a35;
+  --pos-soft:       #e0efe4;
+  --neg-soft:       #fde8ea;
+  --warn:           #8a6a00;
+
+  /* Categorical series — validated for light surface #ffffff.
+     Assign in this fixed order; never cycle past c4. */
+  --c1: #2979f6;   /* Choice blue    */
+  --c2: #a37a00;   /* Choice gold    */
+  --c3: #009591;   /* Choice teal    */
+  --c4: #9661d1;   /* violet         */
+
+  /* Sequential ramp (ladder rungs are ordered, so magnitude not identity) */
+  --seq-1: #e1eeff;
+  --seq-2: #a8ccfb;
+  --seq-3: #6ba6f8;
+  --seq-4: #2979f6;
+  --seq-5: #1b52ab;
+
+  --grid:           #e7edf2;
+  --axis:           #b9c5d0;
+
+  --radius:         10px;
+  --font-sans: "Onest", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+/* System-preference dark, only when the user has not explicitly chosen light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface:       #0f1621;
+    --surface-2:     #151d2b;
+    --surface-3:     #1c2637;
+    --border:        #253044;
+    --border-strong: #35435c;
+    --ink:           #eef2f7;
+    --ink-2:         #b9c5d4;
+    --ink-muted:     #7d8da0;
+
+    --brand:         #4d94ff;
+    --brand-ink:     #06101d;
+    --brand-soft:    #16294a;
+    --accent:        #ffce02;
+
+    --pos:           #45b644;
+    --neg:           #ef404a;
+    --pos-soft:      #14301a;
+    --neg-soft:      #35161a;
+    --warn:          #ffce02;
+
+    /* Re-stepped for dark surface #0f1621 — all six checks pass. */
+    --c1: #2e7ffe;
+    --c2: #a98000;
+    --c3: #009c97;
+    --c4: #9c67d9;
+
+    --seq-1: #16294a;
+    --seq-2: #1e4a8f;
+    --seq-3: #2465c9;
+    --seq-4: #2e7ffe;
+    --seq-5: #7fb2ff;
+
+    --grid:          #1d2839;
+    --axis:          #38465e;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface:       #0f1621;
+  --surface-2:     #151d2b;
+  --surface-3:     #1c2637;
+  --border:        #253044;
+  --border-strong: #35435c;
+  --ink:           #eef2f7;
+  --ink-2:         #b9c5d4;
+  --ink-muted:     #7d8da0;
+
+  --brand:         #4d94ff;
+  --brand-ink:     #06101d;
+  --brand-soft:    #16294a;
+  --accent:        #ffce02;
+
+  --pos:           #45b644;
+  --neg:           #ef404a;
+  --pos-soft:      #14301a;
+  --neg-soft:      #35161a;
+  --warn:          #ffce02;
+
+  --c1: #2e7ffe;
+  --c2: #a98000;
+  --c3: #009c97;
+  --c4: #9c67d9;
+
+  --seq-1: #16294a;
+  --seq-2: #1e4a8f;
+  --seq-3: #2465c9;
+  --seq-4: #2e7ffe;
+  --seq-5: #7fb2ff;
+
+  --grid:          #1d2839;
+  --axis:          #38465e;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  padding: 0;
+  margin: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body { font-size: 14px; line-height: 1.5; }
+
+a { color: inherit; text-decoration: none; }
+
+.tnum { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+.mono { font-family: var(--font-mono); }
+
+/* Wide content scrolls inside its own container; the page never scrolls sideways. */
+.scroll-x { overflow-x: auto; max-width: 100%; }
+.scroll-x::-webkit-scrollbar { height: 8px; }
+.scroll-x::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+
+.card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 8px 12px; white-space: nowrap; }
+th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface-2);
+}
+tbody tr { border-bottom: 1px solid var(--border); }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--surface-3); }
+
+/* Recessive axes and gridlines — the data is the figure, not the frame. */
+.axis-line { stroke: var(--axis); stroke-width: 1; }
+.grid-line { stroke: var(--grid); stroke-width: 1; }
+.axis-text { fill: var(--ink-muted); font-size: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
