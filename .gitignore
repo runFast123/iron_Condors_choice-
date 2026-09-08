@@ -3,8 +3,14 @@
 # The target GitHub repo is PUBLIC and these PDFs are stamped
 # "Confidential — For External Distribution". They stay on this machine only.
 # ---------------------------------------------------------------------------
+# Any format the vendor docs might arrive in, not just the one seen first.
 *.pdf
+*.docx
+*.doc
+*.xlsx
+*.pptx
 *.tar.gz
+*.zip
 docs/vendor/
 
 # Secrets — Integration Guide Sec 11.2 forbids committing credentials

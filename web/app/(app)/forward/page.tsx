@@ -2,14 +2,12 @@ export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { getLiveState } from "@/lib/live";
-import { dateTime, inr, num } from "@/lib/format";
-import { Badge, Card, Empty, PageHeader } from "@/components/ui";
+import { num } from "@/lib/format";
+import { Badge, Card, PageHeader } from "@/components/ui";
 import { ForwardControl } from "@/components/ForwardControl";
 
 export default async function ForwardPage() {
   const { state, engineError } = await getLiveState();
-  const positions = state?.positions ?? [];
-  const open = positions.filter((p) => p.status === "OPEN");
   const ladder = state?.ladder;
 
   return (
@@ -43,53 +41,6 @@ export default async function ForwardPage() {
             )}
           </Card>
         )}
-
-        <Card
-          title="Open positions"
-          pad={0}
-          hint="Live condors with their entry credit and worst case. Legs show the Choice token each was filled on."
-        >
-          {open.length === 0 ? (
-            <Empty>
-              No open positions. The anchor condor opens on the first tick once a run is started.
-            </Empty>
-          ) : (
-            <div className="scroll-x">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Level</th><th>Opened</th><th>Expiry</th>
-                    <th style={{ textAlign: "right" }}>Credit</th>
-                    <th style={{ textAlign: "right" }}>Max loss</th>
-                    <th>Legs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {open.map((p) => (
-                    <tr key={p.index}>
-                      <td className="tnum" style={{ fontWeight: 700 }}>{num(p.level)}</td>
-                      <td style={{ color: "var(--ink-2)" }}>{dateTime(p.entry_time)}</td>
-                      <td style={{ color: "var(--ink-2)" }}>{p.expiry}</td>
-                      <td className="tnum" style={{ textAlign: "right" }}>{inr(p.credit)}</td>
-                      <td className="tnum" style={{ textAlign: "right", color: "var(--neg)" }}>
-                        {inr(-p.max_loss)}
-                      </td>
-                      <td>
-                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                          {p.legs.map((l, i) => (
-                            <Badge key={i} tone={l.side === "SELL" ? "warn" : "brand"}>
-                              {l.side === "SELL" ? "S" : "B"} {num(l.strike)}{l.right} @{l.entry_price.toFixed(2)}
-                            </Badge>
-                          ))}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </Card>
 
         <Card title="What protects you" hint="These apply automatically to every run.">
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: "var(--ink-2)" }}>

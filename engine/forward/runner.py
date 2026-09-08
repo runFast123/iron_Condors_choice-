@@ -127,18 +127,31 @@ class ForwardRunner:
         self.expiry: dt.date | None = None
         self.realised = 0.0
         self.stopped_reason: str | None = None
+        # Why the last tick produced no quotes, shown in the UI rather than
+        # buried in the log: a dash with no explanation is not diagnosable.
+        self.last_error: str | None = None
+        # Unrealised P&L per open condor from the most recent tick. Kept so
+        # the snapshot reports a real number instead of a placeholder.
+        self.last_mtm: dict[int, float] = {}
         self._contracts: dict[tuple[str, float, str], Contract] = {}
 
     # ------------------------------------------------------------- logging
 
-    def emit(self, level: str, message: str, **detail: Any) -> None:
+    def emit(self, severity: str, message: str, **detail: Any) -> None:
+        """Append one line to the run log.
+
+        The parameter is `severity`, not `level`: callers routinely pass a
+        strike `level=` as detail, and naming both the same thing made every
+        condor-opened log line raise TypeError -- on the main path, the moment
+        a forward run actually did something.
+        """
         event = Event(
-            ts=dt.datetime.now(tz=IST).isoformat(), level=level, message=message, detail=detail
+            ts=dt.datetime.now(tz=IST).isoformat(), level=severity, message=message, detail=detail
         )
         self.events.append(event)
         if len(self.events) > self.max_events:
             del self.events[: len(self.events) - self.max_events]
-        getattr(log, "error" if level == "error" else "info")("%s %s", message, detail or "")
+        getattr(log, "error" if severity == "error" else "info")("%s %s", message, detail or "")
 
     def arm(self) -> None:
         """Enable real order placement. Deliberately a separate step."""
@@ -277,6 +290,7 @@ class ForwardRunner:
     def _mark_all(self) -> dict[int, float]:
         """Live MTM per open condor index."""
         out: dict[int, float] = {}
+        condor_marks: dict[int, dict] = {}
         open_condors = [c for c in self.condors if c.is_open]
         if not open_condors:
             return out
@@ -300,9 +314,12 @@ class ForwardRunner:
                     marks[fl.leg] = ltps[fl.token]
             if len(marks) == len(condor.legs):
                 out[condor.index] = condor.mtm(marks)
+                condor_marks[condor.index] = marks
                 reason = condor.exit_signal(marks)
                 if reason:
                     self._close(condor, marks, reason)
+                    out.pop(condor.index, None)
+        self.last_mtm = out
         return out
 
     def _close(self, condor: Condor, marks: dict[Leg, float], reason: str) -> None:
@@ -338,11 +355,17 @@ class ForwardRunner:
             index = self.market.master.index(NIFTY)
             spot = self.market.ltp(index)
         except ChoiceError as exc:
-            self.emit("error", "Spot quote failed", error=str(exc))
+            self.last_error = str(exc)
+            self.emit("error", "Live quote failed", error=str(exc))
             return
         if spot is None or spot <= 0:
-            self.emit("warn", "No spot quote returned")
+            self.last_error = (
+                "Choice accepted the quote request but returned no price for NIFTY. "
+                "This usually means the segment/token pair was not recognised."
+            )
+            self.emit("warn", self.last_error)
             return
+        self.last_error = None
 
         now = dt.datetime.now(tz=IST)
         self.last_spot, self.last_tick = spot, now
@@ -367,7 +390,7 @@ class ForwardRunner:
     # ---------------------------------------------------------------- state
 
     def snapshot(self) -> dict[str, Any]:
-        mtm = {c.index: 0.0 for c in self.condors if c.is_open}
+        mtm = {c.index: self.last_mtm.get(c.index, 0.0) for c in self.condors if c.is_open}
         unrealised = sum(mtm.values())
         summary = netting_summary(self.condors, open_only=False)
 
@@ -382,6 +405,8 @@ class ForwardRunner:
                 "market_open": market_is_open(),
                 "connected": True,
                 "expiry": self.expiry.isoformat() if self.expiry else None,
+                "last_error": self.last_error,
+                "quote_format": getattr(self.market, "touchline_format", None),
             },
             "market": {"spot": self.last_spot, "ts": self.last_tick.isoformat() if self.last_tick else None},
             "ladder": {
@@ -405,7 +430,10 @@ class ForwardRunner:
                     "index": c.index, "level": c.level, "expiry": c.expiry.isoformat(),
                     "entry_time": c.entry_time.isoformat(), "status": c.status.value,
                     "credit": round(c.credit, 2), "max_loss": round(c.max_loss, 2),
-                    "pnl": round(c.realised_pnl(), 2) if not c.is_open else None,
+                    "pnl": round(
+                        self.last_mtm.get(c.index, 0.0) if c.is_open else c.realised_pnl(), 2
+                    ),
+                    "is_open": c.is_open,
                     "exit_reason": c.exit_reason,
                     "legs": [
                         {

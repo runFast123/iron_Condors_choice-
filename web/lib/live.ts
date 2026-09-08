@@ -9,6 +9,10 @@ export interface LiveSession {
   market_open: boolean;
   connected: boolean;
   expiry: string | null;
+  /** Why the last tick produced no quotes, if it didn't. */
+  last_error?: string | null;
+  /** Which MultipleTouchline payload shape Choice accepted. */
+  quote_format?: string | null;
 }
 
 export interface LiveEvent {

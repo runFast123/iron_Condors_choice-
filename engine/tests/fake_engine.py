@@ -81,6 +81,8 @@ class FakeChoiceSession:
         return self.session_id
 
     def request(self, method, endpoint, data=None, **kw):
+        if "MultipleTouchline" in endpoint:
+            return _synthetic_touchline(data or {})
         if "ChartData" in endpoint:
             return _synthetic_candles(data or {})
         if "UserProfile" in endpoint:
@@ -98,6 +100,39 @@ class FakeChoiceSession:
 
     def logoff(self):
         self.session_id = None
+
+
+def _synthetic_touchline(payload: dict) -> dict:
+    """Live quotes in the shape the app parses, so the chart can be driven.
+
+    Only understands the segment@token,... form, which is what lets the format
+    probe in ChoiceMarketData.touchline be exercised for real.
+    """
+    import math
+    import time
+
+    raw = str(payload.get("MultipleSegToken") or "")
+    if "@" not in raw:
+        return {"Status": "Success", "Response": []}
+
+    rows = []
+    now = time.time()
+    for part in raw.split(","):
+        part = part.strip()
+        if "@" not in part:
+            continue
+        try:
+            token = int(part.split("@", 1)[1])
+        except ValueError:
+            continue
+        if token == 26000:                      # NIFTY, drifting
+            px = 24_000 + 90 * math.sin(now / 40.0) + 25 * math.sin(now / 7.0)
+        elif token == 26017:                    # India VIX
+            px = 13.5 + 0.6 * math.sin(now / 90.0)
+        else:                                   # an option premium
+            px = max(0.5, 120 + 30 * math.sin(now / 25.0 + token % 17))
+        rows.append({"Token": token, "LTP": round(px * 100)})   # paisa
+    return {"Status": "Success", "Response": rows}
 
 
 def main() -> None:
