@@ -51,6 +51,19 @@ def alternate_gateway(base_url: str) -> str | None:
             return host
     return None
 
+# The login endpoints themselves. A 401 from one of these means "these
+# credentials are wrong", NOT "the session expired" -- so the re-login retry
+# must never fire for them, or login() calls request() calls login() forever.
+AUTH_ENDPOINTS = (
+    "api/OpenAPIV1/LoginTOTP",
+    "api/OpenAPIV1/GetClientLoginTOTP",
+    "api/OpenAPIV1/ValidateTOTP",
+)
+
+# Interactive sign-in must fail fast. A user waiting on a login cannot sit
+# through the full backoff budget a background backfill can afford.
+AUTH_MAX_RETRIES = 1
+
 # Substrings in a broker error body that mean "your IP is not the declared one".
 _STATIC_IP_MARKERS = ("static ip", "ip not", "invalid ip", "ip address", "whitelist")
 _AUTH_MARKERS = ("session", "unauthor", "expired", "invalid token", "login", "forbidden")
@@ -105,17 +118,21 @@ class ChoiceSession:
             self.config.require()
             encoded = self._encode_mobile(self.config.mobile_no)
 
-            r1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": encoded}, require_auth=False)
+            r1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": encoded}, require_auth=False, retry_auth=False)
             if str(r1.get("Status", "")).lower() != "success":
                 raise ChoiceAuthError(f"LoginTOTP rejected: {r1.get('Message') or r1}", payload=r1)
 
-            r2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": encoded}, require_auth=False)
+            r2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": encoded}, require_auth=False, retry_auth=False)
             otp = r2.get("Response")
             if otp in (None, ""):
                 raise ChoiceAuthError(f"GetClientLoginTOTP returned no OTP: {r2.get('Message') or r2}", payload=r2)
 
             r3 = self.request(
-                "POST", "api/OpenAPIV1/ValidateTOTP", {"MobileNo": encoded, "OTP": str(otp)}, require_auth=False
+                "POST",
+                "api/OpenAPIV1/ValidateTOTP",
+                {"MobileNo": encoded, "OTP": str(otp)},
+                require_auth=False,
+                retry_auth=False,
             )
             resp = r3.get("Response")
 
@@ -231,7 +248,14 @@ class ChoiceSession:
         timeout = (self.config.connect_timeout, self.config.read_timeout)
         last: Exception | None = None
 
-        for attempt in range(self.config.max_retries + 1):
+        # Belt and braces: a login endpoint can never trigger a re-login, no
+        # matter what the caller passed.
+        is_auth_call = any(endpoint.lstrip("/").startswith(a) for a in AUTH_ENDPOINTS)
+        if is_auth_call:
+            retry_auth = False
+        max_retries = AUTH_MAX_RETRIES if is_auth_call else self.config.max_retries
+
+        for attempt in range(max_retries + 1):
             bucket.acquire()
             try:
                 resp = self._http.request(
@@ -273,13 +297,13 @@ class ChoiceSession:
                         ) from exc
                     return parsed if isinstance(parsed, dict) else {"Response": parsed, "Status": "Success"}
 
-            if attempt < self.config.max_retries:
+            if attempt < max_retries:
                 delay = min(30.0, 2.0**attempt) * (0.5 + random.random())
                 if isinstance(last, ChoiceRateLimitError) and last.retry_after:
                     delay = max(delay, last.retry_after)
                 log.warning(
                     "%s failed (%s); retry %d/%d in %.1fs",
-                    endpoint, last, attempt + 1, self.config.max_retries, delay,
+                    endpoint, last, attempt + 1, max_retries, delay,
                 )
                 time.sleep(delay)
 
