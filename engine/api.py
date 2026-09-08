@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from engine.auth.sessions import UserSession, registry
+from engine.choice.netinfo import egress_ip
 from engine.choice.errors import (
     ChoiceAuthError,
     ChoiceError,
@@ -125,6 +126,67 @@ def health() -> dict[str, Any]:
         "market_open": market_is_open(),
         "sessions": registry.count,
         "requires_engine_key": bool(engine_config.shared_secret),
+    }
+
+
+@app.get("/client_ip", dependencies=[Depends(check_engine_key)])
+def client_ip(request: Request) -> dict[str, Any]:
+    """The address Choice will see, so the user knows what to declare.
+
+    Note which IP this is. Choice enforces its allowlist on the TCP source
+    address of the connection, which is *this engine's* egress IP -- not the
+    browser's, and not anything a forwarded header can claim. Reporting the
+    caller's address here would tell the user to register the wrong thing.
+    """
+    info = egress_ip.get()
+    return {
+        "engine_egress_ip": info["ip"],
+        "source": info["source"],
+        "note": info["note"],
+        "caller_ip": request.client.host if request.client else None,
+        "declare_this_with_choice": info["ip"],
+        "hint": (
+            "Register this address at finx.choiceindia.com -> Profile -> Settings -> "
+            "Generate API Key. Requests from any other IP are rejected, and a VPN or "
+            "proxy will always fail the check."
+        ),
+    }
+
+
+@app.get("/status", dependencies=[Depends(check_engine_key)])
+def status_endpoint(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    """Booleans only -- never a credential, a session id or a token.
+
+    Deliberately answers three different questions separately, because they
+    need three different fixes and collapsing them into one "not authorised"
+    leaves the user guessing:
+
+      * ``engine_reachable``  -- is the static-IP machine up at all?
+      * ``has_session``       -- is this caller signed in?
+      * ``session_expired``   -- was there a session that has since lapsed?
+    """
+    token = (
+        authorization[7:].strip()
+        if authorization and authorization.lower().startswith("bearer ")
+        else None
+    )
+    session = registry.get(token)
+    return {
+        "engine_reachable": True,
+        "market_open": market_is_open(),
+        "has_token": bool(token),
+        "has_session": session is not None,
+        # A token that no longer resolves means it lapsed or was replaced.
+        "session_expired": bool(token) and session is None,
+        "logged_in": session is not None,
+        "user_id": session.user_id if session else None,
+        "mobile": session.mobile_masked if session else None,
+        "vendor_id": session.vendor_id if session else None,
+        "expires_at": session.expires_at.isoformat() if session else None,
+        "has_market_data": bool(session and session.market is not None),
+        "forward_running": bool(session and session.runner is not None),
+        "engine_egress_ip": egress_ip.get()["ip"],
+        "active_sessions": registry.count,
     }
 
 

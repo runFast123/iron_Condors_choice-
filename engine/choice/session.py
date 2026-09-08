@@ -34,6 +34,23 @@ from engine.config import ChoiceConfig, choice_config
 
 log = logging.getLogger(__name__)
 
+# Choice exposes the same API on two gateways. If one is unreachable the other
+# usually still answers, so a transport failure retries against the alternate
+# before giving up -- this is a host outage, not a bad request.
+GATEWAYS = (
+    "https://finxomne.choiceindia.com",
+    "https://finx.choiceindia.com",
+)
+
+
+def alternate_gateway(base_url: str) -> str | None:
+    """The other Choice host, or None if this base URL is not a known gateway."""
+    current = base_url.rstrip("/")
+    for host in GATEWAYS:
+        if host != current and current in GATEWAYS:
+            return host
+    return None
+
 # Substrings in a broker error body that mean "your IP is not the declared one".
 _STATIC_IP_MARKERS = ("static ip", "ip not", "invalid ip", "ip address", "whitelist")
 _AUTH_MARKERS = ("session", "unauthor", "expired", "invalid token", "login", "forbidden")
@@ -54,6 +71,8 @@ class ChoiceSession:
         self._data_bucket = TokenBucket(self.config.data_rate_limit)
         self._order_bucket = TokenBucket(self.config.order_rate_limit)
         self._login_date: dt.date | None = None
+        # Set when a transport failure moved us to the alternate gateway.
+        self.active_base_url = self.config.base_url
 
     # ------------------------------------------------------------------ auth
 
@@ -161,7 +180,7 @@ class ChoiceSession:
         """
         path = path or self.config.session_file
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return False
         if data.get("date") != dt.date.today().isoformat() or not data.get("session_id"):
@@ -207,7 +226,7 @@ class ChoiceSession:
         retry_auth: bool = True,
     ) -> dict[str, Any]:
         """Perform one Choice API call with pacing, retries and typed errors."""
-        url = f"{self.config.base_url}/{endpoint.lstrip('/')}"
+        url = f"{self.active_base_url}/{endpoint.lstrip('/')}"
         bucket = self._order_bucket if is_order else self._data_bucket
         timeout = (self.config.connect_timeout, self.config.read_timeout)
         last: Exception | None = None
@@ -222,6 +241,11 @@ class ChoiceSession:
                 last = ChoiceTransportError(f"Timeout calling {endpoint}: {exc}")
             except requests.RequestException as exc:
                 last = ChoiceTransportError(f"Transport error calling {endpoint}: {scrub(exc)}")
+                other = alternate_gateway(self.active_base_url)
+                if other:
+                    log.warning("Gateway %s unreachable; switching to %s", self.active_base_url, other)
+                    self.active_base_url = other
+                    url = f"{other}/{endpoint.lstrip('/')}"
             else:
                 if resp.status_code == 429:
                     retry_after = float(resp.headers.get("Retry-After") or 0) or None

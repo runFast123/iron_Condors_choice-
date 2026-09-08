@@ -208,3 +208,104 @@ def test_engine_key_gates_the_api_when_configured(monkeypatch):
         headers={"X-Engine-Key": "s3cret"},
     )
     assert ok.status_code == 200
+
+
+# ------------------------------------------------------------------- status
+
+
+def test_status_is_readable_without_a_session(client):
+    """The UI polls this before sign-in, so it must answer unauthenticated."""
+    res = client.get("/status")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["engine_reachable"] is True
+    assert body["logged_in"] is False
+    assert body["has_session"] is False
+    assert body["session_expired"] is False   # no token was presented
+
+
+def test_status_distinguishes_never_signed_in_from_expired(client):
+    """Two states needing two different fixes must not collapse into one."""
+    never = client.get("/status").json()
+    assert never["has_token"] is False and never["session_expired"] is False
+
+    stale = client.get("/status", headers=bearer("a-token-that-no-longer-resolves")).json()
+    assert stale["has_token"] is True
+    assert stale["session_expired"] is True   # -> offer "sign in again", not "configure"
+
+
+def test_status_reflects_a_live_session(client):
+    token = login(client, ALICE).json()["token"]
+    body = client.get("/status", headers=bearer(token)).json()
+    assert body["logged_in"] is True
+    assert body["has_session"] is True
+    assert body["session_expired"] is False
+    assert body["mobile"].endswith("01")
+
+
+def test_status_never_leaks_a_secret(client):
+    token = login(client, ALICE).json()["token"]
+    res = client.get("/status", headers=bearer(token))
+    assert KEY not in res.text
+    assert ALICE not in res.text
+    assert token not in res.text          # the token must not be echoed back
+    assert "session_id" not in res.text
+
+
+def test_status_after_logout_reports_expired(client):
+    token = login(client, ALICE).json()["token"]
+    client.post("/auth/logout", headers=bearer(token))
+    body = client.get("/status", headers=bearer(token)).json()
+    assert body["logged_in"] is False and body["session_expired"] is True
+
+
+# ---------------------------------------------------------------- client ip
+
+
+def test_client_ip_reports_the_engine_egress_not_the_caller(client, monkeypatch):
+    """Choice enforces on the engine's source IP, so that is what we report."""
+    from engine.choice import netinfo
+
+    monkeypatch.setattr(
+        netinfo.egress_ip, "get", lambda refresh=False: {"ip": "203.0.113.7", "source": "test", "note": None}
+    )
+    body = client.get("/client_ip").json()
+    assert body["engine_egress_ip"] == "203.0.113.7"
+    assert body["declare_this_with_choice"] == "203.0.113.7"
+    assert "finx.choiceindia.com" in body["hint"]
+
+
+def test_client_ip_says_so_when_it_cannot_be_determined(client, monkeypatch):
+    from engine.choice import netinfo
+
+    monkeypatch.setattr(
+        netinfo.egress_ip, "get",
+        lambda refresh=False: {"ip": None, "source": "unavailable", "note": "Set ENGINE_PUBLIC_IP"},
+    )
+    body = client.get("/client_ip").json()
+    assert body["engine_egress_ip"] is None
+    assert "ENGINE_PUBLIC_IP" in body["note"]
+
+
+# ------------------------------------------------------- static-path hardening
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/secrets.json",
+        "/.env",
+        "/.choice_session.json",
+        "/engine/api.py",
+        "/engine/auth/sessions.py",
+        "/../.env",
+        "/state/live-abc.json",
+    ],
+)
+def test_engine_serves_no_files_from_disk(client, path):
+    """The engine mounts no static directory, so nothing on disk is reachable.
+
+    Asserted rather than assumed: adding a StaticFiles mount later would
+    otherwise silently expose credentials and source.
+    """
+    assert client.get(path).status_code == 404
