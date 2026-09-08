@@ -5,6 +5,9 @@ Backtest and forward-test a laddered NIFTY iron-condor strategy on Choice FinX d
 **Choice FinX is the only data source** — historical and live. There is no third-party market-data
 vendor anywhere in this project.
 
+**Multi-user:** each person signs in with their own Choice credentials. There is no master API key,
+and no user can see another's session, positions or logs.
+
 **Live dashboard:** _(see "Deploy" below)_
 
 ---
@@ -49,6 +52,43 @@ netted to exactly zero. The `/ladder` page shows this cell by cell.
 
 ---
 
+## Accounts & sign-in
+
+Your Choice credentials **are** the login — there is no separate password for this app to store.
+Sign-in performs a real Choice authentication; if Choice rejects the credentials, no session exists.
+
+```
+Browser ──POST /api/auth/login──▶ Next.js server ──▶ Engine (static IP) ──▶ Choice
+   ▲                                                       │
+   └────────── httpOnly session cookie ◀───── opaque token ─┘
+```
+
+| Property | How it is handled |
+|---|---|
+| Credentials | Forwarded once, exchanged for a Choice session, held **in memory only**. Never written to disk, logged, or returned to the browser. |
+| Session token | Random and opaque — carries no user data to decode or tamper with. Stored in an `httpOnly`, `sameSite=Lax`, `secure` cookie, so page scripts cannot read it even if an XSS bug existed. |
+| Session lifetime | Day-scoped, matching Choice's own. A token that outlived the broker session would only produce confusing 401s. |
+| Re-login | Replaces the previous session, so a leaked token cannot outlive a fresh sign-in. |
+| Brute force | Per-user attempt throttle on the engine, so the login endpoint is not an oracle for guessing API keys. |
+| Identity shown | A salted hash of the mobile number; the number itself is only ever displayed masked (`********10`). |
+| Isolation | One `ChoiceSession` and one forward runner per user, keyed by token. Verified by tests. |
+| Validation | Every request re-checks the token against the engine, so revoked or expired sessions stop working immediately — the cookie alone is never trusted. |
+
+### The static-IP constraint for multiple users
+
+Choice binds each API key to a declared static IP (Integration Guide §8). With several users, each
+one generates their own API key and declares **the engine server's static IP** against it — the
+"bring your own key" pattern §6.2 describes. Their credentials still authenticate them individually.
+
+> ⚠️ Operating this as a service for other people makes you a **Type B Technology Vendor** under
+> §3.2, which requires a registered legal entity, **exchange empanelment with NSE/BSE/MCX**, and
+> server co-location at Choice. Choice will not issue production vendor credentials without proof
+> of empanelment. For personal use, or a handful of users who each bring their own key and declare
+> your IP, the pattern above is what the guide describes. Anything commercial needs the empanelment
+> route first.
+
+---
+
 ## Architecture
 
 Choice binds every API key to a **declared static IP** and rejects everything else
@@ -56,18 +96,21 @@ Choice binds every API key to a **declared static IP** and rejects everything el
 so **no Choice call can originate from Vercel**. Hence the split:
 
 ```
-[Vercel]  Next.js dashboard  ── static export, no server at request time
-                ▲
-                │ reads a JSON bundle built by the engine
-                │
-[Your static IP]  Python engine ──HTTPS/WSS──▶  [Choice FinX API]   ← the only source
+[Vercel]  Next.js app (auth, UI, server routes)
+                │  X-Engine-Key + Bearer token
+                ▼
+[Your static IP]  FastAPI engine ──HTTPS/WSS──▶  [Choice FinX API]   ← the only source
+                   one Choice session per signed-in user
 ```
 
-The dashboard is a pure static site. Nothing it serves can leak a credential, and it stays browsable
-whether or not the engine is running.
+Vercel never talks to Choice — its egress IPs are dynamic and would be rejected. It calls the
+engine, which runs where the declared static IP is. No credential ever reaches Vercel's storage:
+the login request passes through, and only an opaque token comes back.
 
 ```
 engine/
+  api.py        FastAPI service: per-user auth, market data, forward control
+  auth/         multi-user session registry, throttling, id derivation
   choice/       hardened adapter over the Choice API — the real deliverable
   pricing/      Black-76, IV surface, Indian F&O cost model
   strategy/     ladder trigger, condor construction, netting
@@ -199,13 +242,31 @@ so the two cannot diverge. Safety: paper by default; live needs `--arm`; a rung 
 leg is skipped rather than half-opened; protective wings are sent before shorts; limit orders only
 (Choice has no market order); and a daily-loss breach disarms the runner.
 
+### Engine service (multi-user)
+
+```bash
+uvicorn engine.api:app --host 0.0.0.0 --port 8000
+```
+
+Runs on the static-IP machine. Holds one Choice session per signed-in user; set
+`ENGINE_SHARED_SECRET` so only your web app can call it.
+
 ### Dashboard
 
 ```bash
 cd web
 npm install
-npm run dev      # http://localhost:3000
-npm run build    # static export to web/out/
+ENGINE_URL=http://127.0.0.1:8000 npm run dev   # http://localhost:3000
+npm run build && npm start
+```
+
+Everything except `/login` requires a session. To exercise the whole sign-in flow without real
+credentials:
+
+```bash
+python -m engine.tests.fake_engine --port 8010          # real API, stubbed Choice
+cd web && ENGINE_URL=http://127.0.0.1:8010 npm start -- --port 3010
+python web/verify_auth.py --base http://127.0.0.1:3010  # 22 browser checks
 ```
 
 > If `npm install` fails with `ECONNRESET` against `registry.npmjs.org`, your network is blocking it.
@@ -215,8 +276,6 @@ npm run build    # static export to web/out/
 
 ## Deploy
 
-The dashboard is a static export, so any static host works. For Vercel:
-
 ```bash
 npm i -g vercel
 cd web
@@ -224,8 +283,9 @@ vercel login          # interactive, one time
 vercel --prod
 ```
 
-Vercel auto-detects Next.js; no environment variables are required, because the site ships its data
-as a build-time bundle and never calls Choice.
+Set `ENGINE_URL` and `ENGINE_SHARED_SECRET` in the Vercel project. Without `ENGINE_URL` the app
+still deploys and renders, but sign-in reports that the engine is unreachable — which is the
+truthful state, since Choice cannot be called from Vercel.
 
 ---
 

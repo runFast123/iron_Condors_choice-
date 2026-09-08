@@ -10,3 +10,6 @@ next-env.d.ts
 # Playwright screenshots are build artefacts
 screenshots/
 screenshots-live/
+
+# Per-user forward-run state written by the engine
+data/live-*.json
