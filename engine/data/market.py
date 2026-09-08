@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterable, Iterator
 import pandas as pd
 
 from engine.choice.errors import ChoiceError, ChoiceInstrumentError, ChoiceNoDataError
+from engine.config import IST
 from engine.choice.history import FetchReport, HistoryClient
 from engine.choice.instruments import Contract, ScripMaster
 from engine.choice.session import ChoiceSession
@@ -64,6 +65,9 @@ class Quote:
     ltp: float
     bid: float | None = None
     ask: float | None = None
+    # True when this price came from the last traded candle rather than the
+    # live book. Still a real Choice price, just not the current touch.
+    stale: bool = False
 
     @property
     def has_depth(self) -> bool:
@@ -234,18 +238,53 @@ class ChoiceMarketData:
 
     # ------------------------------------------------------------------ live
 
-    def quotes(self, contracts: Iterable[Contract]) -> dict[int, Quote]:
-        """Snapshot the full touch for a set of contracts, keyed by token.
+    def quotes(
+        self,
+        contracts: Iterable[Contract],
+        *,
+        allow_history_fallback: bool = True,
+    ) -> dict[int, Quote]:
+        """Best available price per token, live if possible.
 
-        Tries each documented payload shape until one yields quotes, because
-        the SDK documents three mutually exclusive formats and only testing
-        against the live endpoint settles it. Prices arrive in paisa despite an
-        upstream comment claiming otherwise, so they are divided by 100.
+        ``MultipleTouchline`` has been observed answering ``Success`` with an
+        empty row list for index tokens -- correctly addressed, during market
+        hours, and simply not served. That left the ladder with no spot at all
+        and a forward run that could never start.
+
+        So a missing quote falls back to ChartData, which serves the same
+        instrument from the same broker: the close of the most recent candle.
+        It is a real traded price rather than a model, but it is not the touch,
+        so it is flagged ``stale`` and counted separately. Only when *both*
+        endpoints come back empty is this an error.
         """
         items = list(contracts)
         if not items:
             return {}
 
+        found = self._touchline_quotes(items)
+        missing = [c for c in items if c.token not in found]
+
+        if missing and allow_history_fallback:
+            for token, price in self.last_prices(missing).items():
+                found[token] = Quote(token=token, ltp=price, stale=True)
+
+        if not found:
+            raise ChoiceError(
+                "No usable quote from MultipleTouchline or ChartData. Tried "
+                f"{len(TOUCHLINE_FORMATS)} payload shapes: "
+                f"{self.last_touchline_error or 'no rows returned'}"
+            )
+        return found
+
+    def _touchline_quotes(self, items: list[Contract]) -> dict[int, Quote]:
+        """Probe each documented payload shape until one yields quotes.
+
+        The SDK documents three mutually exclusive formats and only testing
+        against the live endpoint settles it. Prices arrive in paisa despite an
+        upstream comment claiming otherwise, so they are divided by 100.
+        Returns ``{}`` rather than raising: an empty book is a fact for the
+        caller to handle, not an exception.
+        """
         # Prefer the shape that already worked this session.
         ordered = sorted(
             TOUCHLINE_FORMATS, key=lambda f: f[0] != self.touchline_format
@@ -275,10 +314,43 @@ class ChoiceMarketData:
             attempts.append(f"{name}: succeeded but no rows parsed ({self._shape_of(resp)})")
 
         self.last_touchline_error = " | ".join(attempts[:4])
-        raise ChoiceError(
-            "MultipleTouchline returned no usable quotes. Tried "
-            f"{len(ordered)} payload shapes: {self.last_touchline_error}"
-        )
+        return {}
+
+    def last_prices(self, contracts: Iterable[Contract], *, lookback_days: int = 7) -> dict[int, float]:
+        """Latest traded price per token, from ChartData.
+
+        Used when the live book is unavailable. A week of lookback covers a
+        long weekend plus a holiday, so a Monday morning before the open still
+        resolves to Friday's close rather than nothing.
+        """
+        out: dict[int, float] = {}
+        if self.history is None:
+            return out
+        end = dt.datetime.now(tz=IST)
+        start = end - dt.timedelta(days=lookback_days)
+        for contract in contracts:
+            try:
+                frame = self.candles(contract, start, end, "1")
+            except ChoiceError as exc:
+                # The broker declining is ordinary here; the caller still gets
+                # the primary touchline error, which is the useful one.
+                log.debug("No fallback candle for token %s: %s", contract.token, exc)
+                continue
+            except Exception:                   # noqa: BLE001
+                # Anything else is our bug, not Choice's. Swallowing it keeps
+                # the run alive, but silently would make it undiagnosable --
+                # it surfaces as "no quote" three layers away.
+                log.exception("Fallback candle fetch failed for token %s", contract.token)
+                continue
+            if frame is None or frame.empty:
+                continue
+            try:
+                price = float(frame.iloc[-1]["close"])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            if price > 0:
+                out[contract.token] = price
+        return out
 
     def touchline(self, contracts: Iterable[Contract]) -> dict[int, float]:
         """LTP only, for callers that do not care about the spread."""
@@ -310,7 +382,6 @@ class ChoiceMarketData:
 
     def ltp(self, contract: Contract) -> float | None:
         return self.touchline([contract]).get(contract.token)
-
     # -------------------------------------------------------------- coverage
 
     def coverage_summary(self) -> dict[str, int]:

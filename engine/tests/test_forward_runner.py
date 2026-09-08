@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from engine.choice.errors import ChoiceError
 from engine.data.market import TOUCHLINE_FORMATS, ChoiceMarketData
 from engine.choice.instruments import Contract
 
@@ -114,8 +115,6 @@ def test_touchline_remembers_the_working_shape():
 
 
 def test_touchline_reports_what_it_tried_when_nothing_works():
-    from engine.choice.errors import ChoiceError
-
     session = _Session(accepts=None)
     market = _market(session)
     with pytest.raises(ChoiceError) as exc:
@@ -181,8 +180,6 @@ def test_the_shape_diagnostic_names_the_inner_payload():
 
     "dict keys=['MultipleTouchline']" is exactly as unhelpful as silence.
     """
-    from engine.choice.errors import ChoiceError
-
     session = _Session(accepts="segment@token,")
     session.rows = {"MultipleTouchline": "26000|2400000"}  # type: ignore[assignment]
     with pytest.raises(ChoiceError) as exc:
@@ -220,3 +217,110 @@ def test_a_crossed_or_zero_book_is_not_treated_as_depth():
     quote = _market(session).quotes([_contract(42632)])[42632]
     assert not quote.has_depth
     assert quote.mid == pytest.approx(123.45)
+
+
+# ------------------------------------------- ChartData fallback for quotes
+
+
+class _HistoryStub:
+    """Stands in for HistoryClient, returning one candle per token."""
+
+    def __init__(self, closes: dict[int, float] | None = None, raises=False):
+        self.closes = closes or {}
+        self.raises = raises
+        self.asked: list[int] = []
+
+    def fetch(self, segment_id, token, start, end, resolution, allow_partial=True):
+        import pandas as pd
+
+        from engine.choice.history import FetchReport
+
+        self.asked.append(token)
+        if self.raises:
+            raise ChoiceError("ChartData is unhappy too")
+        close = self.closes.get(token)
+        rows = [] if close is None else [{"ts": None, "open": close, "high": close,
+                                         "low": close, "close": close, "volume": 1, "oi": 0}]
+        report = FetchReport(
+            token=token, segment_id=segment_id, resolution=resolution,
+            start=_as_dt(start), end=_as_dt(end),
+            status="ok" if rows else "no_data", bars=len(rows),
+        )
+        return pd.DataFrame(rows), report
+
+
+def _as_dt(value):
+    import datetime as dt
+
+    from engine.config import IST
+
+    if isinstance(value, dt.datetime):
+        return value
+    return dt.datetime.now(tz=IST)
+
+
+def _market_with_history(session, history) -> ChoiceMarketData:
+    return ChoiceMarketData(session=session, master=None, history=history)  # type: ignore[arg-type]
+
+
+def test_an_empty_touchline_falls_back_to_the_last_traded_candle():
+    """The live failure: Success with an empty row list for the index token.
+
+    Correctly addressed, during market hours, and simply not served -- which
+    left the ladder with no spot and a run that could never start.
+    """
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": []}  # type: ignore[assignment]
+    market = _market_with_history(session, _HistoryStub({26000: 24_137.5}))
+    quotes = market.quotes([_contract(26000, 1)])
+    assert quotes[26000].ltp == pytest.approx(24_137.5)
+
+
+def test_a_fallback_price_is_flagged_stale_rather_than_passed_off_as_the_touch():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": []}  # type: ignore[assignment]
+    market = _market_with_history(session, _HistoryStub({26000: 24_137.5}))
+    quote = market.quotes([_contract(26000, 1)])[26000]
+    assert quote.stale is True
+    assert quote.has_depth is False
+
+
+def test_a_live_quote_is_preferred_and_skips_the_fallback_entirely():
+    history = _HistoryStub({42632: 999.0})
+    market = _market_with_history(_Session(accepts="segment@token,",
+                                           rows=[{"Token": 42632, "LTP": 12345}]), history)
+    quote = market.quotes([_contract(42632)])[42632]
+    assert quote.ltp == pytest.approx(123.45)
+    assert quote.stale is False
+    assert history.asked == []          # no wasted ChartData call
+
+
+def test_only_the_legs_the_book_missed_fall_back():
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 12345}])
+    history = _HistoryStub({26000: 24_000.0})
+    market = _market_with_history(session, history)
+    quotes = market.quotes([_contract(42632), _contract(26000, 1)])
+    assert quotes[42632].stale is False
+    assert quotes[26000].stale is True
+    assert history.asked == [26000]
+
+
+def test_both_sources_failing_is_an_error_naming_both():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": []}  # type: ignore[assignment]
+    market = _market_with_history(session, _HistoryStub(raises=True))
+    with pytest.raises(ChoiceError) as exc:
+        market.quotes([_contract(26000, 1)])
+    message = str(exc.value)
+    assert "MultipleTouchline" in message and "ChartData" in message
+    assert "payload shapes" in message
+
+
+def test_the_fallback_can_be_turned_off_for_callers_that_need_the_touch():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": []}  # type: ignore[assignment]
+    history = _HistoryStub({26000: 24_000.0})
+    market = _market_with_history(session, history)
+    with pytest.raises(ChoiceError):
+        market.quotes([_contract(26000, 1)], allow_history_fallback=False)
+    assert history.asked == []

@@ -249,6 +249,14 @@ python -m engine.tools.live --ticks 4       # a few cycles, then stop
 It drives the same `Ladder` and `build_legs` as the backtester, so the two
 cannot diverge.
 
+**Where the spot comes from.** `MultipleTouchline` answers `Success` with an
+empty row list for index tokens — correctly addressed, during market hours,
+simply not served. So a quote the live book does not carry falls back to
+ChartData: the close of the most recent 1-minute candle. That is a real traded
+price from the same broker rather than a model, but it is not the touch, so it
+is flagged `stale` and the dashboard says so instead of implying a live tick.
+Only when *both* endpoints come back empty is it an error.
+
 **Fills cross the spread.** With no live path, the fill model *is* the result,
 so filling at the last traded price would report a P&L nobody could have
 traded. Buys lift the offer, sells hit the bid. Where Choice returns no depth a

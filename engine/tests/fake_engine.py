@@ -25,6 +25,11 @@ GOOD_KEY = "good-key"
 # instead of returning data.
 SERVE_CANDLES = os.environ.get("NO_CANDLES", "") != "1"
 
+# Set EMPTY_TOUCHLINE=1 to reproduce what real Choice does with index tokens:
+# answer Success with an empty row list. The ladder must then source spot from
+# ChartData instead of stalling with no price.
+EMPTY_TOUCHLINE = os.environ.get("EMPTY_TOUCHLINE", "") == "1"
+
 
 def _synthetic_candles(payload: dict) -> dict:
     """A believable OHLC series, so a full backtest can complete end to end.
@@ -110,6 +115,9 @@ def _synthetic_touchline(payload: dict) -> dict:
     """
     import math
     import time
+
+    if EMPTY_TOUCHLINE:
+        return {"Status": "Success", "Response": {"MultipleTouchline": []}}
 
     raw = str(payload.get("MultipleSegToken") or "")
     if "@" not in raw:

@@ -236,7 +236,10 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                 marginBottom: 14,
               }}
             >
-              <Metric label="NIFTY" value={state?.market.spot != null ? num(state.market.spot) : "—"} />
+              <Metric
+                label={state?.market.stale ? "NIFTY (last candle)" : "NIFTY"}
+                value={state?.market.spot != null ? num(state.market.spot) : "—"}
+              />
               <Metric
                 label="Total P&L"
                 value={inr(state?.pnl.total ?? 0, { sign: true })}
@@ -250,6 +253,13 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               <Metric label="Self-hedged" value={pct(state?.netting.offset_ratio ?? 0)} />
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>
+
+            {state?.market.stale && (
+              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 10px", lineHeight: 1.6 }}>
+                Choice&rsquo;s live-quote endpoint does not serve index tokens, so NIFTY is being read
+                from the most recent traded candle. A real price, one bar behind the touch.
+              </p>
+            )}
 
             {state?.fill_quality && state.fill_quality.legs_on_real_depth +
               state.fill_quality.legs_on_modelled_spread > 0 && (

@@ -426,7 +426,17 @@ def forward_start(
     # keep ticking on a worker thread. Without the background loop the ladder
     # would only advance when someone happened to open the page, which is not
     # a forward test -- it is a manual refresh.
-    runner.tick()
+    #
+    # Outside market hours that first tick would only produce an empty book and
+    # a red error on a run that is behaving perfectly well, so say what is
+    # actually happening instead.
+    if runner.is_market_open():
+        runner.tick()
+    else:
+        runner.emit(
+            "info",
+            f"Market closed; the ladder starts at {market_calendar.next_open():%d-%b %H:%M}",
+        )
     runner.save()
 
     _start_tick_thread(runner, session, body.poll_seconds)

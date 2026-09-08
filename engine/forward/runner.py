@@ -159,6 +159,8 @@ class ForwardRunner:
         # The exchange is the only real authority on an unscheduled closure;
         # the calendar is the fallback when the endpoint is unreachable.
         self.market_status = MarketStatus(session, market_calendar) if session else None
+        # Whether the most recent spot came from a candle rather than the book.
+        self.spot_is_stale = False
         self.legs_on_real_depth = 0
         self.legs_on_modelled_spread = 0
         self.total_slippage = 0.0
@@ -394,18 +396,25 @@ class ForwardRunner:
         """One polling cycle: read spot, fire triggers, refresh MTM."""
         try:
             index = self.market.master.index(NIFTY)
-            spot = self.market.ltp(index)
+            quote = self.market.quotes([index]).get(index.token)
         except ChoiceError as exc:
             self.last_error = str(exc)
             self.emit("error", "Live quote failed", error=str(exc))
             return
+        spot = quote.ltp if quote else None
         if spot is None or spot <= 0:
             self.last_error = (
-                "Choice accepted the quote request but returned no price for NIFTY. "
-                "This usually means the segment/token pair was not recognised."
+                "Choice returned no price for NIFTY from either the live book or "
+                "ChartData. Check that the market is open and the token is subscribed."
             )
             self.emit("warn", self.last_error)
             return
+        # MultipleTouchline does not serve index tokens, so the spot normally
+        # arrives from the last traded candle. Say so rather than implying a
+        # live tick the endpoint never gave us.
+        was_stale, self.spot_is_stale = self.spot_is_stale, bool(quote and quote.stale)
+        if self.spot_is_stale and not was_stale:
+            self.emit("info", "Spot is coming from the last traded candle, not the live book")
         self.last_error = None
 
         now = dt.datetime.now(tz=IST)
@@ -469,7 +478,11 @@ class ForwardRunner:
                 ),
                 "total_slippage": round(self.total_slippage, 2),
             },
-            "market": {"spot": self.last_spot, "ts": self.last_tick.isoformat() if self.last_tick else None},
+            "market": {
+                "spot": self.last_spot,
+                "ts": self.last_tick.isoformat() if self.last_tick else None,
+                "stale": self.spot_is_stale,
+            },
             "ladder": {
                 "anchor": self.ladder.anchor,
                 "last_level": self.ladder.last_level,

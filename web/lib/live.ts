@@ -78,7 +78,13 @@ export interface FillQuality {
 export interface LiveState {
   session: LiveSession;
   fill_quality?: FillQuality;
-  market: { spot: number | null; ts: string | null };
+  market: {
+    spot: number | null;
+    ts: string | null;
+    /** True when spot came from the last traded candle rather than the live
+     *  book — MultipleTouchline does not serve index tokens. */
+    stale?: boolean;
+  };
   ladder: {
     anchor: number | null;
     last_level: number | null;
