@@ -173,13 +173,26 @@ export function ProvenanceBanner({
   realFraction,
   note,
   awaiting = false,
+  hasData = true,
 }: {
   verified: boolean;
   realFraction: number;
   note: string;
   awaiting?: boolean;
+  hasData?: boolean;
 }) {
   if (awaiting) return <AwaitingConnection note={note} />;
+
+  // With nothing computed there are no figures to caveat, and a "100% MODELED"
+  // warning over an empty page reads as a problem rather than a prompt.
+  if (!hasData) {
+    return (
+      <div className="card" style={{ padding: "11px 14px", display: "flex", gap: 9, alignItems: "center" }}>
+        <Badge tone="brand">NO DATA YET</Badge>
+        <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>{note}</span>
+      </div>
+    );
+  }
 
   const modeled = 1 - realFraction;
   if (modeled <= 0) {

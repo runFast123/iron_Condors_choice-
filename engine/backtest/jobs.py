@@ -248,17 +248,22 @@ class JobStore:
     def dataset(self, user_id: str) -> dict[str, Any]:
         """The user's latest result, or an honest empty bundle."""
         job = self.get(user_id)
+        # Signed in either way, so never "awaiting connection" here.
         if job is None:
             return empty_bundle(
                 "No backtest has been run on this account yet. Choose a range and run one to "
-                "populate the dashboard."
+                "populate the dashboard.",
+                awaiting_connection=False,
             )
         if job.status == "error":
-            return empty_bundle(f"The last backtest failed: {job.error}")
+            return empty_bundle(
+                f"The last backtest failed: {job.error}", awaiting_connection=False
+            )
         if job.result is None:
             return empty_bundle(
                 f"A backtest is {job.status} ({job.stage}, {job.progress:.0%}). "
-                "This page will fill in when it finishes."
+                "This page will fill in when it finishes.",
+                awaiting_connection=False,
             )
         return job.result
 

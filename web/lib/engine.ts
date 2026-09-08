@@ -84,6 +84,18 @@ export interface ClientIp {
   hint: string;
 }
 
+export interface BacktestJob {
+  job_id: string;
+  status: "queued" | "running" | "done" | "error";
+  stage: string;
+  progress: number;
+  message: string;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  params: Record<string, unknown>;
+}
+
 export interface EngineStatus {
   engine_reachable: boolean;
   market_open: boolean;
@@ -114,6 +126,14 @@ export const engine = {
 
   spot: (token: string) =>
     call<{ symbol: string; token: number; ltp: number | null; ts: string }>("/market/spot", { token }),
+
+  backtestDataset: (token: string) => call<Record<string, unknown>>("/backtest/dataset", { token }),
+
+  backtestStatus: (token: string) =>
+    call<{ job: BacktestJob | null }>("/backtest/status", { token }),
+
+  backtestRun: (token: string, body: Record<string, unknown>) =>
+    call<{ ok: boolean; job: BacktestJob }>("/backtest/run", { method: "POST", token, body }),
 
   forwardState: (token: string) =>
     call<{ running: boolean; state: unknown }>("/forward/state", { token }),

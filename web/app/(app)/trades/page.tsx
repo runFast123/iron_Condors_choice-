@@ -1,9 +1,11 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { inr, num, shortDate } from "@/lib/format";
 import { Badge, Card, PageHeader, ProvenanceBanner } from "@/components/ui";
 
-export default function TradesPage() {
-  const { condors, provenance, metrics } = getDataset();
+export default async function TradesPage() {
+  const { condors, provenance, metrics } = await getDataset();
   const legs = condors.flatMap((c) => c.legs.map((l) => ({ ...l, condor: c })));
 
   return (
@@ -18,7 +20,8 @@ export default function TradesPage() {
           verified={provenance.verified}
           realFraction={metrics.real_price_fraction}
           note={provenance.note}
-          awaiting={provenance.awaiting_connection ?? false}
+          awaiting={(provenance.awaiting_connection ?? false)}
+          hasData={condors.length > 0}
         />
 
         <Card

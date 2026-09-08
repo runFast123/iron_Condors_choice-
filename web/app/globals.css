@@ -502,3 +502,20 @@ tbody tr:hover { background: var(--surface-3); }
   line-height: 1.55;
   color: var(--ink-muted);
 }
+
+
+.progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--brand-strong);
+  transition: width .4s ease;
+}
+@media (prefers-reduced-motion: reduce) { .progress-bar { transition: none; } }
+
+select.auth-input { cursor: pointer; }

@@ -1,9 +1,11 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { num, pct } from "@/lib/format";
 import { Badge, Card, PageHeader } from "@/components/ui";
 
-export default function AboutPage() {
-  const { params, netting } = getDataset();
+export default async function AboutPage() {
+  const { params, netting } = await getDataset();
   const L = 24000;
 
   return (

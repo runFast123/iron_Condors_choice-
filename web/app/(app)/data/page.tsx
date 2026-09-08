@@ -1,11 +1,13 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { dateTime, num, pct } from "@/lib/format";
 import { AwaitingConnection, Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
 
-export default function DataHealthPage() {
-  const { provenance, warnings, skipped, triggers } = getDataset();
+export default async function DataHealthPage() {
+  const { provenance, warnings, skipped, triggers } = await getDataset();
   const p = provenance.provider;
-  const awaiting = provenance.awaiting_connection ?? false;
+  const awaiting = (provenance.awaiting_connection ?? false);
   const failures = provenance.failures ?? [];
   const legsTotal = provenance.legs_requested ?? 0;
   const legsReal = provenance.legs_with_choice_data ?? 0;

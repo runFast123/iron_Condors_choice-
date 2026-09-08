@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from engine.auth.sessions import UserSession, registry
+from engine.backtest.jobs import store as backtest_store
 from engine.choice.netinfo import egress_ip
 from engine.choice.errors import (
     ChoiceAuthError,
@@ -68,6 +69,18 @@ class LoginRequest(BaseModel):
     vendor_id: str = Field(min_length=1, max_length=200)
     api_key: str = Field(min_length=1, max_length=4000)
     mobile: str = Field(min_length=6, max_length=20)
+
+
+class RunBacktestRequest(BaseModel):
+    days: int = Field(default=120, ge=5, le=3650)
+    resolution: str = Field(default="D", pattern="^(1|3|5|10|15|30|60|D|W)$")
+    option_resolution: str | None = Field(default=None, pattern="^(1|3|5|10|15|30|60|D|W)$")
+    lots: int = Field(default=1, ge=1, le=100)
+    step: float = Field(default=100.0, gt=0, le=5000)
+    max_condors: int = Field(default=20, ge=1, le=100)
+    take_profit: float | None = Field(default=None, gt=0, le=1)
+    stop_loss: float | None = Field(default=None, gt=0, le=20)
+    roll: bool = True
 
 
 class StartForwardRequest(BaseModel):
@@ -242,6 +255,44 @@ def expiries(market: ChoiceMarketData = Depends(user_market)) -> dict[str, Any]:
     except ChoiceInstrumentError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
     return {"expiries": [e.isoformat() for e in found[:12]], "lot_size": lot}
+
+
+# ------------------------------------------------------------------ backtest
+
+
+@app.post("/backtest/run", dependencies=[Depends(check_engine_key)])
+def backtest_run(
+    body: RunBacktestRequest,
+    session: UserSession = Depends(current_user),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """Start a backtest for this user.
+
+    Runs on a worker thread: fetching historical candles for every option leg
+    takes minutes against a real broker, which cannot be a blocking request.
+    A second call while one is running returns the run in progress rather than
+    starting a competing one.
+    """
+    job = backtest_store.start(market, session.user_id, body.model_dump())
+    return {"ok": True, "job": job.public()}
+
+
+@app.get("/backtest/status", dependencies=[Depends(check_engine_key)])
+def backtest_status(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    job = backtest_store.get(session.user_id)
+    return {"job": job.public() if job else None}
+
+
+@app.get("/backtest/dataset", dependencies=[Depends(check_engine_key)])
+def backtest_dataset(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """This user's latest result, or an honest empty bundle explaining why not."""
+    return backtest_store.dataset(session.user_id)
+
+
+@app.post("/backtest/clear", dependencies=[Depends(check_engine_key)])
+def backtest_clear(session: UserSession = Depends(current_user)) -> dict[str, bool]:
+    backtest_store.clear(session.user_id)
+    return {"ok": True}
 
 
 # ------------------------------------------------------------ forward testing

@@ -36,12 +36,22 @@ class FakeChoiceSession:
         return self.session_id
 
     def request(self, method, endpoint, data=None, **kw):
+        if "ChartData" in endpoint:
+            # No stubbed history: the point is to exercise the real failure
+            # path a user hits when Choice serves no candles.
+            return {"Status": "Failure", "Message": "stub engine serves no candles"}
         if "UserProfile" in endpoint:
             return {
                 "Status": "Success",
                 "Response": {"Name": f"Test Trader {self.config.mobile_no[-2:]}", "UCC": "X12345"},
             }
         return {"Status": "Success", "Response": {}}
+
+    def ensure_session(self):
+        return self.session_id or self.login()
+
+    def save_session(self, path=None):
+        return True
 
     def logoff(self):
         self.session_id = None

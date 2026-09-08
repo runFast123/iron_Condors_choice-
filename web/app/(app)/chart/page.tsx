@@ -1,11 +1,13 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { num, shortDate } from "@/lib/format";
 import { AwaitingConnection, Badge, Card, PageHeader, Stat, StatGrid } from "@/components/ui";
 import { PriceChart } from "@/components/charts/PriceChart";
 
-export default function ChartPage() {
-  const { equity, triggers, params, provenance } = getDataset();
-  const awaiting = provenance.awaiting_connection ?? false;
+export default async function ChartPage() {
+  const { equity, triggers, params, provenance } = await getDataset();
+  const awaiting = (provenance.awaiting_connection ?? false);
   const spots = equity.map((p) => p.spot).filter((s): s is number => s != null);
   const hasData = spots.length > 0;
 

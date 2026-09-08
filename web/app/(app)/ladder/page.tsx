@@ -1,10 +1,12 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { num, pct, inr } from "@/lib/format";
 import { Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { StrikeMatrix } from "@/components/charts/StrikeMatrix";
 
-export default function LadderPage() {
-  const { strike_matrix, condors, netting, params, provenance, metrics } = getDataset();
+export default async function LadderPage() {
+  const { strike_matrix, condors, netting, params, provenance, metrics } = await getDataset();
 
   return (
     <>
@@ -18,7 +20,8 @@ export default function LadderPage() {
           verified={provenance.verified}
           realFraction={metrics.real_price_fraction}
           note={provenance.note}
-          awaiting={provenance.awaiting_connection ?? false}
+          awaiting={(provenance.awaiting_connection ?? false)}
+          hasData={condors.length > 0}
         />
 
         <StatGrid>

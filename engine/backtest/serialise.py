@@ -14,11 +14,14 @@ from engine.backtest.runner import BacktestResult
 from engine.config import IST
 
 
-def empty_bundle(reason: str) -> dict:
+def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
     """A dataset that says plainly there is nothing to show yet.
 
-    Shipped when Choice has not been connected, so the dashboard renders an
-    honest empty state instead of numbers from a source that is not allowed.
+    ``awaiting_connection`` separates two states the UI must not conflate:
+    Choice has never been connected (fix: configure credentials), versus the
+    user is signed in but has not run a backtest (fix: press the button). The
+    same "awaiting connection" banner for both would send a signed-in user off
+    to re-check credentials that are already working.
     """
     return {
         "provenance": {
@@ -27,7 +30,7 @@ def empty_bundle(reason: str) -> dict:
             "premium_source": "choice:ChartData",
             "expiry_source": "choice:scripmaster",
             "verified": False,
-            "awaiting_connection": True,
+            "awaiting_connection": awaiting_connection,
             "note": reason,
             "resolution": "-",
             "generated_at": dt.datetime.now(tz=IST).isoformat(),

@@ -1,12 +1,32 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { inr, num, pct, ratio, shortDate } from "@/lib/format";
 import { Badge, Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { EquityChart } from "@/components/charts/EquityChart";
+import { RunBacktest } from "@/components/RunBacktest";
+import { engine, engineConfigured } from "@/lib/engine";
+import { getSessionToken } from "@/lib/session";
 import Link from "next/link";
 
-export default function Overview() {
-  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = getDataset();
+export default async function Overview() {
+  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = await getDataset();
   const awaiting = provenance.awaiting_connection ?? false;
+
+  // Signed in, but nothing computed yet: offer to run one rather than showing
+  // an empty dashboard with no way forward.
+  let job = null;
+  if (engineConfigured()) {
+    const token = await getSessionToken();
+    if (token) {
+      try {
+        job = (await engine.backtestStatus(token)).job;
+      } catch {
+        /* the banner below already explains an unreachable engine */
+      }
+    }
+  }
+  const hasData = condors.length > 0;
   const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
 
   return (
@@ -37,9 +57,12 @@ export default function Overview() {
           realFraction={m.real_price_fraction}
           note={provenance.note}
           awaiting={provenance.awaiting_connection ?? false}
+          hasData={condors.length > 0}
         />
 
-        {!awaiting && (
+        {!hasData && <RunBacktest initialJob={job} />}
+
+        {hasData && (
         <StatGrid>
           <Stat
             label="Net P&L"
@@ -72,7 +95,7 @@ export default function Overview() {
         </StatGrid>
         )}
 
-        {!awaiting && (
+        {hasData && (
         <>
         <Card
           title="Cumulative P&L"

@@ -1,15 +1,32 @@
 import seed from "@/data/seed.json";
 import type { Dataset } from "./types";
+import { engine, engineConfigured } from "./engine";
+import { getSessionToken } from "./session";
 
 /**
- * The dashboard's single data source.
+ * The signed-in user's own backtest result.
  *
- * Today this is a JSON bundle produced by `python -m engine.tools.seed`, which
- * is what lets the deployed site render without Choice credentials (which are
- * bound to a static IP and can never be exercised from Vercel). When the
- * engine is wired to Postgres, swap this one function for a DB query — every
- * page reads through here and nothing else touches the shape.
+ * Every page reads through here. It asks the engine for *this user's* dataset
+ * rather than a file baked in at build time, because a build-time bundle is
+ * both stale and shared -- two users would see the same numbers, which is
+ * exactly wrong once each brings their own Choice account.
+ *
+ * The static bundle survives only as the shape-correct empty state for when
+ * the engine cannot be reached, so pages render an explanation instead of
+ * throwing.
  */
-export function getDataset(): Dataset {
-  return seed as unknown as Dataset;
+export async function getDataset(): Promise<Dataset> {
+  const fallback = seed as unknown as Dataset;
+  if (!engineConfigured()) return fallback;
+
+  const token = await getSessionToken();
+  if (!token) return fallback;
+
+  try {
+    const data = await engine.backtestDataset(token);
+    return data as unknown as Dataset;
+  } catch {
+    // A dead engine must not take the page down with it.
+    return fallback;
+  }
 }

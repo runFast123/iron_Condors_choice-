@@ -1,10 +1,12 @@
+export const dynamic = "force-dynamic";
+
 import { getDataset } from "@/lib/data";
 import { inr, num } from "@/lib/format";
 import { Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { PayoffChart } from "@/components/charts/PayoffChart";
 
-export default function PayoffPage() {
-  const { payoff, equity, condors, params, provenance, metrics } = getDataset();
+export default async function PayoffPage() {
+  const { payoff, equity, condors, params, provenance, metrics } = await getDataset();
   const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
 
   const best = payoff.reduce((a, b) => (b.pnl > a.pnl ? b : a), payoff[0]);
@@ -24,7 +26,8 @@ export default function PayoffPage() {
           verified={provenance.verified}
           realFraction={metrics.real_price_fraction}
           note={provenance.note}
-          awaiting={provenance.awaiting_connection ?? false}
+          awaiting={(provenance.awaiting_connection ?? false)}
+          hasData={condors.length > 0}
         />
 
         <StatGrid>
