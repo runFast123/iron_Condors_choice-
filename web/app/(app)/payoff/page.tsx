@@ -47,13 +47,13 @@ export default async function PayoffPage() {
           <PayoffChart data={payoff} spot={lastSpot} />
         </Card>
 
-        <Card title="Per-rung structure" pad={0}
+        <Card title="Per-condor structure" pad={0}
               hint={`Each rung risks at most one ${num(params.long_offset - params.short_offset)}-point wing, because only one side can finish in the money.`}>
           <div className="scroll-x">
             <table>
               <thead>
                 <tr>
-                  <th>Rung</th>
+                  <th>Level</th>
                   <th style={{ textAlign: "right" }}>Credit</th>
                   <th style={{ textAlign: "right" }}>Max profit</th>
                   <th style={{ textAlign: "right" }}>Max loss</th>

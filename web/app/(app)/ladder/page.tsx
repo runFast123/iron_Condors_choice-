@@ -34,7 +34,7 @@ export default async function LadderPage() {
 
         <Card
           title="Positions by strike"
-          hint={`Rung structure: short at ${num(params.short_offset)} points, long wing at ${num(params.long_offset)} points. A ${num(params.step)}-point step means rung L's long put shares a strike with rung L-${num(params.step * 2)}'s short put.`}
+          hint={`Level structure: short at ${num(params.short_offset)} points, long wing at ${num(params.long_offset)} points. A ${num(params.step)}-point step means rung L's long put shares a strike with rung L-${num(params.step * 2)}'s short put.`}
         >
           <StrikeMatrix rows={strike_matrix} condors={condors} />
         </Card>
@@ -47,7 +47,7 @@ export default async function LadderPage() {
             <table style={{ minWidth: 560 }}>
               <thead>
                 <tr>
-                  <th>Rung</th>
+                  <th>Level</th>
                   <th>Long PE</th>
                   <th>Short PE</th>
                   <th>Short CE</th>

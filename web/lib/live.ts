@@ -1,4 +1,3 @@
-import live from "@/data/live.json";
 
 export interface LiveSession {
   mode: "paper" | "live";
@@ -89,11 +88,27 @@ export interface LiveState {
   generated_at: string;
 }
 
+import { engine, engineConfigured } from "./engine";
+import { getSessionToken } from "./session";
+
 /**
- * Live forward-test state, written by `python -m engine.tools.live` on every
- * tick. Read through this one function so swapping the file for a database
- * query later touches nothing else.
+ * The signed-in user's own forward run.
+ *
+ * Returns null when no run has been started, which the UI renders as controls
+ * to start one rather than as an error. A dead engine is reported separately
+ * so the page can say which of the two is wrong.
  */
-export function getLiveState(): LiveState {
-  return live as unknown as LiveState;
+export async function getLiveState(): Promise<{ state: LiveState | null; engineError: string | null }> {
+  if (!engineConfigured()) {
+    return { state: null, engineError: "ENGINE_URL is not configured." };
+  }
+  const token = await getSessionToken();
+  if (!token) return { state: null, engineError: null };
+
+  try {
+    const body = await engine.forwardState(token);
+    return { state: (body.state as LiveState | null) ?? null, engineError: null };
+  } catch (err) {
+    return { state: null, engineError: (err as Error).message };
+  }
 }

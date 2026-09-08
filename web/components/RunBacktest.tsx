@@ -18,13 +18,25 @@ const RANGES = [
  * worker thread and this polls, rather than holding a request open and timing
  * out halfway through.
  */
-export function RunBacktest({ initialJob = null }: { initialJob?: BacktestJob | null }) {
+export function RunBacktest({
+  initialJob = null,
+  hasData = false,
+  currentLabel,
+}: {
+  initialJob?: BacktestJob | null;
+  /** When a result is already on screen, this collapses to a summary bar. */
+  hasData?: boolean;
+  currentLabel?: string;
+}) {
   const [job, setJob] = useState<BacktestJob | null>(initialJob);
   const [days, setDays] = useState(90);
   const [lots, setLots] = useState(1);
   const [resolution, setResolution] = useState("D");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // Collapsed once there is something to look at, so the controls stay
+  // available without pushing the results down the page.
+  const [open, setOpen] = useState(!hasData);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const active = job?.status === "queued" || job?.status === "running";
@@ -76,15 +88,37 @@ export function RunBacktest({ initialJob = null }: { initialJob?: BacktestJob | 
 
   return (
     <section className="card" style={{ overflow: "hidden" }}>
-      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)" }}>
-        <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Run a backtest</h2>
-        <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--ink-muted)", maxWidth: "80ch", lineHeight: 1.6 }}>
-          Replays the ladder over your own Choice history. Option premiums are fetched per leg, so a
-          longer range takes proportionally longer &mdash; start with a month.
-        </p>
+      <div
+        style={{
+          padding: "12px 16px",
+          borderBottom: open || active ? "1px solid var(--border)" : "none",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>
+            {hasData ? "Backtest settings" : "Run a backtest"}
+          </h2>
+          <p style={{ margin: "3px 0 0", fontSize: 12.5, color: "var(--ink-muted)", maxWidth: "80ch", lineHeight: 1.6 }}>
+            {hasData && !open
+              ? currentLabel
+                ? `Showing ${currentLabel}. Change the range or bar size and run it again.`
+                : "Change the range or bar size and run it again."
+              : "Replays the ladder over your own Choice history. Premiums are fetched per leg, so a longer range takes proportionally longer."}
+          </p>
+        </div>
+        {hasData && !active && (
+          <button onClick={() => setOpen((v) => !v)} className="btn-quiet">
+            {open ? "Hide" : "Run another backtest"}
+          </button>
+        )}
       </div>
 
-      <div style={{ padding: 16 }}>
+      <div style={{ padding: open || active ? 16 : 0 }}>
         {error && (
           <div className="auth-alert auth-alert-error" role="alert" style={{ marginBottom: 14 }}>
             {error}
@@ -107,7 +141,7 @@ export function RunBacktest({ initialJob = null }: { initialJob?: BacktestJob | 
               continues on the server.
             </p>
           </div>
-        ) : (
+        ) : !open ? null : (
           <>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
@@ -140,7 +174,7 @@ export function RunBacktest({ initialJob = null }: { initialJob?: BacktestJob | 
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Lots per rung
+                Lots per condor
                 <input
                   type="number"
                   min={1}
@@ -153,7 +187,7 @@ export function RunBacktest({ initialJob = null }: { initialJob?: BacktestJob | 
               </label>
 
               <button onClick={start} disabled={starting} className="auth-submit" style={{ marginTop: 0, minWidth: 140 }}>
-                {starting ? "Starting…" : "Run backtest"}
+                {starting ? "Starting…" : hasData ? "Run again" : "Run backtest"}
               </button>
             </div>
 

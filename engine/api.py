@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import threading
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -87,7 +88,8 @@ class StartForwardRequest(BaseModel):
     mode: str = Field(default="paper", pattern="^(paper|live)$")
     arm: bool = False
     lots: int = Field(default=1, ge=1, le=100)
-    step: float = Field(default=100.0, gt=0)
+    step: float = Field(default=100.0, gt=0, le=5000)
+    poll_seconds: float = Field(default=15.0, ge=5, le=300)
 
 
 # ----------------------------------------------------------------- dependencies
@@ -334,7 +336,38 @@ def forward_start(
     if body.mode == "live" and body.arm:
         runner.arm()
     session.runner = runner
+
+    # First tick inline so the caller gets a populated state immediately, then
+    # keep ticking on a worker thread. Without the background loop the ladder
+    # would only advance when someone happened to open the page, which is not
+    # a forward test -- it is a manual refresh.
     runner.tick()
+    runner.save()
+
+    thread = threading.Thread(
+        target=runner.run,
+        kwargs={"poll_seconds": max(5.0, float(body.poll_seconds))},
+        name=f"forward-{session.user_id}",
+        daemon=True,
+    )
+    thread.start()
+    return {"ok": True, "state": runner.snapshot()}
+
+
+@app.post("/forward/arm", dependencies=[Depends(check_engine_key)])
+def forward_arm(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """Enable real order placement on a running paper session.
+
+    Deliberately a separate call: switching to live money should be an explicit
+    act, not a flag buried in the start request.
+    """
+    runner = _require_runner(session)
+    if runner.mode != "live":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "This run was started in paper mode. Stop it and start a live run to place orders.",
+        )
+    runner.arm()
     runner.save()
     return {"ok": True, "state": runner.snapshot()}
 
@@ -361,7 +394,9 @@ def forward_stop(session: UserSession = Depends(current_user)) -> dict[str, Any]
     runner.armed = False
     runner.emit("warn", "Forward run stopped by user")
     runner.save()
-    return {"ok": True, "state": runner.snapshot()}
+    state = runner.snapshot()
+    session.runner = None
+    return {"ok": True, "state": state}
 
 
 def _require_runner(session: UserSession) -> ForwardRunner:

@@ -9,8 +9,15 @@ const LEVEL_TONE = {
   info: "neutral",
 } as const;
 
-export default function ForwardLogPage() {
-  const { session, events, fills, positions, pnl } = getLiveState();
+export const dynamic = "force-dynamic";
+
+export default async function ForwardLogPage() {
+  const { state } = await getLiveState();
+  const session = state?.session ?? null;
+  const events = state?.events ?? [];
+  const fills = state?.fills ?? [];
+  const positions = state?.positions ?? [];
+  const pnl = state?.pnl ?? { realised: 0, unrealised: 0, total: 0, open_rungs: 0, total_rungs: 0 };
   const closed = positions.filter((p) => p.status !== "OPEN");
   const opens = fills.filter((f) => f.action === "OPEN").length;
   const closes = fills.filter((f) => f.action === "CLOSE").length;
@@ -21,8 +28,8 @@ export default function ForwardLogPage() {
         title="Activity Log &amp; Trade History"
         subtitle="Every tick, trigger, fill and rejection the forward runner recorded, newest first. This is the audit trail — Choice requires API users to retain their own request logs."
         right={
-          <Badge tone={session.connected ? "pos" : "neutral"}>
-            {session.connected ? session.mode.toUpperCase() : "DISCONNECTED"}
+          <Badge tone={session ? "pos" : "neutral"}>
+            {session ? session.mode.toUpperCase() : "NO RUN YET"}
           </Badge>
         }
       />
@@ -34,7 +41,7 @@ export default function ForwardLogPage() {
           <Stat label="Rungs closed" value={num(closed.length)} />
           <Stat label="Realised P&L" value={inr(pnl.realised, { sign: true })}
                 tone={pnl.realised > 0 ? "pos" : pnl.realised < 0 ? "neg" : "neutral"} />
-          <Stat label="Last tick" value={session.last_tick ? dateTime(session.last_tick) : "--"} />
+          <Stat label="Last tick" value={session?.last_tick ? dateTime(session.last_tick) : "--"} />
         </StatGrid>
 
         <Card

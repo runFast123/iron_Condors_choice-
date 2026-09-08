@@ -138,9 +138,12 @@ export const engine = {
   forwardState: (token: string) =>
     call<{ running: boolean; state: unknown }>("/forward/state", { token }),
 
-  forwardStart: (token: string, body: { mode: string; arm: boolean; lots: number; step: number }) =>
+  forwardStart: (token: string, body: Record<string, unknown>) =>
     call<{ ok: boolean; state: unknown }>("/forward/start", { method: "POST", token, body }),
 
   forwardStop: (token: string) =>
     call<{ ok: boolean; state: unknown }>("/forward/stop", { method: "POST", token }),
+
+  forwardArm: (token: string) =>
+    call<{ ok: boolean; state: unknown }>("/forward/arm", { method: "POST", token }),
 };

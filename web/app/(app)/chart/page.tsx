@@ -39,7 +39,7 @@ export default async function ChartPage() {
           <Stat label="Anchor rung" value={dash(anchor)} hint="first condor" />
           <Stat label="Deepest rung" value={dash(deepest)}
                 hint={anchor != null && deepest != null ? `${num(anchor - deepest)} pts below anchor` : undefined} />
-          <Stat label="Rungs fired" value={num(triggers.length)} hint={`${num(params.step)}-pt steps`} />
+          <Stat label="Condors opened" value={num(triggers.length)} hint={`${num(params.step)}-pt steps`} />
         </StatGrid>
         )}
 

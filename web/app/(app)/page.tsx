@@ -46,7 +46,9 @@ export default async function Overview() {
             <Badge tone="brand">
               {params.qty > 0 ? `${params.lots} lot · ${num(params.qty)} qty` : "lot size from scrip master"}
             </Badge>
-            <Badge>{params.max_condors} rung cap</Badge>
+            <Badge title="Maximum condors open at once, so a long decline cannot keep opening positions">
+              max {params.max_condors} condors
+            </Badge>
           </div>
         }
       />
@@ -60,7 +62,11 @@ export default async function Overview() {
           hasData={condors.length > 0}
         />
 
-        {!hasData && <RunBacktest initialJob={job} />}
+        <RunBacktest
+          initialJob={job}
+          hasData={hasData}
+          currentLabel={hasData ? `${provenance.range[0]} to ${provenance.range[1]} at ${provenance.resolution === "D" ? "daily" : provenance.resolution + "-min"} bars` : undefined}
+        />
 
         {hasData && (
         <StatGrid>
@@ -83,10 +89,10 @@ export default async function Overview() {
             tone={m.max_drawdown < 0 ? "neg" : "neutral"}
             delta={pct(m.max_drawdown_pct) + " of peak risk"}
           />
-          <Stat label="Expectancy / rung" value={inr(m.expectancy, { sign: true })}
+          <Stat label="Avg per condor" value={inr(m.expectancy, { sign: true })}
                 tone={m.expectancy > 0 ? "pos" : "neg"} delta={`avg hold ${m.avg_days_held.toFixed(1)}d`} />
           <Stat label="Peak capital at risk" value={inr(m.capital_at_risk)}
-                delta={`${m.max_concurrent} rungs open at once`} />
+                delta={`${m.max_concurrent} condors open at once`} />
           <Stat label="Expiry campaigns" value={num(campaigns ?? 1)}
                 delta={(rolls?.length ?? 0) > 0
                   ? `${rolls!.length} roll${rolls!.length === 1 ? "" : "s"}`
@@ -130,15 +136,15 @@ export default async function Overview() {
               <Stat label="Sharpe" value={ratio(m.sharpe)} />
               <Stat label="Sortino" value={ratio(m.sortino)} />
               <Stat label="CAGR" value={pct(m.cagr)} tone={m.cagr > 0 ? "pos" : "neg"} />
-              <Stat label="Best rung" value={inr(m.best, { sign: true })} tone="pos" />
-              <Stat label="Worst rung" value={inr(m.worst, { sign: true })} tone="neg" />
+              <Stat label="Best condor" value={inr(m.best, { sign: true })} tone="pos" />
+              <Stat label="Worst condor" value={inr(m.worst, { sign: true })} tone="neg" />
               <Stat label="Total credit" value={inr(m.total_credit)} hint="premium collected" />
             </StatGrid>
           </Card>
         </div>
 
         <Card
-          title="Ladder rungs"
+          title="Condors opened"
           hint={`${condors.length} condors opened. Each row is one 100-point step down.`}
           pad={0}
         >

@@ -53,7 +53,8 @@ class BacktestParams:
     costs: CostModel = field(default_factory=CostModel)
     anchor_mode: AnchorMode = "floor"
     explicit_anchor: float | None = None
-    underlying: str = "NIFTY"
+    # NOTE: no `underlying` field. The engine is NIFTY-only today, and a
+    # config option that silently does nothing is worse than none at all.
     # Square everything off at this time on expiry day rather than assuming a
     # perfect settlement print.
     settlement_time: dt.time = dt.time(15, 30)

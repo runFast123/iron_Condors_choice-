@@ -37,16 +37,21 @@ PAGES: dict[str, list[str]] = {
     "/trades/": ["Trades"],
     "/data/": ["Data Health", "Sources", "Option premiums"],
     "/about/": ["The Strategy", "Why the legs cancel", "Where the risk is"],
-    "/forward/": ["Forward Test", "Safety", "Paper by default"],
+    "/forward/": ["Forward Test", "Forward test control", "What protects you"],
     "/forward/log/": ["Activity Log", "Trade history", "Run log"],
 }
 
-# Additional text required only once Choice data is present.
-WHEN_CONNECTED: dict[str, list[str]] = {
-    "/": ["Net P&L", "Win rate", "Ladder rungs"],
+# Additional text required only once a backtest has actually produced results.
+# Signed in with no run yet is a third, legitimate state: the page shows the
+# run controls instead of statistics, and demanding both would be wrong.
+WHEN_RESULTS: dict[str, list[str]] = {
+    "/": ["Net P&L", "Win rate", "Condors opened"],
     "/chart/": ["Trigger log", "NIFTY with ladder levels"],
-    "/payoff/": ["Combined expiry payoff", "Per-rung structure"],
+    "/payoff/": ["Combined expiry payoff", "Per-condor structure"],
 }
+
+# Marks a page that is signed in but has no computed result yet.
+NO_RESULTS_MARKERS = ("No backtest has been run", "Run a backtest", "NO DATA YET")
 
 # Text that must appear while Choice is NOT connected, so the empty state can
 # never silently become a blank page.
@@ -92,6 +97,28 @@ def awaiting_state(page) -> bool:
     return "Awaiting Choice FinX connection" in page.inner_text("body")
 
 
+def sign_in(page, base: str) -> bool:
+    """Authenticate before sweeping pages.
+
+    Every route but /login is behind the session now, so an unauthenticated
+    sweep only ever measures the redirect. Uses the stub engine's credentials;
+    against a real engine, pass --base and sign in out of band.
+    """
+    page.goto(f"{base}/login", wait_until="networkidle", timeout=45_000)
+    if page.locator("#vendor_id").count() == 0:
+        return True                       # already signed in
+    page.fill("#vendor_id", "V1")
+    page.fill("#mobile", "9000000001")
+    page.fill("#api_key", "good-key")
+    page.click("button[type=submit]")
+    try:
+        page.wait_for_url(lambda u: "/login" not in u, timeout=25_000)
+        page.wait_for_load_state("networkidle")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
     results: list[PageResult] = []
     shots.mkdir(parents=True, exist_ok=True)
@@ -110,6 +137,12 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
             page.add_init_script(
                 f"try{{localStorage.setItem('ic-theme','{theme}')}}catch(e){{}}"
             )
+            if not sign_in(page, base):
+                results.append(
+                    PageResult(path=f"sign-in [{theme}]", ok=False, notes=["could not sign in"])
+                )
+                context.close()
+                continue
 
             for path, expected in PAGES.items():
                 result = PageResult(path=f"{path} [{theme}]")
@@ -122,12 +155,18 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
                     if m.type == "error" and not any(s in m.text for s in IGNORE_CONSOLE)
                     else None,
                 )
-                page.on(
-                    "requestfailed",
-                    lambda r, f=failed: f.append(f"{r.url} ({r.failure})")
-                    if not any(s in (r.url or "") for s in IGNORE_CONSOLE)
-                    else None,
-                )
+                # Next prefetches routes on hover and in the viewport, then
+                # aborts those in flight when you navigate. An aborted RSC
+                # prefetch is the framework working, not a broken request.
+                def _record_failure(r, f=failed):
+                    reason = (r.failure or "") + " " + (r.url or "")
+                    if "ERR_ABORTED" in reason or "_rsc=" in reason:
+                        return
+                    if any(s in (r.url or "") for s in IGNORE_CONSOLE):
+                        return
+                    f.append(f"{r.url} ({r.failure})")
+
+                page.on("requestfailed", _record_failure)
 
                 try:
                     response = page.goto(base.rstrip("/") + path, wait_until="networkidle", timeout=45_000)
@@ -144,14 +183,17 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
                 result.text_len = len(text)
                 normalised = re.sub(r"\s+", " ", text)
                 awaiting = "Awaiting Choice FinX connection" in normalised
+                no_results = any(m in normalised for m in NO_RESULTS_MARKERS)
                 required = list(expected)
                 if awaiting:
                     if path not in ("/about/",):
                         required += WHEN_AWAITING
-                else:
-                    required += WHEN_CONNECTED.get(path, [])
+                elif not no_results:
+                    required += WHEN_RESULTS.get(path, [])
                 result.missing = [e for e in required if e not in normalised]
-                result.notes.append("awaiting" if awaiting else "connected")
+                result.notes.append(
+                    "awaiting" if awaiting else "no-results" if no_results else "has-results"
+                )
 
                 result.console_errors = console[:]
                 result.failed_requests = failed[:]
