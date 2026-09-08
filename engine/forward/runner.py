@@ -133,6 +133,10 @@ class ForwardRunner:
         # Unrealised P&L per open condor from the most recent tick. Kept so
         # the snapshot reports a real number instead of a placeholder.
         self.last_mtm: dict[int, float] = {}
+        # Monotonic per-order id. Seeded from the clock so ids do not repeat
+        # across restarts, then incremented so two legs can never collide --
+        # a strike hash and a millisecond timestamp both can.
+        self._order_seq = int(time.time()) % 1_000_000 * 1000
         self._contracts: dict[tuple[str, float, str], Contract] = {}
 
     # ------------------------------------------------------------- logging
@@ -266,7 +270,7 @@ class ForwardRunner:
             "DisclosedQty": 0,
             # Unique per leg: kkunal hardcodes 123456 for every order, which
             # makes a four-leg structure impossible to modify or cancel.
-            "ClientOrderNo": int(time.time() * 1000) % 2_000_000_000 + leg.strike.__hash__() % 1000,
+            "ClientOrderNo": self._next_order_no(),
             "Remarks": "condor-ladder",
             "ModeTyp": "WEBAPI",
             "Mode": 1,
@@ -283,7 +287,22 @@ class ForwardRunner:
             self.emit("error", "Order rejected", strike=leg.strike, response=str(resp)[:200])
             return None
         body = resp.get("Response") or {}
-        return str(body.get("OrderNo") or body.get("ClientOrderNo") or "")
+        order_id = body.get("OrderNo") or body.get("ClientOrderNo")
+        if not order_id:
+            # Accepted with no identifier is not a usable fill: without an
+            # order number the leg cannot be modified, cancelled or
+            # reconciled, so treat it as a failure rather than assume it filled.
+            self.emit(
+                "error",
+                "Order accepted but returned no order number",
+                strike=leg.strike, right=leg.right, response=str(resp)[:200],
+            )
+            return None
+        return str(order_id)
+
+    def _next_order_no(self) -> int:
+        self._order_seq += 1
+        return self._order_seq % 2_000_000_000
 
     # -------------------------------------------------------------- manage
 

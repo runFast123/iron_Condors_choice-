@@ -15,7 +15,6 @@ import pytest
 
 from engine.choice.errors import ChoiceDateError, ChoiceHistoryError, ChoiceNoDataError
 from engine.choice.history import (
-    EPOCH_1980,
     HistoryClient,
     from_choice_epoch,
     max_span_days,

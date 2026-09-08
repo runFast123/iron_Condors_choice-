@@ -230,8 +230,6 @@ class Backtest:
         triggers, requirements = discover_requirements(spots, params, self.expiry_for)
         result.triggers = triggers
         result.requirements = requirements
-        pending = {(t.time, t.level) for t in triggers}
-
         ladder = Ladder(
             config=params.strategy,
             anchor_mode=params.anchor_mode,

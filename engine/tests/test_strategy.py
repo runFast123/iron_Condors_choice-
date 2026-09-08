@@ -12,7 +12,6 @@ from engine.strategy.condor import (
     Condor,
     CondorStatus,
     FilledLeg,
-    Leg,
     PriceSource,
     Side,
     StrategyConfig,

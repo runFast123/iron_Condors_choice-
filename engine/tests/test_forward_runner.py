@@ -63,7 +63,6 @@ def test_emit_accepts_a_level_detail_without_colliding():
     path, the moment a condor opened.
     """
     from engine.forward.runner import ForwardRunner
-    from engine.strategy.condor import StrategyConfig
 
     runner = ForwardRunner.__new__(ForwardRunner)
     runner.events = []

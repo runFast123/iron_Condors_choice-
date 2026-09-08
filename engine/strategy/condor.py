@@ -13,7 +13,7 @@ the two wings never both pay out.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Sequence
 

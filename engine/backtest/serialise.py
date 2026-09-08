@@ -14,6 +14,28 @@ from engine.backtest.runner import BacktestResult
 from engine.config import IST
 
 
+def json_safe(value):
+    """Replace non-finite floats with None, recursively.
+
+    Python emits `Infinity` and `NaN` as bare tokens, which are not valid JSON:
+    `JSON.parse` throws on them and the whole dashboard fails to load. This is
+    reachable on a perfectly ordinary run -- profit factor is infinite when no
+    condor loses, which is the strategy's best case, not an edge case.
+
+    None serialises to null, and the UI already renders a non-finite ratio as
+    an infinity sign, so the meaning survives.
+    """
+    import math
+
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    return value
+
+
 def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
     """A dataset that says plainly there is nothing to show yet.
 
@@ -130,7 +152,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         for s in grid
     ]
 
-    return {
+    bundle = {
         "provenance": provenance,
         "params": {
             "step": strategy.step,
@@ -165,3 +187,4 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         "warnings": result.warnings,
         "skipped": [[w.isoformat(), lv, why] for w, lv, why in result.skipped],
     }
+    return json_safe(bundle)

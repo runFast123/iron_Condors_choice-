@@ -266,13 +266,13 @@ class HistoryClient:
                 continue
             try:
                 ts = from_choice_epoch(float(parts[0]), self.epoch_offset)
-                o, h, l, c = (float(parts[i]) / divisor for i in range(1, 5))
+                o, h, low, c = (float(parts[i]) / divisor for i in range(1, 5))
                 volume = int(float(parts[5])) if len(parts) > 5 and parts[5] not in ("", None) else 0
                 oi = int(float(parts[6])) if len(parts) > 6 and parts[6] not in ("", None) else 0
             except (TypeError, ValueError):
                 bad += 1
                 continue
-            out.append([ts, o, h, l, c, volume, oi])
+            out.append([ts, o, h, low, c, volume, oi])
         return out, bad
 
     # -- chunked public API -------------------------------------------------

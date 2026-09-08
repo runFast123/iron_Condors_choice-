@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Sequence
 
 TRADING_DAYS = 252

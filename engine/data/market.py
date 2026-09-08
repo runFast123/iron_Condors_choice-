@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -23,7 +23,6 @@ from engine.choice.errors import ChoiceError, ChoiceInstrumentError, ChoiceNoDat
 from engine.choice.history import FetchReport, HistoryClient
 from engine.choice.instruments import Contract, ScripMaster
 from engine.choice.session import ChoiceSession
-from engine.config import IST
 
 log = logging.getLogger(__name__)
 

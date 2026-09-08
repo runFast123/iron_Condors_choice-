@@ -200,7 +200,7 @@ def main() -> int:
         )
         if not args.write_empty:
             print("Choice credentials are not configured; writing the empty-state dataset.\n")
-        out.write_text(json.dumps(empty_bundle(reason), separators=(",", ":")), encoding="utf-8")
+        out.write_text(json.dumps(empty_bundle(reason), separators=(",", ":"), allow_nan=False), encoding="utf-8")
         print(f"  Wrote {out} (empty state)")
         print("  Fill .env, then run: python -m engine.tools.doctor && python -m engine.tools.seed")
         return 0 if args.write_empty else 1
@@ -215,7 +215,7 @@ def main() -> int:
         stop_loss=args.stop_loss,
         option_resolution=args.option_resolution,
     )
-    out.write_text(json.dumps(serialise(result, provenance), separators=(",", ":")), encoding="utf-8")
+    out.write_text(json.dumps(serialise(result, provenance), separators=(",", ":"), allow_nan=False), encoding="utf-8")
 
     m = result.metrics
     print(f"\n  Wrote {out}  ({out.stat().st_size / 1024:.0f} KB)")
