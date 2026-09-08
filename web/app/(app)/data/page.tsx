@@ -44,7 +44,7 @@ export default async function DataHealthPage() {
               tone={p.modeled_quotes > 0 ? "neg" : "pos"}
               hint={pct(1 - p.real_fraction)}
             />
-            <Stat label="Ladder triggers" value={num(triggers.length)} hint="rungs fired" />
+            <Stat label="Ladder triggers" value={num(triggers.length)} hint="condors fired" />
           </StatGrid>
         )}
 
@@ -155,11 +155,11 @@ export default async function DataHealthPage() {
 
         {!awaiting && (
           <Card
-            title="Skipped rungs"
-            hint="A rung is skipped outright rather than opened partially: three of four legs would leave a naked short in the book."
+            title="Skipped condors"
+            hint="A condor is skipped outright rather than opened partially: three of four legs would leave a naked short in the book."
           >
             {skipped.length === 0 ? (
-              <Empty>No rungs were skipped &mdash; every trigger got a full four-leg fill.</Empty>
+              <Empty>No condors were skipped &mdash; every trigger got a full four-leg fill.</Empty>
             ) : (
               <div className="scroll-x">
                 <table>

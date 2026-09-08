@@ -152,7 +152,7 @@ export function EquityChart({ points, height = 240 }: { points: EquityPoint[]; h
           <Row label="P&L" value={inr(active.equity, { sign: true })} tone={active.equity} />
           <Row label="Drawdown" value={inr(active.drawdown)} tone={active.drawdown} />
           {active.spot != null && <Row label="NIFTY" value={num(active.spot)} />}
-          <Row label="Open rungs" value={String(active.open_condors)} />
+          <Row label="Open condors" value={String(active.open_condors)} />
         </div>
       )}
     </div>

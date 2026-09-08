@@ -57,7 +57,7 @@
   --c3: #009591;   /* Choice teal    */
   --c4: #9661d1;   /* violet         */
 
-  /* Sequential ramp (ladder rungs are ordered: magnitude, not identity) */
+  /* Sequential ramp (ladder condors are ordered: magnitude, not identity) */
   --seq-1: #e1eeff;
   --seq-2: #a8ccfb;
   --seq-3: #6ba6f8;

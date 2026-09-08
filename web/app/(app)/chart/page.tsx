@@ -25,7 +25,7 @@ export default async function ChartPage() {
     <>
       <PageHeader
         title="Price &amp; Trigger Levels"
-        subtitle="NIFTY with every fired rung drawn as a dashed level. A rung fires the moment price trades at or below its level, and each level fires at most once."
+        subtitle="NIFTY with every fired condor drawn as a dashed level. A condor fires the moment price trades at or below its level, and each level fires at most once."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -36,8 +36,8 @@ export default async function ChartPage() {
           <Stat label="Last" value={dash(last)} hint={lastTs ? shortDate(lastTs) : undefined} />
           <Stat label="Range high" value={dash(high)} />
           <Stat label="Range low" value={dash(low)} />
-          <Stat label="Anchor rung" value={dash(anchor)} hint="first condor" />
-          <Stat label="Deepest rung" value={dash(deepest)}
+          <Stat label="Anchor condor" value={dash(anchor)} hint="first condor" />
+          <Stat label="Deepest condor" value={dash(deepest)}
                 hint={anchor != null && deepest != null ? `${num(anchor - deepest)} pts below anchor` : undefined} />
           <Stat label="Condors opened" value={num(triggers.length)} hint={`${num(params.step)}-pt steps`} />
         </StatGrid>
@@ -47,14 +47,14 @@ export default async function ChartPage() {
         <>
         <Card
           title="NIFTY with ladder levels"
-          hint="Drag to pan, scroll to zoom. Dashed lines mark the reference level of each condor; labels on the right axis are rung numbers."
+          hint="Drag to pan, scroll to zoom. Dashed lines mark the reference level of each condor; labels on the right axis are condor numbers."
           pad={8}
         >
           <PriceChart points={equity} triggers={triggers} />
         </Card>
 
         <Card title="Trigger log" pad={0}
-              hint="A gap-fill entry means price jumped past a level, so the rung it skipped was opened at the same bar.">
+              hint="A gap-fill entry means price jumped past a level, so the condor it skipped was opened at the same bar.">
           <div className="scroll-x" style={{ maxHeight: "50vh", overflowY: "auto" }}>
             <table>
               <thead>

@@ -396,8 +396,8 @@ class ForwardRunner:
                 "realised": round(self.realised, 2),
                 "unrealised": round(unrealised, 2),
                 "total": round(self.realised + unrealised, 2),
-                "open_rungs": len([c for c in self.condors if c.is_open]),
-                "total_rungs": len(self.condors),
+                "open_condors": len([c for c in self.condors if c.is_open]),
+                "total_condors": len(self.condors),
             },
             "netting": summary,
             "positions": [

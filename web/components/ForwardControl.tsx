@@ -169,7 +169,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                 value={inr(state?.pnl.total ?? 0, { sign: true })}
                 tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
               />
-              <Metric label="Open condors" value={num(state?.pnl.open_rungs ?? 0)} />
+              <Metric label="Open condors" value={num(state?.pnl.open_condors ?? 0)} />
               <Metric
                 label="Next entry at"
                 value={state?.ladder.next_trigger != null ? num(state.ladder.next_trigger) : "—"}

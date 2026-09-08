@@ -20,7 +20,7 @@ export default async function AboutPage() {
           <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: "var(--ink-2)" }}>
             Open an iron condor at the anchor level. Every further{" "}
             <strong>{num(params.step)}-point decline</strong> in NIFTY opens another one around the
-            new level. Each rung is built the same way:
+            new level. Each condor is built the same way:
           </p>
           <div className="scroll-x" style={{ marginTop: 14 }}>
             <table style={{ minWidth: 520 }}>
@@ -69,7 +69,7 @@ export default async function AboutPage() {
             {num(params.short_offset)} and {num(params.long_offset)} points out. That gap is{" "}
             {num(params.long_offset - params.short_offset)} points &mdash;{" "}
             <strong>exactly {(params.long_offset - params.short_offset) / params.step} steps</strong>.
-            So the long put of one rung lands on the same strike as the short put of the rung two
+            So the long put of one condor lands on the same strike as the short put of the condor two
             steps below:
           </p>
           <div
@@ -77,9 +77,9 @@ export default async function AboutPage() {
             style={{ margin: "14px 0 0", padding: 14, background: "var(--surface-3)", fontSize: 13 }}
           >
             <div className="mono" style={{ lineHeight: 2 }}>
-              Rung {num(L)}&nbsp;&nbsp;&rarr;&nbsp; <span style={{ color: "var(--c1)" }}>BUY&nbsp; {num(L - params.long_offset)} PE</span>
+              Condor {num(L)}&nbsp;&nbsp;&rarr;&nbsp; <span style={{ color: "var(--c1)" }}>BUY&nbsp; {num(L - params.long_offset)} PE</span>
               <br />
-              Rung {num(L - 2 * params.step)}&nbsp;&nbsp;&rarr;&nbsp; <span style={{ color: "var(--c2)" }}>SELL {num(L - 2 * params.step - params.short_offset)} PE</span>
+              Condor {num(L - 2 * params.step)}&nbsp;&nbsp;&rarr;&nbsp; <span style={{ color: "var(--c2)" }}>SELL {num(L - 2 * params.step - params.short_offset)} PE</span>
               <br />
               <span style={{ color: "var(--ink-muted)" }}>
                 ──────────────────────────────
@@ -101,7 +101,7 @@ export default async function AboutPage() {
         <Card title="Where the risk is">
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.9, color: "var(--ink-2)" }}>
             <li>
-              <strong>Per rung, loss is bounded</strong> at{" "}
+              <strong>Per condor, loss is bounded</strong> at{" "}
               <span className="mono">
                 {num(params.long_offset - params.short_offset)} &times; {num(params.qty)} &minus; credit
               </span>
@@ -109,7 +109,7 @@ export default async function AboutPage() {
             </li>
             <li>
               <strong>The ladder is down-only.</strong> Rallies open nothing, and each level fires at
-              most once. A sustained grind lower therefore keeps adding rungs while the earlier ones
+              most once. A sustained grind lower therefore keeps adding condors while the earlier ones
               are still losing &mdash; the concentration risk is a trend, not a spike.
             </li>
             <li>
@@ -117,7 +117,7 @@ export default async function AboutPage() {
               drop builds the same ladder a gradual decline would.
             </li>
             <li>
-              <strong>Rungs are capped at {num(params.max_condors)}</strong>. Without a cap a long
+              <strong>Condors are capped at {num(params.max_condors)}</strong>. Without a cap a long
               decline would open positions indefinitely.
             </li>
           </ul>
@@ -128,12 +128,12 @@ export default async function AboutPage() {
             <table>
               <tbody>
                 {[
-                  ["Step between rungs", `${num(params.step)} pts`],
+                  ["Step between condors", `${num(params.step)} pts`],
                   ["Short strike offset", `${num(params.short_offset)} pts`],
                   ["Long strike offset", `${num(params.long_offset)} pts`],
                   ["Wing width", `${num(params.long_offset - params.short_offset)} pts`],
-                  ["Lots per rung", `${params.lots} (${num(params.qty)} shares)`],
-                  ["Max rungs", num(params.max_condors)],
+                  ["Lots per condor", `${params.lots} (${num(params.qty)} shares)`],
+                  ["Max condors", num(params.max_condors)],
                   ["Fill skipped levels on a gap", params.fill_gaps ? "Yes" : "No"],
                   ["Anchor mode", params.anchor_mode],
                   ["Take profit", params.take_profit_pct == null ? "Off - held to expiry" : pct(params.take_profit_pct) + " of credit"],

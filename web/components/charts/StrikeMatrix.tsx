@@ -8,9 +8,9 @@ import { Badge } from "@/components/ui";
 /**
  * The Strike Ladder Matrix.
  *
- * Rows are strikes, columns are ladder rungs, cells are signed quantity, and
- * the NET column is the point: where a rung's long wing sits on the same
- * strike as a lower rung's short, the two cancel and NET reads zero. That is
+ * Rows are strikes, columns are ladder condors, cells are signed quantity, and
+ * the NET column is the point: where a condor's long wing sits on the same
+ * strike as a lower condor's short, the two cancel and NET reads zero. That is
  * the strategy's central claim, shown rather than asserted.
  *
  * Signed quantity is a polarity, so the cell scale is diverging — one hue for
@@ -47,7 +47,7 @@ export function StrikeMatrix({
   }, [rows]);
 
   // Open on the expiry that best demonstrates the offsetting rather than the
-  // earliest one: a week that only ever held two rungs shows no cancellation
+  // earliest one: a week that only ever held two condors shows no cancellation
   // at all, which makes this view look broken on first load.
   const defaultExpiry = useMemo(() => {
     let best = expiries[0];
@@ -71,7 +71,9 @@ export function StrikeMatrix({
     return out.sort((a, b) => b.strike - a.strike);
   }, [rows, right, selectedExpiry, onlyOffset]);
 
-  const rungs = useMemo(() => {
+  // Only the condors that actually contribute to the visible rows, so the
+  // matrix does not carry empty columns for other expiries.
+  const columns = useMemo(() => {
     const indices = new Set<number>();
     visible.forEach((row) => Object.keys(row.by_condor).forEach((k) => indices.add(Number(k))));
     return condors.filter((c) => indices.has(c.index)).sort((a, b) => b.level - a.level);
@@ -131,8 +133,8 @@ export function StrikeMatrix({
           <thead>
             <tr>
               <th style={{ left: 0, position: "sticky", zIndex: 2, background: "var(--surface-2)" }}>Strike</th>
-              {rungs.map((c) => (
-                <th key={c.index} style={{ textAlign: "center" }} title={`Rung opened at ${num(c.level)}`}>
+              {columns.map((c) => (
+                <th key={c.index} style={{ textAlign: "center" }} title={`Condor opened at ${num(c.level)}`}>
                   {num(c.level)}
                 </th>
               ))}
@@ -152,7 +154,7 @@ export function StrikeMatrix({
                   {num(row.strike)}
                   <span style={{ color: "var(--ink-muted)", fontWeight: 400, marginLeft: 4 }}>{row.right}</span>
                 </td>
-                {rungs.map((c) => {
+                {columns.map((c) => {
                   const qty = row.by_condor[String(c.index)] ?? 0;
                   return <Cell key={c.index} qty={qty} max={maxQty} />;
                 })}

@@ -18,7 +18,7 @@ export default async function PayoffPage() {
     <>
       <PageHeader
         title="Payoff at Expiry"
-        subtitle="Combined profit and loss across every rung, if all of them settled at the same NIFTY level. Breakevens are marked where the curve crosses zero."
+        subtitle="Combined profit and loss across every condor, if all of them settled at the same NIFTY level. Breakevens are marked where the curve crosses zero."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -35,8 +35,8 @@ export default async function PayoffPage() {
                 hint={`at NIFTY ${num(best?.spot ?? 0)}`} />
           <Stat label="Worst payoff" value={inr(worst?.pnl ?? 0, { sign: true })} tone="neg"
                 hint={`at NIFTY ${num(worst?.spot ?? 0)}`} />
-          <Stat label="Credit collected" value={inr(totalCredit)} hint="across all rungs" />
-          <Stat label="Sum of rung max-loss" value={inr(totalMaxLoss)}
+          <Stat label="Credit collected" value={inr(totalCredit)} hint="across all condors" />
+          <Stat label="Sum of condor max-loss" value={inr(totalMaxLoss)}
                 hint="before any offsetting" />
         </StatGrid>
 
@@ -48,7 +48,7 @@ export default async function PayoffPage() {
         </Card>
 
         <Card title="Per-condor structure" pad={0}
-              hint={`Each rung risks at most one ${num(params.long_offset - params.short_offset)}-point wing, because only one side can finish in the money.`}>
+              hint={`Each condor risks at most one ${num(params.long_offset - params.short_offset)}-point wing, because only one side can finish in the money.`}>
           <div className="scroll-x">
             <table>
               <thead>

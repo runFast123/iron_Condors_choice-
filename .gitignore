@@ -11,6 +11,11 @@ docs/vendor/
 .env
 .env.*
 !.env.example
+# Session caches. These hold a live Choice session id and access token, so a
+# broad pattern is deliberate: an exact filename let .choice_session.json slip
+# through and reach a public repo.
+*session*.json
+.choice_session.json
 session.json
 *.session
 secrets/

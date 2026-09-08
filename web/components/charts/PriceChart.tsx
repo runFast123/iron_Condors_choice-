@@ -8,7 +8,7 @@ import type { EquityPoint, Trigger } from "@/lib/types";
  *
  * Uses lightweight-charts (TradingView's own OSS library) so pan/zoom and the
  * crosshair behave the way anyone reading a price chart expects. Each fired
- * rung gets a horizontal line at its level plus a marker at the bar where it
+ * condor gets a horizontal line at its level plus a marker at the bar where it
  * actually triggered.
  */
 export function PriceChart({
@@ -73,7 +73,7 @@ export function PriceChart({
 
         series.setData(data);
 
-        // One price line per fired rung, coloured along a sequential ramp so
+        // One price line per fired condor, coloured along a sequential ramp so
         // the ordering of the ladder reads at a glance.
         const ramp = ["--seq-5", "--seq-4", "--seq-3", "--seq-2"];
         triggers.forEach((t, i) => {

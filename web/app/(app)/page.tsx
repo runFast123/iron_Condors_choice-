@@ -113,7 +113,7 @@ export default async function Overview() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
           <Card
             title="How much the ladder self-hedges"
-            hint="The long wing of one rung lands on the same strike as the short of the rung two steps below, so the pair cancels."
+            hint="The long wing of one condor lands on the same strike as the short of the condor two steps below, so the pair cancels."
           >
             <StatGrid min={130}>
               <Stat label="Offset" value={pct(netting.offset_ratio)} hint="of gross quantity" />

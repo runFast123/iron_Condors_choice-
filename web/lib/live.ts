@@ -72,7 +72,7 @@ export interface LiveState {
   };
   pnl: {
     realised: number; unrealised: number; total: number;
-    open_rungs: number; total_rungs: number;
+    open_condors: number; total_condors: number;
   };
   netting: {
     strikes_touched: number; strikes_fully_offset: number; gross_qty: number;

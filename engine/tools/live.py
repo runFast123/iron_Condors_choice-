@@ -40,7 +40,7 @@ def empty_state(reason: str) -> dict:
         "market": {"spot": None, "ts": None},
         "ladder": {"anchor": None, "last_level": None, "next_trigger": None,
                    "distance": None, "fired": [], "step": 100.0},
-        "pnl": {"realised": 0, "unrealised": 0, "total": 0, "open_rungs": 0, "total_rungs": 0},
+        "pnl": {"realised": 0, "unrealised": 0, "total": 0, "open_condors": 0, "total_condors": 0},
         "netting": {"strikes_touched": 0, "strikes_fully_offset": 0, "gross_qty": 0,
                     "net_qty": 0, "offset_qty": 0, "offset_ratio": 0.0},
         "positions": [], "fills": [], "events": [], "net_positions": [],
@@ -112,7 +112,7 @@ def main() -> int:
     runner.run(poll_seconds=args.poll, max_ticks=args.ticks)
 
     snap = runner.snapshot()
-    print(f"\n  Ticks done. Spot {snap['market']['spot']}  rungs {snap['pnl']['total_rungs']}"
+    print(f"\n  Ticks done. Spot {snap['market']['spot']}  rungs {snap['pnl']['total_condors']}"
           f"  P&L {snap['pnl']['total']:,.0f}")
     return 0
 

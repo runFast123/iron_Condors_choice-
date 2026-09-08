@@ -14,11 +14,56 @@ exercise the static-IP rejection.
 from __future__ import annotations
 
 import argparse
+import os
 
 from engine.auth import sessions as auth
 from engine.choice.errors import ChoiceAuthError, StaticIpRejectedError
 
 GOOD_KEY = "good-key"
+
+# Set NO_CANDLES=1 to exercise the "Choice serves no history" failure path
+# instead of returning data.
+SERVE_CANDLES = os.environ.get("NO_CANDLES", "") != "1"
+
+
+def _synthetic_candles(payload: dict) -> dict:
+    """A believable OHLC series, so a full backtest can complete end to end.
+
+    Real enough in shape -- comma-joined rows, seconds since the 1980 epoch, a
+    PriceDivisor -- that it exercises the same parsing path as live data.
+    """
+    if not SERVE_CANDLES:
+        return {"Status": "Failure", "Message": "stub engine serves no candles"}
+
+    import math
+
+    start = int(payload.get("FromDate") or 0)
+    end = int(payload.get("ToDate") or start + 86_400)
+    token = int(payload.get("Token") or 0)
+    step = 86_400
+    rows = []
+    # Index tokens drift like an index; option tokens sit at a plausible premium.
+    is_index = token in (26000, 26017)
+    base = 24_000.0 if token == 26000 else 14.0 if token == 26017 else 120.0
+    n = 0
+    t = start
+    while t <= end and n < 400:
+        if is_index and token == 26000:
+            px = base - 600 * math.sin(math.pi * (n / 120.0)) + 40 * math.sin(n / 4.0)
+        elif token == 26017:
+            px = base + 2 * math.sin(n / 7.0)
+        else:
+            px = max(0.5, base - n * 0.4 + 8 * math.sin(n / 3.0))
+        o = px * 0.999
+        h = px * 1.004
+        low = px * 0.996
+        rows.append(f"{t},{o * 100:.0f},{h * 100:.0f},{low * 100:.0f},{px * 100:.0f},1000,50")
+        t += step
+        n += 1
+    return {
+        "Status": "Success",
+        "Response": {"lstChartHistory": rows, "PriceDivisor": 100},
+    }
 
 
 class FakeChoiceSession:
@@ -37,9 +82,7 @@ class FakeChoiceSession:
 
     def request(self, method, endpoint, data=None, **kw):
         if "ChartData" in endpoint:
-            # No stubbed history: the point is to exercise the real failure
-            # path a user hits when Choice serves no candles.
-            return {"Status": "Failure", "Message": "stub engine serves no candles"}
+            return _synthetic_candles(data or {})
         if "UserProfile" in endpoint:
             return {
                 "Status": "Success",

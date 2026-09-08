@@ -12,7 +12,7 @@ export default async function LadderPage() {
     <>
       <PageHeader
         title="Strike Ladder Matrix"
-        subtitle="Every strike the campaign touched, and which rung put it there. Where a long wing meets a lower rung's short at the same strike, the pair cancels and NET reads zero."
+        subtitle="Every strike the campaign touched, and which condor put it there. Where a long wing meets a lower condor's short at the same strike, the pair cancels and NET reads zero."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -34,7 +34,7 @@ export default async function LadderPage() {
 
         <Card
           title="Positions by strike"
-          hint={`Level structure: short at ${num(params.short_offset)} points, long wing at ${num(params.long_offset)} points. A ${num(params.step)}-point step means rung L's long put shares a strike with rung L-${num(params.step * 2)}'s short put.`}
+          hint={`Level structure: short at ${num(params.short_offset)} points, long wing at ${num(params.long_offset)} points. A ${num(params.step)}-point step means condor L's long put shares a strike with condor L-${num(params.step * 2)}'s short put.`}
         >
           <StrikeMatrix rows={strike_matrix} condors={condors} />
         </Card>
@@ -72,8 +72,8 @@ export default async function LadderPage() {
           </div>
           <p style={{ fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.7, margin: "14px 0 0", maxWidth: "80ch" }}>
             Read down the <strong>Long PE</strong> column and across the <strong>Short PE</strong> column:
-            rung 24,000 buys the 23,600 put, and rung 23,800 sells it. Same strike, opposite sides,
-            equal size &mdash; the pair nets flat. The same happens on the call side two rungs later.
+            condor 24,000 buys the 23,600 put, and condor 23,800 sells it. Same strike, opposite sides,
+            equal size &mdash; the pair nets flat. The same happens on the call side two condors later.
             Offsetting is always <strong>within one expiry</strong>: a long 23,600 PE in March and a
             short 23,600 PE in April are different instruments and net to nothing, so the ladder
             re-anchors at each new expiry rather than carrying a stale reference level across one.

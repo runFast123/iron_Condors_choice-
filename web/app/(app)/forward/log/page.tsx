@@ -17,7 +17,7 @@ export default async function ForwardLogPage() {
   const events = state?.events ?? [];
   const fills = state?.fills ?? [];
   const positions = state?.positions ?? [];
-  const pnl = state?.pnl ?? { realised: 0, unrealised: 0, total: 0, open_rungs: 0, total_rungs: 0 };
+  const pnl = state?.pnl ?? { realised: 0, unrealised: 0, total: 0, open_condors: 0, total_condors: 0 };
   const closed = positions.filter((p) => p.status !== "OPEN");
   const opens = fills.filter((f) => f.action === "OPEN").length;
   const closes = fills.filter((f) => f.action === "CLOSE").length;
@@ -38,7 +38,7 @@ export default async function ForwardLogPage() {
         <StatGrid>
           <Stat label="Log entries" value={num(events.length)} />
           <Stat label="Fills" value={num(fills.length)} hint={`${opens} open / ${closes} close`} />
-          <Stat label="Rungs closed" value={num(closed.length)} />
+          <Stat label="Condors closed" value={num(closed.length)} />
           <Stat label="Realised P&L" value={inr(pnl.realised, { sign: true })}
                 tone={pnl.realised > 0 ? "pos" : pnl.realised < 0 ? "neg" : "neutral"} />
           <Stat label="Last tick" value={session?.last_tick ? dateTime(session.last_tick) : "--"} />
@@ -51,7 +51,7 @@ export default async function ForwardLogPage() {
         >
           {fills.length === 0 ? (
             <Empty>
-              No fills yet. Trade history appears here once a forward run opens its first rung.
+              No fills yet. Trade history appears here once a forward run opens its first condor.
             </Empty>
           ) : (
             <div className="scroll-x" style={{ maxHeight: "56vh", overflowY: "auto" }}>
@@ -60,7 +60,7 @@ export default async function ForwardLogPage() {
                   <tr>
                     <th>Time</th>
                     <th>Action</th>
-                    <th>Rung</th>
+                    <th>Condor</th>
                     <th>Side</th>
                     <th>Strike</th>
                     <th style={{ textAlign: "right" }}>Qty</th>
@@ -104,18 +104,18 @@ export default async function ForwardLogPage() {
         </Card>
 
         <Card
-          title="Closed rungs"
+          title="Closed condors"
           pad={0}
           hint="Completed condors with the reason each one was closed."
         >
           {closed.length === 0 ? (
-            <Empty>No rungs closed yet.</Empty>
+            <Empty>No condors closed yet.</Empty>
           ) : (
             <div className="scroll-x">
               <table>
                 <thead>
                   <tr>
-                    <th>Rung</th><th>Opened</th><th>Status</th>
+                    <th>Condor</th><th>Opened</th><th>Status</th>
                     <th style={{ textAlign: "right" }}>Credit</th>
                     <th style={{ textAlign: "right" }}>P&amp;L</th>
                     <th>Reason</th>

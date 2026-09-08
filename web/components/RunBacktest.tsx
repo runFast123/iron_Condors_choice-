@@ -38,6 +38,8 @@ export function RunBacktest({
   // available without pushing the results down the page.
   const [open, setOpen] = useState(!hasData);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // True once a run has been observed in flight during this page's life.
+  const sawActive = useRef(false);
 
   const active = job?.status === "queued" || job?.status === "running";
 
@@ -52,16 +54,26 @@ export function RunBacktest({
   }, []);
 
   useEffect(() => {
-    if (!active) {
-      if (timer.current) clearTimeout(timer.current);
-      // A finished run means the server-rendered pages now have data.
-      if (job?.status === "done") window.location.reload();
-      return;
+    if (active) {
+      // Remember that we saw work in flight, so we know a later "done" is a
+      // transition rather than the state the page loaded in.
+      sawActive.current = true;
+      timer.current = setTimeout(poll, 2000);
+      return () => {
+        if (timer.current) clearTimeout(timer.current);
+      };
     }
-    timer.current = setTimeout(poll, 2000);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
+
+    if (timer.current) clearTimeout(timer.current);
+
+    // Reload only when a run finished *while this page was open*. Reloading
+    // whenever the job is "done" was an infinite loop: the completed job is
+    // still the latest one after the reload, so the effect fired again
+    // immediately and the page reloaded forever.
+    if (job?.status === "done" && sawActive.current) {
+      sawActive.current = false;
+      window.location.reload();
+    }
   }, [active, job, poll]);
 
   async function start() {

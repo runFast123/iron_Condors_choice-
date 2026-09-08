@@ -12,7 +12,7 @@ export default async function TradesPage() {
     <>
       <PageHeader
         title="Trades"
-        subtitle={`Every leg the campaign placed: ${legs.length} legs across ${condors.length} rungs. Each carries the source of its price.`}
+        subtitle={`Every leg the campaign placed: ${legs.length} legs across ${condors.length} condors. Each carries the source of its price.`}
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -33,7 +33,7 @@ export default async function TradesPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Rung</th>
+                  <th>Condor</th>
                   <th>Opened</th>
                   <th>Side</th>
                   <th>Strike</th>
