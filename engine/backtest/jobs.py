@@ -31,6 +31,7 @@ from engine.backtest.runner import (
     weekly_expiry_resolver,
 )
 from engine.backtest.serialise import empty_bundle, serialise
+from engine.data.expiry_calendar import MAX_WEEKLY_DTE, expiry_calendar
 from engine.choice.errors import ChoiceError
 from engine.config import IST
 from engine.data.market import NIFTY, ChoiceMarketData
@@ -40,6 +41,14 @@ from engine.store.db import Store
 from engine.strategy.condor import StrategyConfig
 
 log = logging.getLogger(__name__)
+
+# Bumped whenever a fix changes what a backtest *means*, so stored results from
+# an older engine are retired rather than shown as if they were current.
+#   1 -> first durable results
+#   2 -> expiries derived for historical ranges; before this every condor in a
+#        past range carried the nearest *currently listed* expiry, which priced
+#        weeklies as half-year options and understated max loss about threefold.
+RESULT_VERSION = 2
 
 DEFAULT_ATM_VOL = 0.14
 
@@ -136,9 +145,20 @@ class BacktestRunner:
             vol_source = f"default:{DEFAULT_ATM_VOL:.0%}"
 
         first_day, last_day = spots[0][0].date(), spots[-1][0].date()
-        expiries = market.master.expiries(NIFTY, after=first_day)
-        if not expiries:
-            raise ChoiceError(f"No {NIFTY} expiries in the scrip master on/after {first_day}.")
+
+        # The scrip master only lists contracts that still exist, so for any
+        # range in the past its earliest expiry is *today's*. Reading it
+        # directly gave every historical condor a six-month expiry and priced
+        # weeklies as half-year options. Derive the calendar the exchange
+        # actually ran, and keep listed contracts wherever they overlap.
+        listed = market.master.expiries(NIFTY)
+        try:
+            expiries, derived_expiries = expiry_calendar(
+                first_day, last_day + dt.timedelta(days=MAX_WEEKLY_DTE), listed,
+                cadence=str(p.get("expiry_cadence") or "weekly"),
+            )
+        except ValueError as exc:
+            raise ChoiceError(str(exc)) from exc
         lot_size = market.master.lot_size_for(NIFTY)
 
         params = BacktestParams(
@@ -147,7 +167,7 @@ class BacktestRunner:
                 lots=int(p["lots"]),
                 lot_size=lot_size,
                 max_condors=int(p["max_condors"]),
-                strike_step=market.master.strike_step(NIFTY, expiries[0]),
+                strike_step=market.master.strike_step(NIFTY, listed[0]) if listed else 50.0,
                 take_profit_pct=p.get("take_profit"),
                 stop_loss_mult=p.get("stop_loss"),
             ),
@@ -194,7 +214,14 @@ class BacktestRunner:
             "spot_source": "choice:NIFTY",
             "vol_source": vol_source,
             "premium_source": "choice:ChartData" if fetched else "modeled:black76",
-            "expiry_source": "choice:scripmaster",
+            # The scrip master delists expired contracts, so a historical run
+            # necessarily rests partly on a derived calendar. Say how much.
+            "expiry_source": (
+                "choice:scripmaster" if not derived_expiries
+                else f"derived+scripmaster ({len(derived_expiries)} of {len(expiries)} derived)"
+            ),
+            "expiries_derived": len(derived_expiries),
+            "expiries_listed": len(expiries) - len(derived_expiries),
             "verified": provider.modeled_quotes == 0,
             "note": (
                 "All prices sourced from Choice FinX."
@@ -260,6 +287,7 @@ class JobStore:
             self._db.save_backtest(
                 run_id=job.job_id, user_id=job.user_id, status=job.status,
                 params=job.params, dataset=job.result, error=job.error,
+                result_version=RESULT_VERSION,
             )
         except Exception:                           # noqa: BLE001
             log.exception("Could not persist backtest %s", job.job_id)
@@ -275,9 +303,21 @@ class JobStore:
         if job is None:
             # Nothing in memory does not mean nothing ever ran: a restart
             # clears the job table but not the results it produced.
-            saved = self._db.latest_backtest(user_id) if self._db else None
+            saved = (
+                self._db.latest_backtest(user_id, min_version=RESULT_VERSION)
+                if self._db else None
+            )
             if saved and saved.get("dataset"):
                 return saved["dataset"]
+            if self._db and self._db.backtest_history(user_id):
+                # There is a saved result, but this engine no longer agrees
+                # with how it was computed. Saying so beats showing it.
+                return empty_bundle(
+                    "Your last backtest was produced before a correctness fix and is no longer "
+                    "shown: historical condors were given the nearest expiry still listed today, "
+                    "so weeklies were priced as six-month options. Run it again for real numbers.",
+                    awaiting_connection=False,
+                )
             return empty_bundle(
                 "No backtest has been run on this account yet. Choose a range and run one to "
                 "populate the dashboard.",

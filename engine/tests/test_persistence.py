@@ -333,3 +333,50 @@ def test_restore_accepts_the_durable_wiring_the_api_passes(store, tmp_path):
     restored._open_condor(23_900, EXPIRY)
     restored.save()
     assert len(store.running_forwards()[0]["state"]["condors"]) == 2
+
+
+# ============================================== result versioning
+
+
+def test_results_from_an_older_engine_are_not_served_as_current(store):
+    """A correctness fix invalidates stored results, it does not just change
+    future ones. Showing a stale dataset is worse than showing nothing: it
+    looks current and is wrong."""
+    store.save_backtest(run_id="old", user_id="u1", status="done",
+                        params={}, dataset={"metrics": {}}, result_version=1)
+    assert store.latest_backtest("u1", min_version=2) is None
+    assert store.latest_backtest("u1", min_version=1) is not None
+
+
+def test_a_current_result_is_served(store):
+    store.save_backtest(run_id="new", user_id="u1", status="done",
+                        params={}, dataset={"metrics": {"net_pnl": 1.0}}, result_version=2)
+    saved = store.latest_backtest("u1", min_version=2)
+    assert saved and saved["run_id"] == "new"
+
+
+def test_a_database_from_an_earlier_build_gains_the_version_column(tmp_path):
+    """CREATE TABLE IF NOT EXISTS leaves an existing table alone, so without a
+    migration every read of the new column fails on an existing database."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        "CREATE TABLE backtest_runs (run_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,"
+        " created_at TEXT NOT NULL, status TEXT NOT NULL, params_json TEXT NOT NULL,"
+        " dataset_json TEXT, error TEXT);"
+    )
+    con.execute(
+        "INSERT INTO backtest_runs VALUES ('a','u1','2026-01-01','done','{}','{\"m\":1}',NULL)"
+    )
+    con.commit()
+    con.close()
+
+    store = Store(path)
+    try:
+        # Pre-existing rows default to version 0, so they are retired, not shown.
+        assert store.latest_backtest("u1", min_version=2) is None
+        assert store.backtest_history("u1")[0]["run_id"] == "a"
+    finally:
+        store.close()

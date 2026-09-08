@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     status       TEXT NOT NULL,
     params_json  TEXT NOT NULL,
     dataset_json TEXT,
-    error        TEXT
+    error        TEXT,
+    result_version INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_backtest_user ON backtest_runs (user_id, created_at DESC);
 
@@ -99,7 +100,21 @@ class Store:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns to a database created by an earlier build.
+
+        CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a new
+        column has to be added explicitly or every read of it fails.
+        """
+        existing = {r["name"] for r in self._conn.execute("PRAGMA table_info(backtest_runs)")}
+        if "result_version" not in existing:
+            self._conn.execute(
+                "ALTER TABLE backtest_runs ADD COLUMN result_version INTEGER NOT NULL DEFAULT 0"
+            )
+            log.info("Added result_version to backtest_runs")
 
     def close(self) -> None:
         with self._lock:
@@ -226,28 +241,38 @@ class Store:
         dataset: dict[str, Any] | None = None,
         error: str | None = None,
         created_at: str | None = None,
+        result_version: int = 0,
     ) -> None:
         self._write(
             """
             INSERT INTO backtest_runs
-                (run_id, user_id, created_at, status, params_json, dataset_json, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (run_id, user_id, created_at, status, params_json, dataset_json, error,
+                 result_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 status=excluded.status,
                 dataset_json=excluded.dataset_json,
-                error=excluded.error
+                error=excluded.error,
+                result_version=excluded.result_version
             """,
             (run_id, user_id, created_at or _now(), status,
              json.dumps(params, separators=(",", ":")),
              json.dumps(dataset, separators=(",", ":")) if dataset is not None else None,
-             error),
+             error, result_version),
         )
 
-    def latest_backtest(self, user_id: str) -> dict[str, Any] | None:
+    def latest_backtest(self, user_id: str, *, min_version: int = 0) -> dict[str, Any] | None:
+        """The newest finished run this engine still considers valid.
+
+        ``min_version`` exists because a correctness fix does not just change
+        future results, it invalidates stored ones. Serving a saved dataset
+        computed by a materially different engine is worse than serving
+        nothing: it looks current and is wrong.
+        """
         rows = self._rows(
             "SELECT * FROM backtest_runs WHERE user_id = ? AND status = 'done' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (user_id,),
+            "AND result_version >= ? ORDER BY created_at DESC LIMIT 1",
+            (user_id, min_version),
         )
         if not rows:
             return None

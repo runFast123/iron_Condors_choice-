@@ -27,6 +27,7 @@ import pandas as pd
 from engine.backtest import metrics as metrics_mod
 from engine.backtest.metrics import EquityPoint, Metrics
 from engine.backtest.providers import PriceProvider, PriceRequest
+from engine.data.expiry_calendar import MAX_WEEKLY_DTE
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import (
     Condor,
@@ -425,18 +426,37 @@ def _flip(side: Side) -> Side:
 # ------------------------------------------------------------------ helpers
 
 
-def weekly_expiry_resolver(expiries: Sequence[dt.date], min_dte: int = 1) -> ExpiryResolver:
-    """Pick the nearest listed expiry at least ``min_dte`` days out."""
+def weekly_expiry_resolver(
+    expiries: Sequence[dt.date],
+    min_dte: int = 1,
+    *,
+    max_dte: int | None = MAX_WEEKLY_DTE,
+) -> ExpiryResolver:
+    """Pick the nearest expiry at least ``min_dte`` days out.
+
+    ``max_dte`` is a correctness guard, not a preference. The scrip master only
+    lists contracts that still exist, so asking it for an expiry after a date
+    six months ago answers with the nearest *current* one -- and a weekly
+    condor priced as a half-year option produces a credit worth 80% of its wing
+    width, which is impossible. That failure is silent and ruins a whole run,
+    so a resolver that can only offer something absurdly far out says so.
+    """
     ordered = sorted(expiries)
+    if not ordered:
+        raise ValueError("No expiries supplied to the resolver")
 
     def resolve(day: dt.date) -> dt.date:
         cutoff = day + dt.timedelta(days=min_dte)
-        for expiry in ordered:
-            if expiry >= cutoff:
-                return expiry
-        if not ordered:
-            raise ValueError("No expiries supplied to the resolver")
-        return ordered[-1]
+        chosen = next((e for e in ordered if e >= cutoff), ordered[-1])
+        dte = (chosen - day).days
+        if max_dte is not None and dte > max_dte:
+            raise ValueError(
+                f"Nearest available expiry for {day} is {chosen} — {dte} days out, "
+                f"beyond the {max_dte}-day limit for a weekly campaign. The expiry "
+                "calendar is missing the contracts that were actually listed then; "
+                "derive them rather than reading today's scrip master."
+            )
+        return chosen
 
     return resolve
 
