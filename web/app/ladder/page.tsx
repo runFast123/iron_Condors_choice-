@@ -18,6 +18,7 @@ export default function LadderPage() {
           verified={provenance.verified}
           realFraction={metrics.real_price_fraction}
           note={provenance.note}
+          awaiting={provenance.awaiting_connection ?? false}
         />
 
         <StatGrid>

@@ -172,11 +172,15 @@ export function ProvenanceBanner({
   verified,
   realFraction,
   note,
+  awaiting = false,
 }: {
   verified: boolean;
   realFraction: number;
   note: string;
+  awaiting?: boolean;
 }) {
+  if (awaiting) return <AwaitingConnection note={note} />;
+
   const modeled = 1 - realFraction;
   if (modeled <= 0) {
     return (
@@ -217,6 +221,65 @@ export function ProvenanceBanner({
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Shown when Choice has not been connected.
+ *
+ * Choice is the only permitted data source, so with no session there is
+ * genuinely nothing to display. Showing an empty state — and the exact steps
+ * to fix it — is the honest alternative to filling the page with numbers from
+ * a source this project is not allowed to use.
+ */
+export function AwaitingConnection({ note }: { note?: string }) {
+  const steps: [string, ReactNode][] = [
+    ["Generate an API key", <>At finx.choiceindia.com &rarr; Profile &rarr; Settings &rarr; Generate API Key.</>],
+    ["Declare your static IP", <>Choice binds the key to it and rejects every other address. VPNs and proxies always fail this check.</>],
+    ["Fill .env on that machine", <><code className="mono">CHOICE_VENDOR_ID</code>, <code className="mono">CHOICE_API_KEY</code>, <code className="mono">CHOICE_MOBILE_NO</code>.</>],
+    ["Verify the connection", <><code className="mono">python -m engine.tools.doctor</code> — logs in, loads the scrip master, resolves an option and fetches candles.</>],
+    ["Build the dataset", <><code className="mono">python -m engine.tools.seed</code>, then redeploy.</>],
+  ];
+
+  return (
+    <section className="card" style={{ borderColor: "var(--brand)", overflow: "hidden" }}>
+      <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--border)", display: "flex", gap: 11 }}>
+        <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--brand)" strokeWidth="2"
+             strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true">
+          <path d="M12 2a10 10 0 100 20 10 10 0 000-20zM12 8v5m0 3h.01" />
+        </svg>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 14.5, fontWeight: 700 }}>Awaiting Choice FinX connection</h2>
+          <p style={{ margin: "5px 0 0", fontSize: 12.5, color: "var(--ink-muted)", maxWidth: "84ch", lineHeight: 1.6 }}>
+            {note ??
+              "Choice is the only permitted data source for this project, so there is nothing to display until credentials are configured."}
+          </p>
+        </div>
+      </div>
+      <ol style={{ margin: 0, padding: "14px 18px 16px 36px", fontSize: 12.5, lineHeight: 1.85, color: "var(--ink-2)" }}>
+        {steps.map(([title, body]) => (
+          <li key={title} style={{ marginBottom: 4 }}>
+            <strong>{title}.</strong> {body}
+          </li>
+        ))}
+      </ol>
+      <div style={{ padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--surface-3)" }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ink-muted)", marginBottom: 6, letterSpacing: "0.03em" }}>
+          LOGIN FLOW (NON-INTERACTIVE)
+        </div>
+        <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.9, color: "var(--ink-2)" }}>
+          POST api/OpenAPIV1/LoginTOTP<span style={{ color: "var(--ink-muted)" }}> &nbsp;&larr; mobile, base64</span>
+          <br />
+          POST api/OpenAPIV1/GetClientLoginTOTP<span style={{ color: "var(--ink-muted)" }}> &nbsp;&rarr; Choice returns the OTP</span>
+          <br />
+          POST api/OpenAPIV1/ValidateTOTP<span style={{ color: "var(--ink-muted)" }}> &nbsp;&rarr; SessionId</span>
+        </div>
+        <p style={{ margin: "8px 0 0", fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.6 }}>
+          Choice serves the OTP itself, so no authenticator app is involved. The session is
+          day-scoped &mdash; the engine re-authenticates automatically once per trading day.
+        </p>
+      </div>
+    </section>
   );
 }
 

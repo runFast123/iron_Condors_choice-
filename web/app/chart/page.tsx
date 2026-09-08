@@ -1,35 +1,48 @@
 import { getDataset } from "@/lib/data";
 import { num, shortDate } from "@/lib/format";
-import { Badge, Card, PageHeader, Stat, StatGrid } from "@/components/ui";
+import { AwaitingConnection, Badge, Card, PageHeader, Stat, StatGrid } from "@/components/ui";
 import { PriceChart } from "@/components/charts/PriceChart";
 
 export default function ChartPage() {
-  const { equity, triggers, params } = getDataset();
+  const { equity, triggers, params, provenance } = getDataset();
+  const awaiting = provenance.awaiting_connection ?? false;
   const spots = equity.map((p) => p.spot).filter((s): s is number => s != null);
-  const high = Math.max(...spots);
-  const low = Math.min(...spots);
-  const last = spots[spots.length - 1];
-  const anchor = triggers[0]?.level;
+  const hasData = spots.length > 0;
+
+  // Guarded: with no Choice connection these arrays are empty, and spreading
+  // an empty array into Math.max yields -Infinity.
+  const high = hasData ? Math.max(...spots) : null;
+  const low = hasData ? Math.min(...spots) : null;
+  const last = hasData ? spots[spots.length - 1] : null;
+  const lastTs = equity.length ? equity[equity.length - 1].ts : null;
+  const anchor = triggers[0]?.level ?? null;
   const deepest = triggers.length ? Math.min(...triggers.map((t) => t.level)) : null;
+  const dash = (v: number | null) => (v == null ? "--" : num(v));
 
   return (
     <>
       <PageHeader
         title="Price &amp; Trigger Levels"
-        subtitle={`NIFTY with every fired rung drawn as a dashed level. A rung fires the moment price trades at or below its level, and each level fires at most once.`}
+        subtitle="NIFTY with every fired rung drawn as a dashed level. A rung fires the moment price trades at or below its level, and each level fires at most once."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
+        {awaiting && <AwaitingConnection note={provenance.note} />}
+
+        {!awaiting && (
         <StatGrid>
-          <Stat label="Last" value={num(last)} hint={shortDate(equity[equity.length - 1].ts)} />
-          <Stat label="Range high" value={num(high)} />
-          <Stat label="Range low" value={num(low)} />
-          <Stat label="Anchor rung" value={anchor ? num(anchor) : "--"} hint="first condor" />
-          <Stat label="Deepest rung" value={deepest ? num(deepest) : "--"}
-                hint={anchor && deepest ? `${num(anchor - deepest)} pts below anchor` : undefined} />
+          <Stat label="Last" value={dash(last)} hint={lastTs ? shortDate(lastTs) : undefined} />
+          <Stat label="Range high" value={dash(high)} />
+          <Stat label="Range low" value={dash(low)} />
+          <Stat label="Anchor rung" value={dash(anchor)} hint="first condor" />
+          <Stat label="Deepest rung" value={dash(deepest)}
+                hint={anchor != null && deepest != null ? `${num(anchor - deepest)} pts below anchor` : undefined} />
           <Stat label="Rungs fired" value={num(triggers.length)} hint={`${num(params.step)}-pt steps`} />
         </StatGrid>
+        )}
 
+        {!awaiting && (
+        <>
         <Card
           title="NIFTY with ladder levels"
           hint="Drag to pan, scroll to zoom. Dashed lines mark the reference level of each condor; labels on the right axis are rung numbers."
@@ -77,6 +90,8 @@ export default function ChartPage() {
             </table>
           </div>
         </Card>
+        </>
+        )}
       </div>
     </>
   );

@@ -1,8 +1,8 @@
 """Black-76 option pricing and greeks.
 
 Used as the *fallback* premium source when Choice cannot serve historical
-option candles for a leg.  Yahoo carries no Indian option chain at all, so
-there is no third-party premium source to fall back to — only a model.
+option candles for a leg.  Choice is the only permitted data source, so when it
+has no premium for a contract there is no other vendor to ask — only a model.
 
 Black-76 (rather than Black-Scholes on spot) is the right form here because
 NIFTY options are settled against the index and quoted off the forward.

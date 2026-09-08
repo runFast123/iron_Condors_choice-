@@ -1,17 +1,34 @@
-export type PriceSource = "choice" | "yahoo" | "modeled";
+/** Choice is the only external data source. "modeled" is Black-76, not a vendor. */
+export type PriceSource = "choice" | "modeled";
+
+export interface CoverageFailure {
+  token: string;
+  resolution: string;
+  range: string;
+  status: string;
+  error: string;
+}
 
 export interface Provenance {
   spot_source: string;
   vol_source: string;
   premium_source: string;
+  expiry_source?: string;
   verified: boolean;
+  /** True when Choice has not been connected and there is nothing to show. */
+  awaiting_connection?: boolean;
   note: string;
-  expiry_weekday: number;
   resolution: string;
+  option_resolution?: string;
   generated_at: string;
   provider: { real_quotes: number; modeled_quotes: number; total_quotes: number; real_fraction: number };
   bars: number;
   range: [string, string];
+  legs_requested?: number;
+  legs_with_choice_data?: number;
+  coverage?: Record<string, number>;
+  failures?: CoverageFailure[];
+  lot_size?: number;
 }
 
 export interface Params {

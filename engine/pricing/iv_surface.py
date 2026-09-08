@@ -1,11 +1,12 @@
 """Implied-volatility surface for modeled premiums.
 
 When Choice cannot serve historical candles for an option leg there is no
-alternative *market* source — Yahoo carries no Indian option chain — so the
+alternative *market* source — Choice is the only permitted vendor — so the
 premium has to be modeled.  This module supplies the volatility that Black-76
-needs, built from two things we can always get:
+needs, built from two things Choice does provide:
 
-* **India VIX** (``^INDIAVIX`` on Yahoo) for the at-the-money level, and
+* **India VIX** (the ``INDIAVIX`` index, via Choice ChartData) for the
+  at-the-money level, and
 * a **strike skew**, fitted from whatever real Choice chain snapshots exist
   and falling back to a documented default NIFTY smile when none do.
 

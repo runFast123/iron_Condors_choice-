@@ -11,9 +11,9 @@ export function ThemeToggle() {
     const stored = (() => {
       try { return localStorage.getItem("ic-theme") as Theme | null; } catch { return null; }
     })();
-    const initial =
-      stored ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    setTheme(initial);
+    // Light by default: choiceindia.com is a light site, and dark is an
+    // explicit opt-in rather than an OS-preference flip.
+    setTheme(stored ?? "light");
   }, []);
 
   function apply(next: Theme) {

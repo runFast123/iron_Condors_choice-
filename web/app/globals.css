@@ -3,16 +3,18 @@
 /* ---------------------------------------------------------------------------
    Iron Condor Ladder — design tokens
 
-   Brand chrome is taken from choiceindia.com's own stylesheets (surface
-   #0f1621, action #2777f3, accent #ffce02, Onest typeface).
+   Taken from choiceindia.com as it actually renders: a LIGHT, white, airy
+   page — #221f20 ink, #2777f3 brand blue (the colour of the logo flourish),
+   #0d6efd for solid buttons, #667485 for secondary text, and soft pastel
+   section tints. #0f1621 is their *ink*, not a background, which is why light
+   is the default here and dark is an explicit opt-in rather than a
+   system-preference flip.
 
-   The DATA colours are deliberately NOT the raw brand hues. They are the same
-   brand hues re-stepped into the OKLCH lightness band each mode requires, and
-   validated for colour-vision-deficiency separation, chroma, and contrast.
-   Raw #ffce02/#0cbcb7 sit far too light for a dark surface, and the brand
-   green/red pair fails deutan separation outright (ΔE 4.0) — so green and red
-   are reserved here as *status* colours for P&L sign, always accompanied by a
-   sign or label, never used to distinguish one series from another.
+   The DATA colours are the same brand hues re-stepped into the OKLCH
+   lightness band each mode requires, and validated for colour-vision
+   separation, chroma and contrast. Green and red are reserved as *status*
+   colours for P&L sign — the brand pair fails deutan separation (ΔE 4.0), so
+   they never distinguish one series from another.
 --------------------------------------------------------------------------- */
 
 :root {
@@ -20,19 +22,26 @@
 
   /* Surfaces & ink */
   --surface:        #ffffff;
-  --surface-2:      #f7f9fb;
-  --surface-3:      #eef2f6;
-  --border:         #dfe7ec;
+  --surface-2:      #ffffff;
+  --surface-3:      #f3f6fa;
+  --border:         #e4eaf0;
   --border-strong:  #c6d3dd;
-  --ink:            #0f1621;
+  --ink:            #221f20;
   --ink-2:          #3f454d;
   --ink-muted:      #667485;
 
   /* Brand chrome (UI, not data) */
   --brand:          #2777f3;
+  --brand-strong:   #0d6efd;
   --brand-ink:      #ffffff;
-  --brand-soft:     #e1eeff;
+  --brand-soft:     #e8f1ff;
   --accent:         #ffce02;
+
+  /* Soft section tints, straight off choiceindia.com */
+  --tint-blue:      #e1eeff;
+  --tint-teal:      #e3f8fa;
+  --tint-yellow:    #fff9dd;
+  --tint-pink:      #ffe6e2;
 
   /* Status — reserved. Never reused as a series colour. */
   --pos:            #1f7a35;
@@ -40,74 +49,34 @@
   --pos-soft:       #e0efe4;
   --neg-soft:       #fde8ea;
   --warn:           #8a6a00;
+  --warn-soft:      #fff9dd;
 
-  /* Categorical series — validated for light surface #ffffff.
-     Assign in this fixed order; never cycle past c4. */
+  /* Categorical series — validated for light surface #ffffff. */
   --c1: #2979f6;   /* Choice blue    */
   --c2: #a37a00;   /* Choice gold    */
   --c3: #009591;   /* Choice teal    */
   --c4: #9661d1;   /* violet         */
 
-  /* Sequential ramp (ladder rungs are ordered, so magnitude not identity) */
+  /* Sequential ramp (ladder rungs are ordered: magnitude, not identity) */
   --seq-1: #e1eeff;
   --seq-2: #a8ccfb;
   --seq-3: #6ba6f8;
   --seq-4: #2979f6;
   --seq-5: #1b52ab;
 
-  --grid:           #e7edf2;
-  --axis:           #b9c5d0;
+  --grid:           #eef2f6;
+  --axis:           #c2ccd6;
 
-  --radius:         10px;
+  --shadow:         0 1px 2px rgba(15,22,33,.05), 0 8px 24px rgba(15,22,33,.05);
+  --radius:         12px;
   --font-sans: "Onest", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
-}
-
-/* System-preference dark, only when the user has not explicitly chosen light. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --surface:       #0f1621;
-    --surface-2:     #151d2b;
-    --surface-3:     #1c2637;
-    --border:        #253044;
-    --border-strong: #35435c;
-    --ink:           #eef2f7;
-    --ink-2:         #b9c5d4;
-    --ink-muted:     #7d8da0;
-
-    --brand:         #4d94ff;
-    --brand-ink:     #06101d;
-    --brand-soft:    #16294a;
-    --accent:        #ffce02;
-
-    --pos:           #45b644;
-    --neg:           #ef404a;
-    --pos-soft:      #14301a;
-    --neg-soft:      #35161a;
-    --warn:          #ffce02;
-
-    /* Re-stepped for dark surface #0f1621 — all six checks pass. */
-    --c1: #2e7ffe;
-    --c2: #a98000;
-    --c3: #009c97;
-    --c4: #9c67d9;
-
-    --seq-1: #16294a;
-    --seq-2: #1e4a8f;
-    --seq-3: #2465c9;
-    --seq-4: #2e7ffe;
-    --seq-5: #7fb2ff;
-
-    --grid:          #1d2839;
-    --axis:          #38465e;
-  }
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
   --surface:       #0f1621;
-  --surface-2:     #151d2b;
+  --surface-2:     #141c29;
   --surface-3:     #1c2637;
   --border:        #253044;
   --border-strong: #35435c;
@@ -116,9 +85,16 @@
   --ink-muted:     #7d8da0;
 
   --brand:         #4d94ff;
+  --brand-strong:  #4d94ff;
   --brand-ink:     #06101d;
   --brand-soft:    #16294a;
   --accent:        #ffce02;
+  --tint-blue:     #16294a;
+  --tint-teal:     #0d2b2c;
+  --tint-yellow:   #2b2410;
+  --tint-pink:     #2e1a1a;
+  --warn-soft:     #2b2410;
+  --shadow:        0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.25);
 
   --pos:           #45b644;
   --neg:           #ef404a;
@@ -168,6 +144,7 @@ a { color: inherit; text-decoration: none; }
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 table { border-collapse: collapse; width: 100%; }
@@ -232,6 +209,17 @@ tbody tr:hover { background: var(--surface-3); }
   gap: 2px;
 }
 
+.nav-section { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+
+.nav-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  padding: 6px 10px 3px;
+}
+
 .nav-link {
   display: flex;
   align-items: center;
@@ -278,6 +266,22 @@ tbody tr:hover { background: var(--surface-3); }
     scrollbar-width: thin;
   }
   .nav-link { padding: 6px 11px; font-size: 12.5px; }
+
+  .nav-section {
+    flex-direction: row;
+    gap: 4px;
+    margin-bottom: 0;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .nav-title {
+    padding: 0 6px 0 4px;
+    font-size: 9px;
+    border-left: 1px solid var(--border);
+    padding-left: 10px;
+    white-space: nowrap;
+  }
+  .nav-section:first-child .nav-title { border-left: none; padding-left: 4px; }
 
   .sidebar-foot {
     margin-top: 0;

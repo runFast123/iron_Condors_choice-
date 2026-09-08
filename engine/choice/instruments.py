@@ -365,6 +365,47 @@ class ScripMaster:
         out = [c for c in self.contracts if needle in c.symbol.upper() or needle in c.description.upper()]
         return out[:limit]
 
+    def index(self, name: str) -> Contract:
+        """Resolve a cash index (NIFTY, INDIAVIX, BANKNIFTY) to its contract.
+
+        Indices are the underlying series the ladder runs on, and with Choice
+        as the only permitted data source they must come from the scrip master
+        rather than a third-party ticker. Matching is deliberately layered:
+        an exact symbol hit first, then an exact description hit, then a
+        substring scan -- because index naming is inconsistent across feeds
+        ("NIFTY", "NIFTY 50", "Nifty50", "INDIAVIX", "INDIA VIX").
+        """
+        wanted = name.upper().replace(" ", "")
+        non_options = [c for c in self.contracts if not c.is_option]
+
+        def norm(text: str) -> str:
+            return re.sub(r"[^A-Z0-9]", "", str(text).upper())
+
+        exact = [c for c in non_options if norm(c.symbol) == wanted]
+        if exact:
+            return exact[0]
+
+        by_desc = [c for c in non_options if norm(c.description) == wanted]
+        if by_desc:
+            return by_desc[0]
+
+        # "NIFTY" must not match "NIFTYNXT50" or a futures line, so prefer the
+        # shortest symbol that contains the name.
+        loose = [c for c in non_options if wanted in norm(c.symbol) or wanted in norm(c.description)]
+        if loose:
+            return min(loose, key=lambda c: len(norm(c.symbol)))
+
+        raise ChoiceInstrumentError(
+            f"No index named {name!r} in the scrip master. "
+            f"Try one of: {sorted({c.symbol for c in non_options})[:12]}"
+        )
+
+    def find_index(self, name: str) -> Contract | None:
+        try:
+            return self.index(name)
+        except ChoiceInstrumentError:
+            return None
+
     def infer_nfo_segment(self, underlying: str = "NIFTY") -> int:
         """Determine the NSE F&O segment id from the data, not the docs.
 

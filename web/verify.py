@@ -28,16 +28,29 @@ from playwright.sync_api import sync_playwright
 WEB = Path(__file__).resolve().parent
 OUT = WEB / "out"
 
-# page path -> substrings that must appear in the rendered text.
+# Text that must appear regardless of whether Choice is connected.
 PAGES: dict[str, list[str]] = {
-    "/": ["Overview", "Net P&L", "Win rate", "Ladder rungs", "MODELED"],
-    "/ladder/": ["Strike Ladder Matrix", "Offset ratio", "Net", "Why the offsetting happens"],
-    "/payoff/": ["Payoff at Expiry", "Combined expiry payoff", "Per-rung structure"],
-    "/chart/": ["Price & Trigger Levels", "Trigger log", "NIFTY with ladder levels"],
-    "/trades/": ["Trades", "Leg blotter", "Strike"],
-    "/data/": ["Data Health", "Sources", "Option premiums", "Connecting Choice FinX"],
+    "/": ["Overview", "iron condor"],
+    "/ladder/": ["Strike Ladder Matrix", "Why the offsetting happens"],
+    "/payoff/": ["Payoff at Expiry"],
+    "/chart/": ["Price & Trigger Levels"],
+    "/trades/": ["Trades"],
+    "/data/": ["Data Health", "Sources", "Option premiums"],
     "/about/": ["The Strategy", "Why the legs cancel", "Where the risk is"],
+    "/forward/": ["Forward Test", "Safety", "Paper by default"],
+    "/forward/log/": ["Activity Log", "Trade history", "Run log"],
 }
+
+# Additional text required only once Choice data is present.
+WHEN_CONNECTED: dict[str, list[str]] = {
+    "/": ["Net P&L", "Win rate", "Ladder rungs"],
+    "/chart/": ["Trigger log", "NIFTY with ladder levels"],
+    "/payoff/": ["Combined expiry payoff", "Per-rung structure"],
+}
+
+# Text that must appear while Choice is NOT connected, so the empty state can
+# never silently become a blank page.
+WHEN_AWAITING = ["Awaiting Choice FinX connection", "engine.tools.doctor"]
 
 # Console noise that is not a defect.
 IGNORE_CONSOLE = (
@@ -74,6 +87,11 @@ def serve(directory: Path, port: int = 8899) -> socketserver.TCPServer:
     return httpd
 
 
+def awaiting_state(page) -> bool:
+    """True when the page is showing the 'no Choice connection' placeholder."""
+    return "Awaiting Choice FinX connection" in page.inner_text("body")
+
+
 def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
     results: list[PageResult] = []
     shots.mkdir(parents=True, exist_ok=True)
@@ -87,6 +105,11 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
                 device_scale_factor=1,
             )
             page = context.new_page()
+            # The site defaults to light regardless of OS preference, so dark
+            # must be selected the way a user would.
+            page.add_init_script(
+                f"try{{localStorage.setItem('ic-theme','{theme}')}}catch(e){{}}"
+            )
 
             for path, expected in PAGES.items():
                 result = PageResult(path=f"{path} [{theme}]")
@@ -120,7 +143,15 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
                 text = page.inner_text("body")
                 result.text_len = len(text)
                 normalised = re.sub(r"\s+", " ", text)
-                result.missing = [e for e in expected if e not in normalised]
+                awaiting = "Awaiting Choice FinX connection" in normalised
+                required = list(expected)
+                if awaiting:
+                    if path not in ("/about/",):
+                        required += WHEN_AWAITING
+                else:
+                    required += WHEN_CONNECTED.get(path, [])
+                result.missing = [e for e in required if e not in normalised]
+                result.notes.append("awaiting" if awaiting else "connected")
 
                 result.console_errors = console[:]
                 result.failed_requests = failed[:]
@@ -143,10 +174,10 @@ def check(base: str, shots: Path, headed: bool = False) -> list[PageResult]:
                     "() => Array.from(document.querySelectorAll('svg path')).filter(p => (p.getAttribute('d')||'').length > 40).length"
                 )
                 canvases = page.evaluate("() => document.querySelectorAll('canvas').length")
-                if path in ("/", "/payoff/") and svg_paths == 0:
+                if path in ("/", "/payoff/") and not awaiting_state(page) and svg_paths == 0:
                     result.ok = False
                     result.notes.append("expected a chart path, found none")
-                if path == "/chart/" and canvases == 0:
+                if path == "/chart/" and not awaiting_state(page) and canvases == 0:
                     result.ok = False
                     result.notes.append("lightweight-charts canvas did not render")
                 result.notes.append(f"svgPaths={svg_paths} canvases={canvases}")

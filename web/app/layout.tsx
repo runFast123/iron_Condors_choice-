@@ -63,14 +63,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   );
 }
 
-/** Condor-wing mark in the Choice blue/gold pairing. */
+/**
+ * Choice "C" monogram with the wordmark's underline flourish, in their own
+ * logo colours (#0f1621 ink, #2777f3 blue).
+ */
 function Mark() {
   return (
-    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true" style={{ flexShrink: 0 }}>
-      <rect width="26" height="26" rx="7" fill="var(--brand)" />
-      <path d="M4 16.5 L9 9.5 L13 14 L17 9.5 L22 16.5" fill="none" stroke="var(--brand-ink)"
-            strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" opacity="0.95" />
-      <circle cx="13" cy="14" r="1.9" fill="var(--accent)" />
+    <svg width="30" height="30" viewBox="0 0 64 64" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <rect width="64" height="64" rx="14" fill="#0f1621" />
+      <path d="M44 22.5a15 15 0 1 0 0 19" fill="none" stroke="#ffffff" strokeWidth="7" strokeLinecap="round" />
+      <path d="M17 51.5c7-3.6 23-3.6 30 0" fill="none" stroke="#2777f3" strokeWidth="4.5" strokeLinecap="round" />
     </svg>
   );
 }

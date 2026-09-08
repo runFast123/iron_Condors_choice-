@@ -2,6 +2,9 @@
 
 Backtest and forward-test a laddered NIFTY iron-condor strategy on Choice FinX data.
 
+**Choice FinX is the only data source** — historical and live. There is no third-party market-data
+vendor anywhere in this project.
+
 **Live dashboard:** _(see "Deploy" below)_
 
 ---
@@ -57,8 +60,7 @@ so **no Choice call can originate from Vercel**. Hence the split:
                 ▲
                 │ reads a JSON bundle built by the engine
                 │
-[Your static IP]  Python engine ──HTTPS/WSS──▶  [Choice FinX API]
-                                └─────────────▶  [Yahoo: ^NSEI, ^INDIAVIX]
+[Your static IP]  Python engine ──HTTPS/WSS──▶  [Choice FinX API]   ← the only source
 ```
 
 The dashboard is a pure static site. Nothing it serves can leak a credential, and it stays browsable
@@ -70,7 +72,7 @@ engine/
   pricing/      Black-76, IV surface, Indian F&O cost model
   strategy/     ladder trigger, condor construction, netting
   backtest/     two-pass runner, price providers, metrics
-  data/         Yahoo fallback (underlying only)
+  data/         market data — Choice only (spot, India VIX, options, live quotes)
   tools/        doctor (connectivity diagnostic), seed (dataset builder)
 web/            Next.js 15 dashboard
 ```
@@ -118,25 +120,42 @@ than forking it, and fixes the following in `engine/choice/`:
 
 ---
 
-## Data honesty
+## Data sources — Choice only
+
+| Series | Choice source |
+|---|---|
+| NIFTY spot | index token from the scrip master → `api/OpenGraph/ChartData` |
+| India VIX | `INDIAVIX` index token → `api/OpenGraph/ChartData` |
+| Option premiums | per-leg option tokens → `api/OpenGraph/ChartData` |
+| Expiries, strikes, lot size | the daily scrip master CSV |
+| Live quotes | `api/OpenAPI/MultipleTouchline` + the FIX3.0 streaming feed |
 
 Every price carries a source tag, surfaced as a badge throughout the UI:
 
-| Source | Meaning |
+| Tag | Meaning |
 |---|---|
-| `CHOICE` | A real broker candle. |
-| `MODELED` | Black-76 from India VIX plus a strike skew. |
+| `CHOICE` | A real Choice candle or quote. |
+| `MODELED` | Black-76, using volatility derived from Choice's own India VIX series. |
 
-**Yahoo Finance carries no Indian option chain.** It supplies `^NSEI` and `^INDIAVIX` and nothing
-else; `engine/data/yahoo.py` raises `YahooOptionDataUnavailable` on any attempt to source a premium
-from it. Where Choice has no option history, premiums are *modeled*, and the dashboard says so
-prominently rather than presenting them as market data.
+`MODELED` is not a second data vendor — it is a pricing model applied when Choice serves no candles
+for a specific contract. Those legs are badged everywhere and excluded from the verified statistics.
 
-The seeded dataset shipped in this repo is **100% modeled** — real NIFTY spot and real India VIX,
-but no broker premiums. It exists so the deployed site is inspectable before credentials are wired
-up. Run the doctor and re-seed to replace it.
+### Authentication
 
----
+Access requires a session. The flow is non-interactive because Choice serves the OTP itself:
+
+```
+POST api/OpenAPIV1/LoginTOTP           ← mobile number, base64-encoded
+POST api/OpenAPIV1/GetClientLoginTOTP  → Choice returns the OTP
+POST api/OpenAPIV1/ValidateTOTP        → SessionId
+```
+
+Every subsequent request then carries three headers: `VendorId`, `Bearer` (the API key), and
+`Authorization: SessionId <id>`. Sessions are **day-scoped**, so the engine re-authenticates
+automatically once per trading day. All of it must originate from the declared static IP.
+
+Until credentials are configured the dashboard renders an explicit *"Awaiting Choice FinX
+connection"* state rather than numbers from a source this project does not permit.
 
 ## Getting started
 
@@ -158,11 +177,27 @@ It logs in, loads the scrip master, resolves a real NIFTY option, calibrates the
 fetches candles for both the index and one option leg. On failure it prints **Choice's own error
 message**, which is the whole point.
 
-Rebuild the dashboard dataset:
+Rebuild the dashboard dataset from Choice:
 
 ```bash
-python -m engine.tools.seed --days 400 --out web/data/seed.json
+python -m engine.tools.seed --days 120 --resolution D
 ```
+
+Without credentials this writes the "awaiting connection" placeholder instead of calling the API.
+
+### Forward testing (live Choice data)
+
+```bash
+python -m engine.tools.live                    # paper mode, polls every 15s
+python -m engine.tools.live --ticks 4          # a few cycles, then stop
+python -m engine.tools.live --mode live --arm  # REAL ORDERS
+```
+
+Writes `web/data/live.json` on every tick, which the dashboard's **Forward Test** section reads
+(Live Monitor, plus Log & History). It drives the same `Ladder` and `build_legs` as the backtester,
+so the two cannot diverge. Safety: paper by default; live needs `--arm`; a rung with any unquotable
+leg is skipped rather than half-opened; protective wings are sent before shorts; limit orders only
+(Choice has no market order); and a daily-loss breach disarms the runner.
 
 ### Dashboard
 
@@ -210,11 +245,14 @@ as a build-time bundle and never calls Choice.
 
 Implemented and tested: the hardened Choice adapter, option resolver, ladder engine, condor
 construction and netting, Black-76 pricing with greeks, the Indian cost model, the two-pass
-backtester, the Yahoo fallback, and the full dashboard.
+backtester, the Choice-only market-data layer, the forward-test runner, and the full dashboard.
 
 Not yet built: live forward-testing (order placement and the websocket feed have adapters but no
 runner), and Postgres persistence — the dashboard currently reads a JSON bundle. Neither can be
 meaningfully exercised without credentials on a static IP.
+
+The shipped dataset is the empty "awaiting connection" placeholder, because Choice is the only
+permitted source and no credentials are configured yet.
 
 **This is research software, not trading advice.** The seeded results are modeled, and modeled
 option premiums are not what you would have been filled at.

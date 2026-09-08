@@ -6,6 +6,7 @@ import Link from "next/link";
 
 export default function Overview() {
   const { metrics: m, equity, netting, condors, params, provenance } = getDataset();
+  const awaiting = provenance.awaiting_connection ?? false;
   const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
 
   return (
@@ -33,8 +34,10 @@ export default function Overview() {
           verified={provenance.verified}
           realFraction={m.real_price_fraction}
           note={provenance.note}
+          awaiting={provenance.awaiting_connection ?? false}
         />
 
+        {!awaiting && (
         <StatGrid>
           <Stat
             label="Net P&L"
@@ -60,7 +63,10 @@ export default function Overview() {
           <Stat label="Peak capital at risk" value={inr(m.capital_at_risk)}
                 delta={`${m.max_concurrent} rungs open at once`} />
         </StatGrid>
+        )}
 
+        {!awaiting && (
+        <>
         <Card
           title="Cumulative P&L"
           hint="Mark-to-market equity across the campaign, with the drawdown envelope beneath. Hover for any bar."
@@ -150,6 +156,8 @@ export default function Overview() {
             </table>
           </div>
         </Card>
+        </>
+        )}
       </div>
     </>
   );

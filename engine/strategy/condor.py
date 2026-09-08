@@ -38,9 +38,10 @@ class CondorStatus(str, Enum):
 
 
 class PriceSource(str, Enum):
-    CHOICE = "choice"
-    YAHOO = "yahoo"
-    MODELED = "modeled"
+    """Where a price came from. Choice is the only external data source."""
+
+    CHOICE = "choice"       # a real Choice FinX candle or quote
+    MODELED = "modeled"     # Black-76, from Choice-sourced India VIX
 
 
 @dataclass(frozen=True)
