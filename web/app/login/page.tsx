@@ -1,11 +1,27 @@
 import { LoginForm } from "@/components/LoginForm";
-import { engineConfigured } from "@/lib/engine";
+import { engine, engineConfigured } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Sign in | Condor Ladder" };
 
-export default function LoginPage() {
+export default async function LoginPage() {
+  const ready = engineConfigured();
+
+  // Resolved server-side so the address is on the page before the first
+  // sign-in attempt, rather than only appearing after a rejection.
+  let engineIp: string | null = null;
+  let engineReachable = false;
+  if (ready) {
+    try {
+      const info = await engine.clientIp();
+      engineIp = info.engine_egress_ip;
+      engineReachable = true;
+    } catch {
+      engineReachable = false;
+    }
+  }
+
   return (
     <div className="auth-shell">
       <div className="auth-card">
@@ -28,7 +44,7 @@ export default function LoginPage() {
           disk.
         </p>
 
-        <LoginForm engineReady={engineConfigured()} />
+        <LoginForm engineReady={ready} engineReachable={engineReachable} engineIp={engineIp} />
 
         <div className="auth-note">
           <div className="auth-note-title">How this works</div>
@@ -42,10 +58,10 @@ export default function LoginPage() {
               laptop&apos;s. Choice rejects requests from any other address, and VPNs always fail.
             </li>
             <li>
-              Sign in here. We call{" "}
-              <code className="mono">LoginTOTP</code> &rarr; <code className="mono">GetClientLoginTOTP</code>{" "}
-              &rarr; <code className="mono">ValidateTOTP</code>; Choice returns the OTP itself, so
-              there is no authenticator app.
+              Sign in here. We call <code className="mono">LoginTOTP</code> &rarr;{" "}
+              <code className="mono">GetClientLoginTOTP</code> &rarr;{" "}
+              <code className="mono">ValidateTOTP</code>; Choice returns the OTP itself, so there is
+              no authenticator app.
             </li>
           </ol>
           <p className="auth-fine">

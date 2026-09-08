@@ -1,14 +1,39 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
-export function LoginForm({ engineReady }: { engineReady: boolean }) {
-  const router = useRouter();
+/** Does this failure mean "the address is wrong" rather than "the key is wrong"? */
+function isIpFailure(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes("undeclared ip") || m.includes("static ip") || m.includes("ip address");
+}
+
+export function LoginForm({
+  engineReady,
+  engineReachable,
+  engineIp,
+}: {
+  engineReady: boolean;
+  engineReachable: boolean;
+  engineIp: string | null;
+}) {
   const params = useSearchParams();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function copyIp() {
+    if (!engineIp) return;
+    try {
+      await navigator.clipboard.writeText(engineIp);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* clipboard blocked; the address is on screen to copy by hand */
+    }
+  }
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,6 +66,8 @@ export function LoginForm({ engineReady }: { engineReady: boolean }) {
     }
   }
 
+  const ipRejected = error !== null && isIpFailure(error);
+
   return (
     <form onSubmit={onSubmit} className="auth-form" autoComplete="off">
       {!engineReady && (
@@ -51,9 +78,39 @@ export function LoginForm({ engineReady }: { engineReady: boolean }) {
         </div>
       )}
 
+      {engineReady && !engineReachable && (
+        <div className="auth-alert auth-alert-error" role="status">
+          <strong>Engine unreachable.</strong> The address in{" "}
+          <code className="mono">ENGINE_URL</code> did not respond. Start it with{" "}
+          <code className="mono">uvicorn engine.api:app</code> on your static-IP machine.
+        </div>
+      )}
+
       {error && (
         <div className="auth-alert auth-alert-error" role="alert">
           {error}
+        </div>
+      )}
+
+      {/* The address Choice actually enforces on. Shown up front, because a
+          rejected IP is the most common reason valid credentials fail. */}
+      {engineIp && (
+        <div className={`ip-panel${ipRejected ? " ip-panel-alert" : ""}`}>
+          <div className="ip-panel-label">
+            {ipRejected
+              ? "Register THIS address with Choice"
+              : "Declare this IP against your API key"}
+          </div>
+          <div className="ip-panel-row">
+            <code className="ip-value mono">{engineIp}</code>
+            <button type="button" className="ip-copy" onClick={copyIp}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <div className="ip-panel-hint">
+            This is the engine&apos;s outbound address — the one Choice sees. Your own browser IP is
+            irrelevant, and a VPN on this machine will break it.
+          </div>
         </div>
       )}
 

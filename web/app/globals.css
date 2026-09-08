@@ -444,3 +444,61 @@ tbody tr:hover { background: var(--surface-3); }
 @media (max-width: 900px) {
   .user-chip { margin-bottom: 0; }
 }
+
+
+/* The IP Choice enforces on — surfaced before the first attempt, and
+   escalated when a sign-in is rejected for coming from the wrong address. */
+.ip-panel {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface-3);
+}
+.ip-panel-alert {
+  border-color: var(--neg);
+  background: var(--neg-soft);
+}
+
+.ip-panel-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 6px;
+}
+.ip-panel-alert .ip-panel-label { color: var(--neg); }
+
+.ip-panel-row { display: flex; align-items: center; gap: 8px; }
+
+.ip-value {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0.01em;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.ip-copy {
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--brand);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ip-copy:hover { background: var(--brand-soft); border-color: var(--brand); }
+
+.ip-panel-hint {
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+}

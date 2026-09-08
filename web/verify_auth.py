@@ -47,11 +47,31 @@ def main() -> int:
         browser = p.chromium.launch(channel="chrome", headless=not args.headed)
 
         # --------------------------------------------------------- gate
-        ctx = browser.new_context()
+        ctx = browser.new_context(permissions=["clipboard-read", "clipboard-write"])
         page = ctx.new_page()
         page.goto(f"{base}/ladder", wait_until="networkidle")
         record("gate: protected route redirects to /login", "/login" in page.url, page.url)
         record("gate: original destination preserved", "next=%2Fladder" in page.url or "next=/ladder" in page.url, page.url)
+
+        # ------------------------------------------------------- engine IP
+        # Only meaningful when the engine reports one (ENGINE_PUBLIC_IP set).
+        page.goto(f"{base}/login", wait_until="networkidle")
+        page.wait_for_timeout(400)
+        has_panel = page.locator(".ip-panel").count() == 1
+        if has_panel:
+            shown = page.locator(".ip-value").inner_text().strip()
+            record("ip: address shown before any attempt", bool(shown), shown)
+            record("ip: panel starts calm", page.locator(".ip-panel.ip-panel-alert").count() == 0, "not alert")
+            page.click(".ip-copy")
+            page.wait_for_timeout(400)
+            try:
+                copied = page.evaluate("() => navigator.clipboard.readText()")
+                record("ip: copy button copies the address", copied.strip() == shown, copied)
+            except Exception:
+                # Clipboard read blocked by browser policy; fall back to the
+                # button's own confirmation, which is what a user actually sees.
+                label = page.locator(".ip-copy").inner_text().strip()
+                record("ip: copy button confirms", label.lower() == "copied", label)
 
         # -------------------------------------------------- bad credentials
         sign_in(page, base, ALICE, BAD)
@@ -68,6 +88,18 @@ def main() -> int:
         ip_err = page.inner_text(".auth-alert-error")
         record("reject: static-IP failure is explained, not generic",
                "IP" in ip_err, ip_err[:80].replace("\n", " "))
+
+        if has_panel:
+            record("ip: rejection escalates the IP panel",
+                   page.locator(".ip-panel.ip-panel-alert").count() == 1, "alert state")
+
+        # A wrong key must not blame the address: different problem, different fix.
+        sign_in(page, base, ALICE, BAD)
+        page.wait_for_selector(".auth-alert-error", timeout=15_000)
+        page.wait_for_timeout(300)
+        if has_panel:
+            record("ip: a bad key does NOT blame the IP",
+                   page.locator(".ip-panel.ip-panel-alert").count() == 0, "stays calm")
 
         # ------------------------------------------------------- happy path
         sign_in(page, base, ALICE, GOOD)

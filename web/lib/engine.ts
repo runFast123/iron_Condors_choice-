@@ -76,8 +76,31 @@ export interface EngineUser {
   forward_running: boolean;
 }
 
+export interface ClientIp {
+  engine_egress_ip: string | null;
+  source: string;
+  note: string | null;
+  declare_this_with_choice: string | null;
+  hint: string;
+}
+
+export interface EngineStatus {
+  engine_reachable: boolean;
+  market_open: boolean;
+  has_token: boolean;
+  has_session: boolean;
+  session_expired: boolean;
+  logged_in: boolean;
+  engine_egress_ip: string | null;
+  active_sessions: number;
+}
+
 export const engine = {
   health: () => call<{ ok: boolean; market_open: boolean; sessions: number }>("/health"),
+
+  clientIp: () => call<ClientIp>("/client_ip"),
+
+  status: (token?: string | null) => call<EngineStatus>("/status", { token }),
 
   login: (vendor_id: string, api_key: string, mobile: string) =>
     call<{ token: string; user: EngineUser }>("/auth/login", {
