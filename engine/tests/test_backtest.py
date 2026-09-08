@@ -338,3 +338,60 @@ def test_a_single_expiry_run_reports_one_campaign():
     result = run([24_000] * 40)
     assert result.rolls == []
     assert result.campaigns == 1
+
+
+# ================================= P&L identities found by the verification run
+
+
+def test_a_condor_settles_on_its_expiry_day_even_with_no_late_bar():
+    """Daily candles are stamped at the session open, so "past 15:30 on expiry
+    day" never fires and every condor used to settle the *next* day against the
+    *next* day's spot -- the wrong settlement price for every trade in the run.
+    """
+    day_before = dt.datetime.combine(EXPIRY - dt.timedelta(days=1), dt.time(9, 15), tzinfo=IST)
+    bars = [
+        (day_before, 24_000.0),
+        (dt.datetime.combine(EXPIRY, dt.time(9, 15), tzinfo=IST), 23_950.0),
+        (dt.datetime.combine(EXPIRY + dt.timedelta(days=1), dt.time(9, 15), tzinfo=IST), 22_000.0),
+    ]
+    params = BacktestParams(strategy=cfg(), costs=ZERO_COST)
+    result = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY])).run(bars)
+
+    settled = [c for c in result.condors if c.expiry == EXPIRY and not c.is_open]
+    assert settled, "nothing settled"
+    for condor in settled:
+        assert condor.exit_time is not None
+        assert condor.exit_time.date() <= EXPIRY, "settled after its own expiry"
+
+
+def test_the_equity_curve_ends_where_the_reported_pnl_does():
+    """Condors still open at the end settle after the final equity point was
+    recorded, so the curve used to stop short of net P&L -- and drawdown,
+    Sharpe and CAGR were all computed from that truncated curve.
+    """
+    result = run([24_000, 23_900, 23_800])          # range ends before expiry
+    assert result.equity
+    assert result.equity[-1].equity == pytest.approx(result.metrics.net_pnl, abs=0.01)
+    assert result.equity[-1].open_condors == 0
+
+
+def test_max_loss_is_never_smaller_than_the_worst_payoff():
+    """A risk figure that understates risk is the wrong way round.
+
+    `payoff_at_expiry` subtracts exit costs; `max_loss` did not, so a condor
+    could report losing more than its stated maximum.
+    """
+    result = run([24_000, 23_900], params=BacktestParams(strategy=cfg(), costs=CostModel()))
+    assert result.condors
+    for condor in result.condors:
+        for probe in (condor.level - 3_000, condor.level - 400, condor.level + 3_000):
+            assert condor.payoff_at_expiry(probe) >= -condor.max_loss - 0.01
+
+
+def test_payoff_never_exceeds_the_stated_max_profit():
+    result = run([24_000, 23_900], params=BacktestParams(strategy=cfg(), costs=CostModel()))
+    for condor in result.condors:
+        probe = condor.level - 3_000
+        while probe <= condor.level + 3_000:
+            assert condor.payoff_at_expiry(probe) <= condor.max_profit + 0.01
+            probe += 50.0

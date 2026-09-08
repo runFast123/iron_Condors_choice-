@@ -194,8 +194,15 @@ class Condor:
 
         Only one wing can finish in the money, so the exposure is one wing's
         width rather than both.
+
+        Exit costs are included once they are known, because otherwise the
+        stated worst case is smaller than the worst case ``payoff_at_expiry``
+        actually reports -- a risk figure that understates risk, however
+        slightly, is the wrong way round.
         """
-        return self.config.wing_width * self.config.qty - self.net_credit
+        return (
+            self.config.wing_width * self.config.qty - self.net_credit + self.exit_costs
+        )
 
     @property
     def breakevens(self) -> tuple[float, float]:

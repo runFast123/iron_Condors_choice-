@@ -150,7 +150,14 @@ def discover_requirements(
     campaign_expiry: dt.date | None = None
 
     for when, spot in spots:
-        expiry = expiry_for(when.date())
+        try:
+            expiry = expiry_for(when.date())
+        except ValueError:
+            # Past the end of the calendar: nothing can be opened here, so
+            # there are no legs to plan for. Pass 2 makes the same decision and
+            # records the warning; the two passes must agree or the wrong legs
+            # get fetched.
+            continue
         # Mirror the roll in pass 2, or this pass discovers the wrong legs.
         if campaign_expiry is None:
             campaign_expiry = expiry
@@ -247,8 +254,28 @@ class Backtest:
 
         campaign_expiry: dt.date | None = None
 
+        # The final bar of each session, so an expiry always settles on its own
+        # day even when the series never reaches the settlement time.
+        last_bar_of_day: dict[dt.date, dt.datetime] = {}
+        for when, _ in spots:
+            last_bar_of_day[when.date()] = when
+
+        expiry_exhausted = False
+
         for when, spot in spots:
-            expiry = self.expiry_for(when.date())
+            try:
+                expiry = self.expiry_for(when.date())
+            except ValueError as exc:
+                # Past the end of the expiry calendar. Opening is impossible,
+                # but the condors already on the book still have to be marked
+                # and settled, so this skips entries rather than aborting.
+                if not expiry_exhausted:
+                    result.warnings.append(
+                        f"No expiry available from {when.date()} ({exc}). No further condors "
+                        "were opened; those already open were still managed to settlement."
+                    )
+                    expiry_exhausted = True
+                expiry = None
 
             # 0. Roll into the next expiry.
             #
@@ -264,16 +291,17 @@ class Backtest:
             # after its rungs settle it sits waiting for a level far below the
             # market and simply stops trading, which is an artefact of ignoring
             # expiry rather than anything the strategy asks for.
-            if campaign_expiry is None:
-                campaign_expiry = expiry
-            elif expiry != campaign_expiry:
-                if params.roll_to_next_expiry:
-                    ladder.reset()
-                    result.rolls.append((when, campaign_expiry, expiry))
-                campaign_expiry = expiry
+            if expiry is not None:
+                if campaign_expiry is None:
+                    campaign_expiry = expiry
+                elif expiry != campaign_expiry:
+                    if params.roll_to_next_expiry:
+                        ladder.reset()
+                        result.rolls.append((when, campaign_expiry, expiry))
+                    campaign_expiry = expiry
 
             # 1. Open new rungs.
-            for trigger in ladder.on_price(spot, when):
+            for trigger in (ladder.on_price(spot, when) if expiry is not None else ()):
                 legs = build_legs(trigger.level, params.strategy)
                 priced = self._price_legs(legs, expiry, when, spot)
                 if priced is None:
@@ -304,7 +332,7 @@ class Backtest:
             for condor in condors:
                 if not condor.is_open:
                     continue
-                if self._is_settlement(condor, when):
+                if self._is_settlement(condor, when, last_bar_of_day):
                     self._settle(condor, when, spot, params)
                     realised.append(condor.realised_pnl())
                     cumulative_realised += condor.realised_pnl()
@@ -349,12 +377,24 @@ class Backtest:
 
         # Anything still open at the end of the range settles at the last spot.
         last_when, last_spot = spots[-1]
+        settled_at_end = 0
         for condor in condors:
             if condor.is_open:
                 self._settle(condor, last_when, last_spot, params, reason="end of backtest range")
                 realised.append(condor.realised_pnl())
                 cumulative_realised += condor.realised_pnl()
                 holding_days.append((last_when - condor.entry_time).total_seconds() / 86_400)
+                settled_at_end += 1
+
+        if settled_at_end and equity:
+            # Those settlements happen after the final bar's equity point was
+            # recorded, so the curve used to end below the reported net P&L --
+            # and drawdown, Sharpe and CAGR were all computed from that
+            # truncated curve. The last bar is the settlement bar, so correct
+            # it in place rather than adding a point the series never had.
+            final = equity[-1]
+            final.equity = cumulative_realised
+            final.open_condors = 0
 
         draws = metrics_mod.drawdown_series([p.equity for p in equity])
         for point, draw in zip(equity, draws):
@@ -393,12 +433,25 @@ class Backtest:
 
     # -- settlement --------------------------------------------------------
 
-    def _is_settlement(self, condor: Condor, when: dt.datetime) -> bool:
+    def _is_settlement(
+        self, condor: Condor, when: dt.datetime, last_bar_of_day: dict[dt.date, dt.datetime]
+    ) -> bool:
+        """Whether this bar settles the condor.
+
+        The obvious rule -- "past settlement_time on expiry day" -- silently
+        fails whenever the series has no bar that late. Daily candles are
+        stamped at the session open, so at 15:30 the condition never fires and
+        every condor settles on the *following* day against the following
+        day's spot. So the last bar of the expiry day settles it regardless.
+        """
         if when.date() < condor.expiry:
             return False
         if when.date() > condor.expiry:
             return True
-        return when.time() >= self.params.settlement_time
+        return (
+            when.time() >= self.params.settlement_time
+            or last_bar_of_day.get(when.date()) == when
+        )
 
     @staticmethod
     def _settle(
@@ -447,7 +500,14 @@ def weekly_expiry_resolver(
 
     def resolve(day: dt.date) -> dt.date:
         cutoff = day + dt.timedelta(days=min_dte)
-        chosen = next((e for e in ordered if e >= cutoff), ordered[-1])
+        chosen = next((e for e in ordered if e >= cutoff), None)
+        if chosen is None:
+            # Falling back to the last known expiry hands back a date in the
+            # *past*, and a condor opened after its own expiry settles the
+            # instant it is created. There is no answer here; say so.
+            raise ValueError(
+                f"No expiry on/after {cutoff}; the calendar ends at {ordered[-1]}."
+            )
         dte = (chosen - day).days
         if max_dte is not None and dte > max_dte:
             raise ValueError(
