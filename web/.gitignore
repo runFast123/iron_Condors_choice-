@@ -6,3 +6,7 @@ out/
 next-env.d.ts
 
 .vercel
+
+# Playwright screenshots are build artefacts
+screenshots/
+screenshots-live/

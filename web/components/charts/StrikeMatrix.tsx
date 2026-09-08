@@ -33,7 +33,37 @@ export function StrikeMatrix({
     () => Array.from(new Set(rows.map((r) => r.expiry))).sort(),
     [rows],
   );
-  const [selectedExpiry, setSelectedExpiry] = useState(expiry ?? expiries[0]);
+
+  // How many strikes each expiry carries, and how many of them fully offset.
+  const perExpiry = useMemo(() => {
+    const map = new Map<string, { strikes: number; offset: number }>();
+    for (const row of rows) {
+      const slot = map.get(row.expiry) ?? { strikes: 0, offset: 0 };
+      slot.strikes += 1;
+      if (row.is_flat) slot.offset += 1;
+      map.set(row.expiry, slot);
+    }
+    return map;
+  }, [rows]);
+
+  // Open on the expiry that best demonstrates the offsetting rather than the
+  // earliest one: a week that only ever held two rungs shows no cancellation
+  // at all, which makes this view look broken on first load.
+  const defaultExpiry = useMemo(() => {
+    let best = expiries[0];
+    let bestScore = -1;
+    for (const e of expiries) {
+      const s = perExpiry.get(e);
+      const score = (s?.offset ?? 0) * 2 + (s?.strikes ?? 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = e;
+      }
+    }
+    return best;
+  }, [expiries, perExpiry]);
+
+  const [selectedExpiry, setSelectedExpiry] = useState(expiry ?? defaultExpiry);
 
   const visible = useMemo(() => {
     let out = rows.filter((r) => r.right === right && r.expiry === selectedExpiry);
@@ -77,9 +107,14 @@ export function StrikeMatrix({
               border: "1px solid var(--border-strong)", background: "var(--surface)", color: "var(--ink)",
             }}
           >
-            {expiries.map((e) => (
-              <option key={e} value={e}>{e}</option>
-            ))}
+            {expiries.map((e) => {
+              const s = perExpiry.get(e);
+              return (
+                <option key={e} value={e}>
+                  {e} &middot; {s?.strikes ?? 0} strikes, {s?.offset ?? 0} offset
+                </option>
+              );
+            })}
           </select>
         )}
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: "var(--ink-2)", cursor: "pointer" }}>

@@ -195,3 +195,107 @@ tbody tr:hover { background: var(--surface-3); }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }
 }
+
+
+/* ---------------------------------------------------------------------------
+   Layout shell + responsive behaviour.
+
+   The sidebar is a fixed 210px column on desktop. On a narrow screen that
+   leaves a phone almost no content width, so below 900px it becomes a
+   horizontal top bar and the main column takes the full width.
+--------------------------------------------------------------------------- */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 210px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.brand { padding: 18px 16px 14px; border-bottom: 1px solid var(--border); }
+.sidebar-foot { margin-top: auto; padding: 14px; border-top: 1px solid var(--border); }
+
+.nav {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.nav-link[aria-current="page"] {
+  font-weight: 600;
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  padding: 22px 26px 60px;
+}
+
+@media (max-width: 900px) {
+  .shell { flex-direction: column; }
+
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brand { padding: 12px 14px; border-bottom: none; }
+
+  /* Nav scrolls sideways inside itself rather than widening the page. */
+  .nav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    padding: 0 10px 10px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .nav-link { padding: 6px 11px; font-size: 12.5px; }
+
+  .sidebar-foot {
+    margin-top: 0;
+    padding: 8px 14px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .main { padding: 16px 14px 48px; }
+  .data-range { text-align: right; }
+}
+
+@media (max-width: 560px) {
+  .data-range { display: none; }
+}
+
+@media (max-width: 480px) {
+  .main { padding: 14px 10px 44px; }
+}

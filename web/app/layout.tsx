@@ -30,21 +30,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
-        <div style={{ display: "flex", minHeight: "100vh" }}>
-          <aside
-            style={{
-              width: 210,
-              flexShrink: 0,
-              borderRight: "1px solid var(--border)",
-              background: "var(--surface-2)",
-              display: "flex",
-              flexDirection: "column",
-              position: "sticky",
-              top: 0,
-              height: "100vh",
-            }}
-          >
-            <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid var(--border)" }}>
+        <div className="shell">
+          <aside className="sidebar">
+            <div className="brand">
               <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
                 <Mark />
                 <div>
@@ -58,9 +46,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
             <Nav />
 
-            <div style={{ marginTop: "auto", padding: 14, borderTop: "1px solid var(--border)" }}>
+            <div className="sidebar-foot">
               <ThemeToggle />
-              <div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 10, lineHeight: 1.5 }}>
+              <div className="data-range" style={{ fontSize: 10, color: "var(--ink-muted)", lineHeight: 1.5 }}>
                 Data {provenance.range[0]} &rarr; {provenance.range[1]}
                 <br />
                 {provenance.bars} bars &middot; {provenance.resolution}
@@ -68,7 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </aside>
 
-          <main style={{ flex: 1, minWidth: 0, padding: "22px 26px 60px" }}>{children}</main>
+          <main className="main">{children}</main>
         </div>
       </body>
     </html>

@@ -16,7 +16,7 @@ const LINKS = [
 export function Nav() {
   const path = usePathname();
   return (
-    <nav style={{ padding: "10px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+    <nav className="nav">
       {LINKS.map((link) => {
         const active = path === link.href;
         return (
@@ -24,17 +24,7 @@ export function Nav() {
             key={link.href}
             href={link.href}
             aria-current={active ? "page" : undefined}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 9,
-              padding: "7px 10px",
-              borderRadius: 7,
-              fontSize: 13,
-              fontWeight: active ? 600 : 500,
-              color: active ? "var(--brand)" : "var(--ink-2)",
-              background: active ? "var(--brand-soft)" : "transparent",
-            }}
+            className="nav-link"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
