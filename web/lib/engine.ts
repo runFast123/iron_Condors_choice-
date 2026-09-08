@@ -144,6 +144,6 @@ export const engine = {
   forwardStop: (token: string) =>
     call<{ ok: boolean; state: unknown }>("/forward/stop", { method: "POST", token }),
 
-  forwardArm: (token: string) =>
-    call<{ ok: boolean; state: unknown }>("/forward/arm", { method: "POST", token }),
+  forwardTicks: (token: string) =>
+    call<{ ticks: { ts: string; spot: number }[] }>("/forward/ticks", { token }),
 };

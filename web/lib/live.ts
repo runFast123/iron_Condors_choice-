@@ -1,7 +1,7 @@
 
 export interface LiveSession {
-  mode: "paper" | "live";
-  armed: boolean;
+  /** Paper is the only mode. There is no order-placing path to switch into. */
+  mode: "paper";
   status: "running" | "stopped" | "disconnected";
   stopped_reason: string | null;
   started_at: string | null;
@@ -35,8 +35,12 @@ export interface LiveFill {
   source: string;
   mode: string;
   token: number | null;
-  order_id: string | null;
   action: "OPEN" | "CLOSE";
+  /** Fair value at the time, what crossing the spread cost, and whether that
+   *  spread came from a real book or had to be modelled. */
+  reference: number | null;
+  slippage: number;
+  spread_modelled: boolean;
 }
 
 export interface LivePositionLeg {
@@ -63,8 +67,17 @@ export interface LivePosition {
   legs: LivePositionLeg[];
 }
 
+/** How much of a run was priced on a real order book rather than a modelled spread. */
+export interface FillQuality {
+  legs_on_real_depth: number;
+  legs_on_modelled_spread: number;
+  real_depth_fraction: number;
+  total_slippage: number;
+}
+
 export interface LiveState {
   session: LiveSession;
+  fill_quality?: FillQuality;
   market: { spot: number | null; ts: string | null };
   ladder: {
     anchor: number | null;

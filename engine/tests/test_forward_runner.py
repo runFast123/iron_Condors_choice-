@@ -144,3 +144,79 @@ def test_no_contracts_is_not_a_request():
     session = _Session(accepts="segment@token,")
     assert _market(session).touchline([]) == {}
     assert session.seen == []
+
+
+# ------------------------------------------- envelopes seen in production
+
+
+def test_rows_nested_as_a_dict_keyed_by_token_are_found():
+    """The shape that broke a live run.
+
+    Choice answered Success with ``Response: {"MultipleTouchline": {...}}``
+    where the inner value was a mapping rather than a list, so the old parser
+    -- which only ever looked for a list -- reported "no rows parsed" against a
+    perfectly good response and the ladder never received a price.
+    """
+    session = _Session(accepts="segment@token,")
+    session.rows = {  # type: ignore[assignment]
+        "MultipleTouchline": {"26000": {"Token": 26000, "LTP": 2400000}}
+    }
+    assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
+
+
+def test_a_lone_row_under_an_envelope_key_is_found():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": {"Token": 26000, "LTP": 2400000}}  # type: ignore[assignment]
+    assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
+
+
+def test_deeply_wrapped_rows_are_still_found():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"Response": {"data": [{"Token": 26000, "LTP": 2400000}]}}  # type: ignore[assignment]
+    assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
+
+
+def test_the_shape_diagnostic_names_the_inner_payload():
+    """A failure message has to say what was actually inside the envelope.
+
+    "dict keys=['MultipleTouchline']" is exactly as unhelpful as silence.
+    """
+    from engine.choice.errors import ChoiceError
+
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": "26000|2400000"}  # type: ignore[assignment]
+    with pytest.raises(ChoiceError) as exc:
+        _market(session).touchline([_contract(26000, 1)])
+    message = str(exc.value)
+    assert "MultipleTouchline" in message
+    assert "26000|2400000" in message  # the actual content, not just the key
+
+
+# ------------------------------------------------------------- bid / ask
+
+
+def test_bid_and_ask_are_captured_when_the_response_carries_depth():
+    session = _Session(accepts="segment@token,")
+    session.rows = [{"Token": 42632, "LTP": 12345, "BestBidPrice": 12300, "BestAskPrice": 12400}]
+    quote = _market(session).quotes([_contract(42632)])[42632]
+    assert (quote.bid, quote.ask) == (123.0, 124.0)
+    assert quote.has_depth
+    assert quote.mid == pytest.approx(123.5)
+    assert quote.spread == pytest.approx(1.0)
+
+
+def test_a_quote_without_depth_reports_no_spread_and_falls_back_to_ltp():
+    """Modelling a spread is a decision the fill model must make knowingly."""
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 12345}])
+    quote = _market(session).quotes([_contract(42632)])[42632]
+    assert not quote.has_depth
+    assert quote.spread is None
+    assert quote.mid == quote.ltp == pytest.approx(123.45)
+
+
+def test_a_crossed_or_zero_book_is_not_treated_as_depth():
+    session = _Session(accepts="segment@token,")
+    session.rows = [{"Token": 42632, "LTP": 12345, "BestBidPrice": 12400, "BestAskPrice": 12300}]
+    quote = _market(session).quotes([_contract(42632)])[42632]
+    assert not quote.has_depth
+    assert quote.mid == pytest.approx(123.45)

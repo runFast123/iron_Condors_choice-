@@ -36,6 +36,7 @@ from engine.config import IST
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.pricing.costs import CostModel
 from engine.pricing.iv_surface import IVSurface, from_vix
+from engine.store.db import Store
 from engine.strategy.condor import StrategyConfig
 
 log = logging.getLogger(__name__)
@@ -219,12 +220,22 @@ class BacktestRunner:
 
 
 class JobStore:
-    """Holds the latest backtest job per user."""
+    """Holds the latest backtest job per user, backed by durable storage.
 
-    def __init__(self) -> None:
+    In-flight jobs live in memory because they are tied to a running thread;
+    finished ones are written through to SQLite so a restart does not throw
+    away a result that took minutes of Choice calls to produce.
+    """
+
+    def __init__(self, db: "Store | None" = None) -> None:
         self._jobs: dict[str, BacktestJob] = {}
         self._lock = threading.Lock()
         self._counter = 0
+        self._db = db
+
+    def bind(self, db: "Store") -> None:
+        """Attach durable storage. Done by the API once the DB is open."""
+        self._db = db
 
     def start(self, market: ChoiceMarketData, user_id: str, params: dict[str, Any]) -> BacktestJob:
         with self._lock:
@@ -236,10 +247,22 @@ class JobStore:
             self._jobs[user_id] = job
 
         thread = threading.Thread(
-            target=BacktestRunner(market, job).run, name=f"backtest-{user_id}", daemon=True
+            target=self._run_and_persist, args=(market, job), name=f"backtest-{user_id}", daemon=True
         )
         thread.start()
         return job
+
+    def _run_and_persist(self, market: ChoiceMarketData, job: BacktestJob) -> None:
+        BacktestRunner(market, job).run()
+        if self._db is None:
+            return
+        try:
+            self._db.save_backtest(
+                run_id=job.job_id, user_id=job.user_id, status=job.status,
+                params=job.params, dataset=job.result, error=job.error,
+            )
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not persist backtest %s", job.job_id)
 
     def get(self, user_id: str) -> BacktestJob | None:
         with self._lock:
@@ -250,6 +273,11 @@ class JobStore:
         job = self.get(user_id)
         # Signed in either way, so never "awaiting connection" here.
         if job is None:
+            # Nothing in memory does not mean nothing ever ran: a restart
+            # clears the job table but not the results it produced.
+            saved = self._db.latest_backtest(user_id) if self._db else None
+            if saved and saved.get("dataset"):
+                return saved["dataset"]
             return empty_bundle(
                 "No backtest has been run on this account yet. Choose a range and run one to "
                 "populate the dashboard.",
@@ -270,6 +298,11 @@ class JobStore:
     def clear(self, user_id: str) -> None:
         with self._lock:
             self._jobs.pop(user_id, None)
+        if self._db is not None:
+            self._db.clear_backtests(user_id)
+
+    def history(self, user_id: str) -> list[dict[str, Any]]:
+        return self._db.backtest_history(user_id) if self._db else []
 
 
 store = JobStore()

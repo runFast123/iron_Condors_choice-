@@ -1,0 +1,19 @@
+{
+  "_source": "https://www.nseindia.com/resources/exchange-communication-holidays",
+  "_note": [
+    "recurring_fixed holds only holidays that fall on the same calendar date every year.",
+    "Movable-feast holidays (Holi, Ram Navami, Id, Muharram, Diwali/Laxmi Pujan, Guru Nanak Jayanti)",
+    "shift every year and are deliberately NOT guessed here. Add them to 'dates' from NSE's annual",
+    "holiday circular. The engine also learns closures from Choice's MarketStatus endpoint and",
+    "persists them, so an unlisted holiday is caught once and remembered thereafter.",
+    "Dates in 'dates' are ISO (YYYY-MM-DD) and represent full market closures, not muhurat sessions."
+  ],
+  "recurring_fixed": [
+    "01-26",
+    "05-01",
+    "08-15",
+    "10-02",
+    "12-25"
+  ],
+  "dates": []
+}

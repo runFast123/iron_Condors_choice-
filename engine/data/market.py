@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import pandas as pd
 
@@ -47,6 +47,91 @@ TOUCHLINE_FORMATS: tuple[tuple[str, Callable[[list[Contract]], str]], ...] = (
 _ROW_KEYS = ("Touchline", "data", "Data", "MultipleTouchline", "Result", "items")
 _TOKEN_KEYS = ("Token", "token", "ScripCode", "scripcode", "InstrumentToken")
 _LTP_KEYS = ("LTP", "Ltp", "ltp", "LastTradedPrice", "LastRate", "Last", "ClosePrice")
+_BID_KEYS = ("BestBidPrice", "BidPrice", "Bid", "BuyPrice", "BestBuyPrice", "bid")
+_ASK_KEYS = ("BestAskPrice", "AskPrice", "Ask", "SellPrice", "BestSellPrice", "BestOfferPrice", "ask")
+
+
+@dataclass(frozen=True)
+class Quote:
+    """One instrument's touch.
+
+    ``bid``/``ask`` are optional because not every Choice response carries the
+    depth, and a paper fill must be able to say honestly whether it crossed a
+    real spread or fell back to modelling one.
+    """
+
+    token: int
+    ltp: float
+    bid: float | None = None
+    ask: float | None = None
+
+    @property
+    def has_depth(self) -> bool:
+        return self.bid is not None and self.ask is not None and self.ask >= self.bid
+
+    @property
+    def mid(self) -> float:
+        return (self.bid + self.ask) / 2.0 if self.has_depth else self.ltp
+
+    @property
+    def spread(self) -> float | None:
+        return (self.ask - self.bid) if self.has_depth else None
+
+
+def _paisa(value: Any) -> float | None:
+    """Choice quotes prices in paisa; anything unparseable or <=0 is absent."""
+    try:
+        price = float(value) / 100.0
+    except (TypeError, ValueError):
+        return None
+    return price if price > 0 else None
+
+
+def _first(row: dict, keys: tuple[str, ...]) -> Any:
+    return next((row[k] for k in keys if row.get(k) not in (None, "")), None)
+
+
+def iter_quote_rows(body: Any) -> Iterator[dict]:
+    """Yield quote rows from whatever envelope Choice wrapped them in.
+
+    The endpoint has been seen returning a bare list of rows, a list under one
+    of several envelope keys, a dict keyed by token, and a single row returned
+    bare. Enumerating those shapes is what kept failing, so this descends until
+    it finds dicts that actually look like rows and lets the caller filter.
+    """
+    if isinstance(body, dict):
+        if any(k in body for k in _TOKEN_KEYS):
+            yield body
+            return
+        for value in body.values():
+            yield from iter_quote_rows(value)
+    elif isinstance(body, list):
+        for item in body:
+            yield from iter_quote_rows(item)
+
+
+def describe_payload(value: Any, depth: int = 0) -> str:
+    """A bounded description of an unparseable payload.
+
+    "dict keys=['MultipleTouchline']" says nothing about *why* parsing failed,
+    which is precisely when this gets read, so single-key wrappers are unwrapped
+    and the first element of a list is described too.
+    """
+    if isinstance(value, dict):
+        keys = sorted(value)[:8]
+        if depth < 3 and len(value) == 1:
+            inner = next(iter(value.values()))
+            return f"dict keys={keys} -> {describe_payload(inner, depth + 1)}"
+        return f"dict keys={keys}"
+    if isinstance(value, list):
+        if not value:
+            return "empty list"
+        return f"list[{len(value)}] of {describe_payload(value[0], depth + 1)}"
+    if isinstance(value, str):
+        return f"str {value[:160]!r}"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 @dataclass
@@ -149,8 +234,8 @@ class ChoiceMarketData:
 
     # ------------------------------------------------------------------ live
 
-    def touchline(self, contracts: Iterable[Contract]) -> dict[int, float]:
-        """Snapshot LTP for a set of contracts, keyed by token.
+    def quotes(self, contracts: Iterable[Contract]) -> dict[int, Quote]:
+        """Snapshot the full touch for a set of contracts, keyed by token.
 
         Tries each documented payload shape until one yields quotes, because
         the SDK documents three mutually exclusive formats and only testing
@@ -179,13 +264,13 @@ class ChoiceMarketData:
                 attempts.append(f"{name}: {resp.get('Message') or 'non-success status'}")
                 continue
 
-            quotes = self._parse_touchline(resp)
-            if quotes:
+            parsed = self._parse_quotes(resp)
+            if parsed:
                 if self.touchline_format != name:
                     log.info("MultipleTouchline accepted the %r payload shape", name)
                 self.touchline_format = name
                 self.last_touchline_error = None
-                return quotes
+                return parsed
 
             attempts.append(f"{name}: succeeded but no rows parsed ({self._shape_of(resp)})")
 
@@ -195,48 +280,32 @@ class ChoiceMarketData:
             f"{len(ordered)} payload shapes: {self.last_touchline_error}"
         )
 
+    def touchline(self, contracts: Iterable[Contract]) -> dict[int, float]:
+        """LTP only, for callers that do not care about the spread."""
+        return {token: q.ltp for token, q in self.quotes(contracts).items()}
+
     @staticmethod
     def _shape_of(resp: dict) -> str:
-        """Describe an unrecognised response so the cause is visible."""
-        body = resp.get("Response")
-        if isinstance(body, list):
-            first = body[0] if body else None
-            return f"list[{len(body)}], first keys={sorted(first)[:8] if isinstance(first, dict) else type(first).__name__}"
-        if isinstance(body, dict):
-            return f"dict keys={sorted(body)[:8]}"
-        return f"Response is {type(body).__name__}"
+        """Describe an unparseable response precisely enough to act on it."""
+        return describe_payload(resp.get("Response"))
 
     @staticmethod
-    def _parse_touchline(resp: dict) -> dict[int, float]:
-        body = resp.get("Response") or []
-        rows: list = []
-        if isinstance(body, list):
-            rows = body
-        elif isinstance(body, dict):
-            for key in _ROW_KEYS:
-                value = body.get(key)
-                if isinstance(value, list):
-                    rows = value
-                    break
-            else:
-                # A single quote returned bare rather than in a list.
-                if any(k in body for k in _TOKEN_KEYS):
-                    rows = [body]
-
-        out: dict[int, float] = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            token = next((row[k] for k in _TOKEN_KEYS if row.get(k) not in (None, "")), None)
-            ltp = next((row[k] for k in _LTP_KEYS if row.get(k) not in (None, "")), None)
+    def _parse_quotes(resp: dict) -> dict[int, Quote]:
+        out: dict[int, Quote] = {}
+        for row in iter_quote_rows(resp.get("Response")):
+            token, ltp = _first(row, _TOKEN_KEYS), _first(row, _LTP_KEYS)
             if token is None or ltp is None:
                 continue
-            try:
-                price = float(ltp) / 100.0
-            except (TypeError, ValueError):
+            price = _paisa(ltp)
+            if price is None:
                 continue
-            if price > 0:
-                out[int(float(token))] = price
+            token = int(float(token))
+            out[token] = Quote(
+                token=token,
+                ltp=price,
+                bid=_paisa(_first(row, _BID_KEYS)),
+                ask=_paisa(_first(row, _ASK_KEYS)),
+            )
         return out
 
     def ltp(self, contract: Contract) -> float | None:

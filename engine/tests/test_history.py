@@ -45,9 +45,9 @@ def _ok(rows, divisor=1):
     return {"Status": "Success", "Response": {"lstChartHistory": rows, "PriceDivisor": divisor}}
 
 
-def _bar(when: dt.datetime, o=100.0, h=101.0, l=99.0, c=100.5, v=1000, oi=50, divisor=1):
+def _bar(when: dt.datetime, o=100.0, h=101.0, low=99.0, c=100.5, v=1000, oi=50, divisor=1):
     secs = to_choice_epoch(when)
-    return f"{secs},{o * divisor},{h * divisor},{l * divisor},{c * divisor},{v},{oi}"
+    return f"{secs},{o * divisor},{h * divisor},{low * divisor},{c * divisor},{v},{oi}"
 
 
 def _client(responses) -> HistoryClient:

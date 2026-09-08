@@ -11,8 +11,6 @@ import datetime as dt
 import json
 import math
 
-import pytest
-
 from engine.backtest.providers import ModelPriceProvider
 from engine.backtest.runner import Backtest, BacktestParams, weekly_expiry_resolver
 from engine.backtest.serialise import empty_bundle, json_safe, serialise

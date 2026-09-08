@@ -24,13 +24,14 @@ import datetime as dt
 import logging
 import os
 import threading
+import uuid
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from engine.auth.sessions import UserSession, registry
+from engine.auth.sessions import UserSession, registry, set_id_salt
 from engine.backtest.jobs import store as backtest_store
 from engine.choice.netinfo import egress_ip
 from engine.choice.errors import (
@@ -41,7 +42,8 @@ from engine.choice.errors import (
 )
 from engine.config import IST, engine_config
 from engine.data.market import NIFTY, ChoiceMarketData
-from engine.forward.runner import ForwardRunner, market_is_open
+from engine.forward.runner import ForwardRunner, market_calendar, market_is_open
+from engine.store.db import Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
 
@@ -50,6 +52,17 @@ log = logging.getLogger(__name__)
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ENGINE_ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
+
+# Durable state. Created before anything can log in, because the user-id salt
+# lives here: derive an id with a fresh salt and every run this user saved
+# earlier becomes unreachable under an id that no longer resolves.
+store = Store()
+set_id_salt(store.user_id_salt())
+backtest_store.bind(store)
+# Holidays learned from Choice in earlier sessions, so a restart does not have
+# to rediscover that today is Diwali.
+market_calendar.learned |= store.holidays()
+market_calendar.on_learn = store.add_holiday
 
 app = FastAPI(title="Iron Condor Ladder engine", version="1.0.0", docs_url=None, redoc_url=None)
 
@@ -85,8 +98,6 @@ class RunBacktestRequest(BaseModel):
 
 
 class StartForwardRequest(BaseModel):
-    mode: str = Field(default="paper", pattern="^(paper|live)$")
-    arm: bool = False
     lots: int = Field(default=1, ge=1, le=100)
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
@@ -224,7 +235,81 @@ def login(body: LoginRequest, request: Request) -> dict[str, Any]:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
     log.info("Login from %s for user %s", request.client.host if request.client else "?", session.user_id)
-    return {"token": session.token, "user": session.public()}
+    resumed = _resume_forward(session)
+    return {"token": session.token, "user": session.public(), "resumed_forward": resumed}
+
+
+def _resume_forward(session: UserSession) -> bool:
+    """Pick a forward run back up after an engine restart.
+
+    A run cannot be resumed until someone supplies the Choice credentials it
+    needs for quotes -- those are deliberately never persisted -- so the point
+    of resumption is login, not startup. Until then the run sits in the
+    database marked running, which is the truth: it has positions open and a
+    ladder mid-flight, it simply has nobody to ask for prices.
+    """
+    if session.runner is not None:
+        return False
+    try:
+        pending = [r for r in store.running_forwards() if r["user_id"] == session.user_id]
+    except Exception:                               # noqa: BLE001
+        log.exception("Could not read saved forward runs")
+        return False
+    if not pending:
+        return False
+
+    record = pending[-1]                            # most recent wins
+    # The scrip master is expensive, which is why it is normally attached
+    # lazily on first use -- but a run cannot be resumed without it, and the
+    # cost is only paid by users who actually have a run waiting.
+    if session.market is None:
+        try:
+            session.market = ChoiceMarketData.connect(session.choice)
+        except ChoiceError:
+            log.exception("Could not attach market data to resume %s", record["session_id"])
+            return False
+    market = session.market
+    try:
+        runner = ForwardRunner.restore(
+            record["state"], market=market, costs=CostModel(),
+            state_path=_state_path(session), store=store,
+            session_id=record["session_id"], user_id=session.user_id,
+        )
+    except ValueError:
+        # An explicitly unsupported state version will never load, so retiring
+        # it is honest rather than destructive.
+        log.exception("Saved forward run %s is not a supported version", record["session_id"])
+        store.mark_stopped(record["session_id"], "saved state is not a supported version")
+        return False
+    except Exception:                               # noqa: BLE001
+        # Anything else -- a bug, a transient failure -- must not silently
+        # retire a run that still has positions open. Leave it stored and let
+        # a later login (or a fixed build) pick it up.
+        log.exception("Could not resume forward run %s; leaving it saved", record["session_id"])
+        return False
+
+    # Any run that was live before is stale by definition, so re-open it rather
+    # than leaving a stopped reason from the shutdown hanging around.
+    runner.stopped_reason = None
+    session.runner = runner
+    runner.emit(
+        "info", "Forward run resumed after an engine restart",
+        condors=len([c for c in runner.condors if c.is_open]),
+        fired=len(runner.ladder.fired_levels),
+    )
+    _start_tick_thread(runner, session, poll_seconds=15.0)
+    log.info("Resumed forward run %s for user %s", record["session_id"], session.user_id)
+    return True
+
+
+def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds: float) -> None:
+    thread = threading.Thread(
+        target=runner.run,
+        kwargs={"poll_seconds": max(5.0, float(poll_seconds))},
+        name=f"forward-{session.user_id}",
+        daemon=True,
+    )
+    thread.start()
 
 
 @app.post("/auth/logout", dependencies=[Depends(check_engine_key)])
@@ -291,6 +376,12 @@ def backtest_dataset(session: UserSession = Depends(current_user)) -> dict[str, 
     return backtest_store.dataset(session.user_id)
 
 
+@app.get("/backtest/history", dependencies=[Depends(check_engine_key)])
+def backtest_history(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """Past runs, which now outlive the process that produced them."""
+    return {"runs": backtest_store.history(session.user_id)}
+
+
 @app.post("/backtest/clear", dependencies=[Depends(check_engine_key)])
 def backtest_clear(session: UserSession = Depends(current_user)) -> dict[str, bool]:
     backtest_store.clear(session.user_id)
@@ -309,12 +400,6 @@ def forward_start(
     if session.runner is not None and session.runner.stopped_reason is None:
         return {"ok": True, "already_running": True, "state": session.runner.snapshot()}
 
-    if body.mode == "live" and not body.arm:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Live mode requires an explicit arm. Send arm=true to place real orders.",
-        )
-
     try:
         lot_size = market.master.lot_size_for(NIFTY)
         expiry = market.master.nearest_expiry(NIFTY, dt.datetime.now(tz=IST).date(), min_days=0)
@@ -328,13 +413,13 @@ def forward_start(
             step=body.step, lots=body.lots, lot_size=lot_size,
             max_condors=engine_config.max_condors, strike_step=strike_step,
         ),
-        mode=body.mode,
         costs=CostModel(),
         # Per-user state file: one user's run must never overwrite another's.
         state_path=_state_path(session),
+        store=store,
+        session_id=uuid.uuid4().hex,
+        user_id=session.user_id,
     )
-    if body.mode == "live" and body.arm:
-        runner.arm()
     session.runner = runner
 
     # First tick inline so the caller gets a populated state immediately, then
@@ -344,31 +429,7 @@ def forward_start(
     runner.tick()
     runner.save()
 
-    thread = threading.Thread(
-        target=runner.run,
-        kwargs={"poll_seconds": max(5.0, float(body.poll_seconds))},
-        name=f"forward-{session.user_id}",
-        daemon=True,
-    )
-    thread.start()
-    return {"ok": True, "state": runner.snapshot()}
-
-
-@app.post("/forward/arm", dependencies=[Depends(check_engine_key)])
-def forward_arm(session: UserSession = Depends(current_user)) -> dict[str, Any]:
-    """Enable real order placement on a running paper session.
-
-    Deliberately a separate call: switching to live money should be an explicit
-    act, not a flag buried in the start request.
-    """
-    runner = _require_runner(session)
-    if runner.mode != "live":
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "This run was started in paper mode. Stop it and start a live run to place orders.",
-        )
-    runner.arm()
-    runner.save()
+    _start_tick_thread(runner, session, body.poll_seconds)
     return {"ok": True, "state": runner.snapshot()}
 
 
@@ -387,13 +448,35 @@ def forward_state(session: UserSession = Depends(current_user)) -> dict[str, Any
     return {"running": session.runner.stopped_reason is None, "state": session.runner.snapshot()}
 
 
+@app.get("/forward/ticks", dependencies=[Depends(check_engine_key)])
+def forward_ticks(
+    limit: int = 900, session: UserSession = Depends(current_user)
+) -> dict[str, Any]:
+    """The live chart's history.
+
+    Held in the database rather than the browser, so a page reload -- or a
+    second device -- picks up the whole session instead of redrawing from an
+    empty series.
+    """
+    runner = session.runner
+    if runner is None or not runner.session_id:
+        return {"ticks": []}
+    return {"ticks": store.ticks(runner.session_id, limit=max(1, min(limit, 5_000)))}
+
+
+@app.get("/forward/history", dependencies=[Depends(check_engine_key)])
+def forward_history(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    return {"sessions": store.forward_history(session.user_id)}
+
+
 @app.post("/forward/stop", dependencies=[Depends(check_engine_key)])
 def forward_stop(session: UserSession = Depends(current_user)) -> dict[str, Any]:
     runner = _require_runner(session)
     runner.stopped_reason = "stopped by user"
-    runner.armed = False
     runner.emit("warn", "Forward run stopped by user")
     runner.save()
+    if runner.session_id:
+        store.mark_stopped(runner.session_id, "stopped by user")
     state = runner.snapshot()
     session.runner = None
     return {"ok": True, "state": state}

@@ -1,12 +1,15 @@
 """Run the forward test against live Choice data.
 
-    python -m engine.tools.live                      # paper, poll every 15s
+    python -m engine.tools.live                      # poll every 15s
     python -m engine.tools.live --ticks 4            # a few cycles, then stop
-    python -m engine.tools.live --mode live --arm    # REAL ORDERS
 
-Writes ``web/data/live.json`` on every tick, which is what the dashboard's
-Forward Test section reads. Must run from the static IP declared against your
-Choice API key.
+Paper only -- this platform has no order-placement path. Writes
+``web/data/live.json`` on every tick, which is what the dashboard's Forward
+Test section reads. Must run from the static IP declared against your Choice
+API key.
+
+Normally you would start a run from the dashboard instead; this exists for
+running one from the box itself without a browser.
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ def empty_state(reason: str) -> dict:
 
     return {
         "session": {
-            "mode": "paper", "armed": False, "status": "disconnected",
+            "mode": "paper", "status": "disconnected",
             "stopped_reason": reason, "started_at": None, "last_tick": None,
             "market_open": market_is_open(), "connected": False, "expiry": None,
         },
@@ -50,8 +53,6 @@ def empty_state(reason: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["paper", "live"], default="paper")
-    parser.add_argument("--arm", action="store_true", help="Required for --mode live to place orders.")
     parser.add_argument("--poll", type=float, default=15.0, help="Seconds between ticks.")
     parser.add_argument("--ticks", type=int, default=None, help="Stop after N ticks.")
     parser.add_argument("--lots", type=int, default=1)
@@ -77,10 +78,6 @@ def main() -> int:
         print("  Fill .env, then: python -m engine.tools.doctor && python -m engine.tools.live")
         return 1
 
-    if args.mode == "live" and not args.arm:
-        print("Refusing to place real orders without --arm. Re-run with --mode live --arm.")
-        return 2
-
     if not market_is_open():
         print("NSE regular session is 09:15-15:30 IST, Mon-Fri. Running anyway; the runner will idle.")
 
@@ -101,13 +98,10 @@ def main() -> int:
     )
 
     runner = ForwardRunner(
-        market=market, strategy=strategy, mode=args.mode,
-        costs=CostModel(), state_path=out,
+        market=market, strategy=strategy, costs=CostModel(), state_path=out,
     )
-    if args.mode == "live" and args.arm:
-        runner.arm()
 
-    print(f"Forward run: mode={args.mode} armed={runner.armed} lot={lot_size} step={args.step:g}")
+    print(f"Forward run: PAPER  lot={lot_size} step={args.step:g}")
     print(f"State file : {out}")
     runner.run(poll_seconds=args.poll, max_ticks=args.ticks)
 

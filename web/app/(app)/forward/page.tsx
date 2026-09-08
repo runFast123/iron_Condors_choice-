@@ -14,7 +14,7 @@ export default async function ForwardPage() {
     <>
       <PageHeader
         title="Forward Test"
-        subtitle="The same ladder engine as the backtest, driven by live Choice quotes instead of historical bars. Start it here — nothing needs to be run from a terminal."
+        subtitle="The same ladder engine as the backtest, driven by live Choice quotes instead of historical bars. Paper only — this platform places no orders. Start it here; nothing needs to be run from a terminal."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -42,13 +42,14 @@ export default async function ForwardPage() {
           </Card>
         )}
 
-        <Card title="What protects you" hint="These apply automatically to every run.">
+        <Card title="How these numbers are produced" hint="Applied automatically to every run.">
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.9, color: "var(--ink-2)" }}>
-            <li><strong>Paper by default.</strong> A live run still places nothing until you press Arm, which asks for confirmation.</li>
-            <li><strong>All-or-nothing entries.</strong> If any of the four legs has no live quote, the condor is skipped rather than half-opened, so no naked short is ever created.</li>
-            <li><strong>Protective legs first.</strong> The long wings are bought before the shorts are sold, so margin never spikes mid-structure.</li>
-            <li><strong>Limit orders only.</strong> Choice supports no market order, so each leg is priced through the touch by a slippage buffer.</li>
-            <li><strong>Loss kill switch.</strong> Breaching the daily loss limit disarms the run and stops new entries.</li>
+            <li><strong>Paper only, structurally.</strong> There is no order-placement code in the engine at all, so no run can place one.</li>
+            <li><strong>Fills cross the spread.</strong> Buys lift the offer and sells hit the bid. Where Choice returns no depth, a spread is modelled rather than assumed to be zero, and the run reports what fraction was priced on a real book.</li>
+            <li><strong>All-or-nothing entries.</strong> If any of the four legs has no quote, or its book is too wide to trade through, the condor is skipped rather than half-opened.</li>
+            <li><strong>Mid-marked while open.</strong> Unrealised P&amp;L is marked to fair value; the cost of crossing is charged on entry and exit, not smeared across every tick.</li>
+            <li><strong>Survives a restart.</strong> Ladder state, open condors and tick history are stored on the engine, so a restart resumes the run instead of losing it.</li>
+            <li><strong>Knows the calendar.</strong> Weekends and holidays are skipped rather than spent logging "no quotes".</li>
           </ul>
           <p style={{ margin: "12px 0 0", fontSize: 12 }}>
             <Link href="/forward/log" style={{ color: "var(--brand)", fontWeight: 600 }}>

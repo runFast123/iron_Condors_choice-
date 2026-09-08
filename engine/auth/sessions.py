@@ -42,17 +42,31 @@ log = logging.getLogger(__name__)
 # Choice sessions die at end of day; ours must not outlive them.
 MARKET_DAY_END = dt.time(23, 59, 0)
 
-# Salt for deriving user ids. Set USER_ID_SALT to keep ids stable across
-# restarts; otherwise a per-process value is generated (ids then rotate, which
-# is safe but logs you out on restart).
-_ID_SALT = os.environ.get("USER_ID_SALT", "").encode() or secrets.token_bytes(16)
+# Salt for deriving user ids. Resolved lazily so the engine can install a
+# salt persisted in its database: a per-process salt rotates every user's id
+# on restart, which orphans their saved runs under an id that no longer
+# resolves. USER_ID_SALT still wins if it is set explicitly.
+_ID_SALT: bytes | None = None
+
+
+def set_id_salt(salt: bytes) -> None:
+    """Install a durable salt. Call before the first login."""
+    global _ID_SALT
+    _ID_SALT = salt
+
+
+def _id_salt() -> bytes:
+    global _ID_SALT
+    if _ID_SALT is None:
+        _ID_SALT = os.environ.get("USER_ID_SALT", "").encode() or secrets.token_bytes(16)
+    return _ID_SALT
 
 MAX_SESSIONS = int(os.environ.get("ENGINE_MAX_SESSIONS", "50") or 50)
 
 
 def derive_user_id(mobile: str) -> str:
     """Stable, non-reversible id for a mobile number."""
-    digest = hmac.new(_ID_SALT, mobile.strip().encode("utf-8"), hashlib.sha256).hexdigest()
+    digest = hmac.new(_id_salt(), mobile.strip().encode("utf-8"), hashlib.sha256).hexdigest()
     return digest[:16]
 
 

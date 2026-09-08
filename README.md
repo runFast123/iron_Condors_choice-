@@ -2,6 +2,10 @@
 
 Backtest and forward-test a laddered NIFTY iron-condor strategy on Choice FinX data.
 
+**Paper only.** This platform backtests and forward-tests. It places no orders — the
+order-placement path does not exist in the codebase, so there is nothing to arm, disarm or
+misconfigure. Choice is used strictly read-only: sign-in, scrip master, candles and quotes.
+
 **Choice FinX is the only data source** — historical and live. There is no third-party market-data
 vendor anywhere in this project.
 
@@ -230,17 +234,100 @@ Without credentials this writes the "awaiting connection" placeholder instead of
 
 ### Forward testing (live Choice data)
 
+**Paper only.** There is no order-placement code in the engine, so no run can
+place an order. That is a structural property, not a setting: the `NewOrder`
+call, the arming step and the live mode were removed rather than disabled.
+
+Start a run from the dashboard's **Forward Test** page. To run one from the box
+itself instead:
+
 ```bash
-python -m engine.tools.live                    # paper mode, polls every 15s
-python -m engine.tools.live --ticks 4          # a few cycles, then stop
-python -m engine.tools.live --mode live --arm  # REAL ORDERS
+python -m engine.tools.live                 # polls every 15s
+python -m engine.tools.live --ticks 4       # a few cycles, then stop
 ```
 
-Writes `web/data/live.json` on every tick, which the dashboard's **Forward Test** section reads
-(Live Monitor, plus Log & History). It drives the same `Ladder` and `build_legs` as the backtester,
-so the two cannot diverge. Safety: paper by default; live needs `--arm`; a rung with any unquotable
-leg is skipped rather than half-opened; protective wings are sent before shorts; limit orders only
-(Choice has no market order); and a daily-loss breach disarms the runner.
+It drives the same `Ladder` and `build_legs` as the backtester, so the two
+cannot diverge.
+
+**Fills cross the spread.** With no live path, the fill model *is* the result,
+so filling at the last traded price would report a P&L nobody could have
+traded. Buys lift the offer, sells hit the bid. Where Choice returns no depth a
+spread is modelled (2% of premium by default, floored at one tick) rather than
+assumed to be zero, and every run reports what fraction of its legs were priced
+on a real book — see `fill_quality` in the state, surfaced on the page. While a
+condor is open it is marked at mid; the cost of crossing is charged on entry and
+exit, not smeared across every tick.
+
+Other guards: a condor with any unquotable leg, or any book too wide to trade
+through, is skipped rather than half-opened; a net-debit condor is flagged,
+because an iron condor cannot be a debit unless the quotes are wrong; and a
+daily-loss breach stops the run.
+
+### Durability — runs survive a restart
+
+State lives in SQLite at `engine/state/engine.db` (override with `ENGINE_DB`).
+
+| Stored | Why |
+|---|---|
+| Forward runs | Ladder anchor, fired levels, open condors and their fills, as a resumable document |
+| Tick history | So the live chart redraws the whole session on reload instead of starting empty |
+| Backtest results | A run costs minutes of Choice calls; losing it to a restart is pure waste |
+| Learned holidays | A closure discovered once is not rediscovered every session |
+| User-id salt | Ids are a salted hash of the mobile number — a per-process salt would orphan every saved run on restart |
+
+**No credential is ever written here.** API keys, session ids and access tokens
+stay in memory and die with the process.
+
+A run is resumed at **login**, not at startup: quotes need Choice credentials,
+and those are deliberately not persisted. Until someone signs in, the run sits
+in the database marked `running` — which is the truth, since it has positions
+open and a ladder mid-flight and simply has nobody to ask for prices. On resume
+the fired-level set is restored too, so a level already held is never opened
+twice.
+
+### Trading calendar
+
+Weekday-and-clock is not a calendar: it says the market is open on Diwali.
+Three sources are layered, most authoritative first:
+
+1. **Choice's `MarketStatus` endpoint** — the exchange knows about unscheduled
+   closures no static list can.
+2. **Learned closures** — a weekday reported shut during session hours is
+   remembered and persisted.
+3. **`engine/data/nse_holidays.json`** — fixed-date national holidays only.
+   Movable ones (Holi, Eid, Diwali) shift every year and are deliberately *not*
+   guessed; add them from NSE's annual circular, or let source 1 teach them.
+
+An ambiguous or unreachable `MarketStatus` falls back to the local calendar
+rather than guessing in either direction.
+
+### Keeping it running
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-engine.ps1
+powershell -ExecutionPolicy Bypass -File scripts\run-tunnel.ps1 -UpdateVercel
+```
+
+`run-engine.ps1` restarts the engine when it exits, with a backoff, and loads
+`.env.engine.local` — which is where `ENGINE_SHARED_SECRET` belongs. **An engine
+started without that variable accepts every caller**, because an empty expected
+key disables the check entirely.
+
+`run-tunnel.ps1` addresses the quick-tunnel problem: `trycloudflare.com` mints a
+new hostname on every start, so each restart silently breaks the deployed
+dashboard until someone re-pastes the URL. The script reads the new hostname out
+of cloudflared's output and pushes it to Vercel. Better still, use a named
+tunnel once you have a domain — one hostname, set once:
+
+```powershell
+cloudflared tunnel login
+cloudflared tunnel create iron-condor
+cloudflared tunnel route dns iron-condor engine.yourdomain.com
+.\scripts\run-tunnel.ps1 -Named iron-condor -TunnelHostname engine.yourdomain.com
+```
+
+Register either with Task Scheduler (`schtasks /create /sc onstart`) to survive
+a reboot.
 
 ### Engine service (multi-user)
 
@@ -303,16 +390,26 @@ truthful state, since Choice cannot be called from Vercel.
 
 ## Status
 
-Implemented and tested: the hardened Choice adapter, option resolver, ladder engine, condor
-construction and netting, Black-76 pricing with greeks, the Indian cost model, the two-pass
-backtester, the Choice-only market-data layer, the forward-test runner, and the full dashboard.
+Working end to end: multi-user sign-in against Choice, backtesting with real
+Choice premiums (Black-76 where a leg has no history, badged `MODELED`), the
+strike-offset matrix, payoff, and paper forward testing with a live chart.
 
-Not yet built: live forward-testing (order placement and the websocket feed have adapters but no
-runner), and Postgres persistence — the dashboard currently reads a JSON bundle. Neither can be
-meaningfully exercised without credentials on a static IP.
+**Scope: backtesting and paper forward testing only.** No real money, by
+construction — the order path does not exist. Consequently the open questions
+that would matter for live trading (order reconciliation, margin, SPAN) do not
+arise here.
 
-The shipped dataset is the empty "awaiting connection" placeholder, because Choice is the only
-permitted source and no credentials are configured yet.
+Known limits, stated plainly:
 
-**This is research software, not trading advice.** The seeded results are modeled, and modeled
-option premiums are not what you would have been filled at.
+- The **modelled spread is a parameter, not a measurement**. Where Choice
+  returns no depth, 2% of premium is an assumption; tune it once you can
+  compare against real books. Every run reports what fraction it had to model.
+- **Option history depth** from `ChartData` for NFO strikes is whatever Choice
+  serves; anything missing falls back to Black-76 and is badged, never silently
+  substituted.
+- The **holiday file carries fixed-date holidays only** — movable ones are
+  learned from `MarketStatus` or added by hand.
+- The strategy itself lost money over the seeded range, and honouring expiry
+  rolls *reduced* the offsetting benefit (50% → 40%), because the two-step
+  offset needs three condors deep in one expiry and weekly expiries rarely
+  allow it. Worth testing against monthly expiries before drawing conclusions.

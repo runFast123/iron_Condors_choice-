@@ -14,14 +14,13 @@ import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
  */
 export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [state, setState] = useState<LiveState | null>(initial);
-  const [mode, setMode] = useState<"paper" | "live">("paper");
   const [lots, setLots] = useState(1);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [confirmLive, setConfirmLive] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Rolling tick history for the live chart. Kept client-side so the line
-  // builds up as the run progresses without the server storing a series.
+  // Tick history for the live chart. Seeded from the engine's database so a
+  // reload shows the whole session rather than restarting from an empty line,
+  // then extended in place as new ticks arrive.
   const [ticks, setTicks] = useState<LivePoint[]>([]);
 
   const session = state?.session;
@@ -58,8 +57,26 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    // The stored series first, so the chart is never briefly empty on a run
+    // that has been going for hours.
+    (async () => {
+      try {
+        const res = await fetch("/api/forward/ticks", { cache: "no-store" });
+        const body = await res.json();
+        if (cancelled || !res.ok || !Array.isArray(body.ticks)) return;
+        const points = (body.ticks as { ts: string; spot: number }[])
+          .map((t) => ({ t: Math.floor(new Date(t.ts).getTime() / 1000), price: t.spot }))
+          .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.price));
+        if (points.length) setTicks(points);
+      } catch {
+        /* the live poll below still builds a series from here on */
+      }
+    })();
     if (state) recordTick(state);
-    // Seed from whatever the first render carried.
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -94,12 +111,8 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   }
 
   const start = () =>
-    post("/api/forward/start", { mode, lots, step: 100, arm: false, poll_seconds: 10 }, "starting");
+    post("/api/forward/start", { lots, step: 100, poll_seconds: 10 }, "starting");
   const stop = () => post("/api/forward/stop", undefined, "stopping");
-  const arm = () => {
-    setConfirmLive(false);
-    return post("/api/forward/arm", undefined, "arming");
-  };
 
   return (
     <section className="card" style={{ overflow: "hidden" }}>
@@ -124,8 +137,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
           <Badge tone={session?.market_open ? "pos" : "neutral"}>
             {session?.market_open ? "MARKET OPEN" : "MARKET CLOSED"}
           </Badge>
-          {running && <Badge tone={session?.mode === "live" ? "neg" : "brand"}>{session?.mode?.toUpperCase()}</Badge>}
-          {running && session?.armed && session.mode === "live" && <Badge tone="neg">ARMED</Badge>}
+          {running && <Badge tone="brand">PAPER</Badge>}
           <Badge tone={running ? "pos" : "neutral"}>{running ? "RUNNING" : "STOPPED"}</Badge>
         </div>
       </div>
@@ -140,19 +152,6 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
         {!running ? (
           <>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Mode
-                <select
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as "paper" | "live")}
-                  className="auth-input"
-                  style={{ marginTop: 5, minWidth: 190 }}
-                >
-                  <option value="paper">Paper — simulated fills</option>
-                  <option value="live">Live — real orders</option>
-                </select>
-              </label>
-
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Lots per condor
                 <input
@@ -170,18 +169,16 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                 onClick={start}
                 disabled={busy !== null}
                 className="auth-submit"
-                style={{ marginTop: 0, minWidth: 150, background: mode === "live" ? "var(--neg)" : undefined }}
+                style={{ marginTop: 0, minWidth: 150 }}
               >
-                {busy === "starting" ? "Starting…" : mode === "live" ? "Start live run" : "Start paper run"}
+                {busy === "starting" ? "Starting…" : "Start paper run"}
               </button>
             </div>
 
-            {mode === "live" && (
-              <p style={{ fontSize: 12, color: "var(--neg)", margin: "12px 0 0", lineHeight: 1.6, maxWidth: "80ch" }}>
-                A live run still will not place an order until you press <strong>Arm</strong> afterwards.
-                Starting it only connects the ladder to real quotes.
-              </p>
-            )}
+            <p style={{ fontSize: 12, color: "var(--ink-muted)", margin: "12px 0 0", lineHeight: 1.6, maxWidth: "80ch" }}>
+              Runs against live Choice quotes and records simulated fills. This platform places no
+              orders — there is no live-trading path to switch into.
+            </p>
           </>
         ) : (
           <>
@@ -254,27 +251,20 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>
 
+            {state?.fill_quality && state.fill_quality.legs_on_real_depth +
+              state.fill_quality.legs_on_modelled_spread > 0 && (
+              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 14px", lineHeight: 1.6 }}>
+                <strong style={{ color: "var(--ink-2)" }}>Fill quality:</strong>{" "}
+                {pct(state.fill_quality.real_depth_fraction)} of legs filled against a real order
+                book; the rest were charged a modelled spread. Total slippage paid{" "}
+                {inr(state.fill_quality.total_slippage)} per share across all legs.
+              </p>
+            )}
+
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button onClick={stop} disabled={busy !== null} className="btn-danger">
                 {busy === "stopping" ? "Stopping…" : "Stop run"}
               </button>
-
-              {session?.mode === "live" && !session.armed && (
-                confirmLive ? (
-                  <>
-                    <button onClick={arm} disabled={busy !== null} className="btn-danger">
-                      {busy === "arming" ? "Arming…" : "Yes — place real orders"}
-                    </button>
-                    <button onClick={() => setConfirmLive(false)} className="btn-quiet">
-                      Cancel
-                    </button>
-                  </>
-                ) : (
-                  <button onClick={() => setConfirmLive(true)} className="btn-danger">
-                    Arm for real orders
-                  </button>
-                )
-              )}
 
               <button onClick={refresh} className="btn-quiet">
                 Refresh now

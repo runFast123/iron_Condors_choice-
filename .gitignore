@@ -70,3 +70,7 @@ desktop.ini
 logs/
 *.log
 engine/state/
+
+# Runtime forward-test state written by the engine. Positions rather than
+# secrets, but per-run state has no business being versioned.
+web/data/live.json

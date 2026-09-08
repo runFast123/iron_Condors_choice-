@@ -25,13 +25,18 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Callable
 
 from engine.choice.errors import ChoiceError
 from engine.choice.instruments import Contract
 from engine.config import IST, engine_config
-from engine.data.market import NIFTY, ChoiceMarketData
+from engine.data.market import NIFTY, ChoiceMarketData, Quote
+from engine.data.market_calendar import MARKET_CLOSE as MARKET_CLOSE_TIME
+from engine.data.market_calendar import MARKET_OPEN as MARKET_OPEN_TIME
+from engine.data.market_calendar import MarketCalendar, MarketStatus
+from engine.forward.fills import FillModel, FillPrice
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import (
     Condor,
@@ -45,25 +50,26 @@ from engine.strategy.condor import (
     net_positions,
     netting_summary,
 )
+from engine.store.db import Store
 from engine.strategy.ladder import Ladder
 
 log = logging.getLogger(__name__)
 
-MARKET_OPEN = dt.time(9, 15)
-MARKET_CLOSE = dt.time(15, 30)
+MARKET_OPEN = MARKET_OPEN_TIME
+MARKET_CLOSE = MARKET_CLOSE_TIME
+
+# One calendar for the process: holidays are global, and learning one in a
+# forward run should stop every other run polling a shut exchange too.
+market_calendar = MarketCalendar.load()
 
 
 def market_is_open(now: dt.datetime | None = None) -> bool:
-    """NSE regular session, Monday to Friday.
+    """Weekday, inside session hours, and not a known holiday.
 
-    Holidays are not encoded: the authority on whether the market is open is
-    Choice's own MarketStatus endpoint, which the runner consults. This is a
-    cheap pre-filter so we do not poll all night.
+    This is the local answer. A runner with a Choice session prefers the
+    exchange's own MarketStatus and falls back to this when that is silent.
     """
-    now = now or dt.datetime.now(tz=IST)
-    if now.weekday() >= 5:
-        return False
-    return MARKET_OPEN <= now.time() <= MARKET_CLOSE
+    return market_calendar.is_open(now)
 
 
 @dataclass
@@ -92,8 +98,12 @@ class Fill:
     source: str
     mode: str
     token: int | None = None
-    order_id: str | None = None
     action: str = "OPEN"       # OPEN | CLOSE
+    # What fair value was, what crossing the spread cost, and whether that
+    # spread came from a real book or was modelled in its absence.
+    reference: float | None = None
+    slippage: float = 0.0
+    spread_modelled: bool = False
 
 
 class ForwardRunner:
@@ -104,23 +114,33 @@ class ForwardRunner:
         market: ChoiceMarketData,
         strategy: StrategyConfig,
         *,
-        mode: str = "paper",
         costs: CostModel | None = None,
         state_path: Path | None = None,
         max_events: int = 500,
+        fill_model: FillModel | None = None,
+        store: "Store | None" = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         self.market = market
         self.strategy = strategy
-        self.mode = mode
+        # Paper is the only mode this platform has. There is no order-placement
+        # path to switch into, which is why no arming step exists either.
+        self.mode = "paper"
         self.costs = costs or CostModel()
+        self.fill_model = fill_model or FillModel()
         self.state_path = state_path or Path("web/data/live.json")
+        # Durable home for this run. Without it the run exists only for as long
+        # as this process does, which is the failure being fixed here.
+        self.store = store
+        self.session_id = session_id
+        self.user_id = user_id
         self.max_events = max_events
 
         self.ladder = Ladder(config=strategy)
         self.condors: list[Condor] = []
         self.events: list[Event] = []
         self.fills: list[Fill] = []
-        self.armed = mode != "live"      # live mode must be armed explicitly
         self.started_at = dt.datetime.now(tz=IST)
         self.last_tick: dt.datetime | None = None
         self.last_spot: float | None = None
@@ -133,10 +153,15 @@ class ForwardRunner:
         # Unrealised P&L per open condor from the most recent tick. Kept so
         # the snapshot reports a real number instead of a placeholder.
         self.last_mtm: dict[int, float] = {}
-        # Monotonic per-order id. Seeded from the clock so ids do not repeat
-        # across restarts, then incremented so two legs can never collide --
-        # a strike hash and a millisecond timestamp both can.
-        self._order_seq = int(time.time()) % 1_000_000 * 1000
+        # How many legs were priced on a real book versus a modelled spread,
+        # so the UI can say how trustworthy a run's P&L actually is.
+        session = getattr(market, "session", None)
+        # The exchange is the only real authority on an unscheduled closure;
+        # the calendar is the fallback when the endpoint is unreachable.
+        self.market_status = MarketStatus(session, market_calendar) if session else None
+        self.legs_on_real_depth = 0
+        self.legs_on_modelled_spread = 0
+        self.total_slippage = 0.0
         self._contracts: dict[tuple[str, float, str], Contract] = {}
 
     # ------------------------------------------------------------- logging
@@ -157,11 +182,6 @@ class ForwardRunner:
             del self.events[: len(self.events) - self.max_events]
         getattr(log, "error" if severity == "error" else "info")("%s %s", message, detail or "")
 
-    def arm(self) -> None:
-        """Enable real order placement. Deliberately a separate step."""
-        self.armed = True
-        self.emit("warn", "Runner ARMED for live orders", mode=self.mode)
-
     # ------------------------------------------------------------- pricing
 
     def _contract(self, expiry: dt.date, strike: float, right: str) -> Contract:
@@ -170,11 +190,13 @@ class ForwardRunner:
             self._contracts[key] = self.market.master.option(NIFTY, expiry, strike, right)
         return self._contracts[key]
 
-    def _quote_legs(self, legs: list[Leg], expiry: dt.date) -> dict[Leg, tuple[float, Contract]] | None:
-        """Live LTP for all four legs, or None if any is missing.
+    def _quote_legs(self, legs: list[Leg], expiry: dt.date) -> dict[Leg, tuple[Quote, Contract]] | None:
+        """Live quotes for all four legs, or None if any is missing.
 
-        A partial quote is refused: opening three of four legs would leave a
-        naked short in the book.
+        A partial quote is refused: opening three of four legs would leave an
+        unhedged short, which is the one outcome this structure exists to
+        avoid -- in paper just as much as anywhere else, because a paper run
+        that silently reports an impossible position is worse than no run.
         """
         try:
             contracts = {leg: self._contract(expiry, leg.strike, leg.right) for leg in legs}
@@ -183,23 +205,30 @@ class ForwardRunner:
             return None
 
         try:
-            ltps = self.market.touchline(list(contracts.values()))
+            quotes = self.market.quotes(list(contracts.values()))
         except ChoiceError as exc:
             self.emit("error", "Touchline failed", error=str(exc))
             return None
 
-        out: dict[Leg, tuple[float, Contract]] = {}
+        out: dict[Leg, tuple[Quote, Contract]] = {}
         for leg, contract in contracts.items():
-            price = ltps.get(contract.token)
-            if price is None or price <= 0:
+            quote = quotes.get(contract.token)
+            if quote is None or quote.ltp <= 0:
                 self.emit(
                     "warn",
-                    "No live quote for a leg; rung skipped",
+                    "No live quote for a leg; condor skipped",
                     strike=leg.strike, right=leg.right, token=contract.token,
                 )
                 return None
-            out[leg] = (price, contract)
+            out[leg] = (quote, contract)
         return out
+
+    def _record_fill_quality(self, fill: FillPrice) -> None:
+        if fill.spread_modelled:
+            self.legs_on_modelled_spread += 1
+        else:
+            self.legs_on_real_depth += 1
+        self.total_slippage += fill.slippage
 
     # ---------------------------------------------------------------- open
 
@@ -209,30 +238,46 @@ class ForwardRunner:
         if quoted is None:
             return None
 
+        # Price every leg before committing to any of them: a book too wide to
+        # trade through on one leg invalidates the whole structure, and finding
+        # that out halfway would leave a partial condor in the book.
+        priced: dict[Leg, tuple[FillPrice, Contract]] = {}
+        for leg in legs:
+            quote, contract = quoted[leg]
+            fill = self.fill_model.fill(quote, leg.side)
+            if fill is None:
+                self.emit(
+                    "warn", "Spread too wide to trade; condor skipped",
+                    level=level, strike=leg.strike, right=leg.right,
+                    bid=quote.bid, ask=quote.ask,
+                )
+                return None
+            priced[leg] = (fill, contract)
+
         now = dt.datetime.now(tz=IST)
         filled: list[FilledLeg] = []
         entry_costs = 0.0
+        modelled = 0
 
-        # Protective wings first, shorts last, so the account never shows a
-        # naked short mid-structure.
         for leg in legs:
-            price, contract = quoted[leg]
-            order_id = None
-            if self.mode == "live" and self.armed:
-                order_id = self._place(leg, contract, price)
-                if order_id is None:
-                    self.emit("error", "Leg rejected; aborting rung", level=level, strike=leg.strike)
-                    return None
+            fill, contract = priced[leg]
+            self._record_fill_quality(fill)
+            modelled += int(fill.spread_modelled)
             filled.append(
-                FilledLeg(leg=leg, entry_price=price, source=PriceSource.CHOICE, token=contract.token)
+                FilledLeg(
+                    leg=leg, entry_price=fill.price,
+                    source=PriceSource.CHOICE, token=contract.token,
+                )
             )
-            entry_costs += self.costs.leg_cost(leg.side, price, leg.qty)
+            entry_costs += self.costs.leg_cost(leg.side, fill.price, leg.qty)
             self.fills.append(
                 Fill(
                     ts=now.isoformat(), condor_index=len(self.condors), condor_level=level,
                     expiry=expiry.isoformat(), right=leg.right, side=leg.side.value,
-                    strike=leg.strike, qty=leg.qty, price=price, source="choice",
-                    mode=self.mode, token=contract.token, order_id=order_id, action="OPEN",
+                    strike=leg.strike, qty=leg.qty, price=fill.price, source="choice",
+                    mode=self.mode, token=contract.token, action="OPEN",
+                    reference=round(fill.reference, 2), slippage=round(fill.slippage, 2),
+                    spread_modelled=fill.spread_modelled,
                 )
             )
 
@@ -242,76 +287,34 @@ class ForwardRunner:
         )
         self.condors.append(condor)
         self.emit(
-            "trade", f"Opened rung at {level:,.0f}",
+            "trade", f"Opened condor at {level:,.0f}",
             level=level, credit=round(condor.credit, 2),
-            max_loss=round(condor.max_loss, 2), expiry=expiry.isoformat(), mode=self.mode,
+            max_loss=round(condor.max_loss, 2), expiry=expiry.isoformat(),
+            modelled_legs=modelled,
         )
-        return condor
-
-    def _place(self, leg: Leg, contract: Contract, ltp: float) -> str | None:
-        """Place one real order.
-
-        Choice supports only RL_LIMIT / SL_LIMIT -- there is no market order --
-        so we send a limit priced through the touch by a slippage buffer.
-        Prices go on the wire in paisa, quantity in shares.
-        """
-        buffer = max(0.05, ltp * 0.01)
-        limit = ltp + buffer if leg.side is Side.BUY else max(0.05, ltp - buffer)
-        payload = {
-            "SegmentId": contract.segment_id,
-            "Token": contract.token,
-            "OrderType": "RL_LIMIT",
-            "BS": 1 if leg.side is Side.BUY else 2,
-            "Qty": leg.qty,
-            "Price": int(round(limit * 100)),
-            "TriggerPrice": 0,
-            "Validity": 1,
-            "ProductType": "M",
-            "DisclosedQty": 0,
-            # Unique per leg: kkunal hardcodes 123456 for every order, which
-            # makes a four-leg structure impossible to modify or cancel.
-            "ClientOrderNo": self._next_order_no(),
-            "Remarks": "condor-ladder",
-            "ModeTyp": "WEBAPI",
-            "Mode": 1,
-            "DeviceId": "ENGINE",
-        }
-        try:
-            resp = self.market.session.request(
-                "POST", "api/OpenAPI/V2/NewOrder", payload, is_order=True
-            )
-        except ChoiceError as exc:
-            self.emit("error", "Order failed", strike=leg.strike, right=leg.right, error=str(exc))
-            return None
-        if str(resp.get("Status", "")).lower() != "success":
-            self.emit("error", "Order rejected", strike=leg.strike, response=str(resp)[:200])
-            return None
-        body = resp.get("Response") or {}
-        order_id = body.get("OrderNo") or body.get("ClientOrderNo")
-        if not order_id:
-            # Accepted with no identifier is not a usable fill: without an
-            # order number the leg cannot be modified, cancelled or
-            # reconciled, so treat it as a failure rather than assume it filled.
+        if condor.credit <= 0:
+            # An iron condor is a credit structure by construction. A debit
+            # means the quotes are wrong -- a stale strike, the wrong divisor,
+            # the wrong segment -- not that the trade is merely unattractive.
             self.emit(
-                "error",
-                "Order accepted but returned no order number",
-                strike=leg.strike, right=leg.right, response=str(resp)[:200],
+                "warn", "Condor opened at a net debit; check the quotes",
+                level=level, credit=round(condor.credit, 2),
             )
-            return None
-        return str(order_id)
-
-    def _next_order_no(self) -> int:
-        self._order_seq += 1
-        return self._order_seq % 2_000_000_000
+        return condor
 
     # -------------------------------------------------------------- manage
 
     def _mark_all(self) -> dict[int, float]:
-        """Live MTM per open condor index."""
+        """Live MTM per open condor index, marked at mid.
+
+        Unrealised P&L is marked to fair value, not to what liquidating would
+        fetch; the cost of crossing the spread is charged when a condor is
+        actually opened or closed rather than smeared across every tick.
+        """
         out: dict[int, float] = {}
-        condor_marks: dict[int, dict] = {}
         open_condors = [c for c in self.condors if c.is_open]
         if not open_condors:
+            self.last_mtm = out
             return out
         contracts = []
         for condor in open_condors:
@@ -321,48 +324,67 @@ class ForwardRunner:
                 except ChoiceError:
                     pass
         try:
-            ltps = self.market.touchline(contracts)
+            quotes = self.market.quotes(contracts)
         except ChoiceError as exc:
             self.emit("warn", "MTM refresh failed", error=str(exc))
             return out
 
         for condor in open_condors:
             marks: dict[Leg, float] = {}
+            leg_quotes: dict[Leg, Quote] = {}
             for fl in condor.legs:
-                if fl.token is not None and fl.token in ltps:
-                    marks[fl.leg] = ltps[fl.token]
+                quote = quotes.get(fl.token) if fl.token is not None else None
+                if quote is not None:
+                    marks[fl.leg] = quote.mid
+                    leg_quotes[fl.leg] = quote
             if len(marks) == len(condor.legs):
                 out[condor.index] = condor.mtm(marks)
-                condor_marks[condor.index] = marks
                 reason = condor.exit_signal(marks)
                 if reason:
-                    self._close(condor, marks, reason)
+                    self._close(condor, leg_quotes, reason)
                     out.pop(condor.index, None)
         self.last_mtm = out
         return out
 
-    def _close(self, condor: Condor, marks: dict[Leg, float], reason: str) -> None:
+    def _close(self, condor: Condor, quotes: dict[Leg, Quote], reason: str) -> None:
+        """Close a condor, crossing the spread the other way on every leg."""
         now = dt.datetime.now(tz=IST)
         exit_costs = 0.0
+        exits: dict[Leg, FillPrice] = {}
         for fl in condor.legs:
-            price = marks[fl.leg]
-            fl.exit_price = price
-            fl.exit_source = PriceSource.CHOICE
+            fill = self.fill_model.exit_fill(quotes[fl.leg], fl.leg.side)
+            if fill is None:
+                # Nothing sensible to close at. Leave the condor open and try
+                # again next tick rather than book an invented exit price.
+                self.emit(
+                    "warn", "Spread too wide to close; condor left open",
+                    level=condor.level, strike=fl.leg.strike, right=fl.leg.right,
+                )
+                return
+            exits[fl.leg] = fill
+
+        for fl in condor.legs:
+            fill = exits[fl.leg]
             opposite = Side.BUY if fl.leg.side is Side.SELL else Side.SELL
-            exit_costs += self.costs.leg_cost(opposite, price, fl.leg.qty)
+            self._record_fill_quality(fill)
+            fl.exit_price = fill.price
+            fl.exit_source = PriceSource.CHOICE
+            exit_costs += self.costs.leg_cost(opposite, fill.price, fl.leg.qty)
             self.fills.append(
                 Fill(
                     ts=now.isoformat(), condor_index=condor.index, condor_level=condor.level,
                     expiry=condor.expiry.isoformat(), right=fl.leg.right, side=opposite.value,
-                    strike=fl.leg.strike, qty=fl.leg.qty, price=price, source="choice",
+                    strike=fl.leg.strike, qty=fl.leg.qty, price=fill.price, source="choice",
                     mode=self.mode, token=fl.token, action="CLOSE",
+                    reference=round(fill.reference, 2), slippage=round(fill.slippage, 2),
+                    spread_modelled=fill.spread_modelled,
                 )
             )
         status = CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
         condor.close(now, reason, status, exit_costs)
         self.realised += condor.realised_pnl()
         self.emit(
-            "trade", f"Closed rung at {condor.level:,.0f}",
+            "trade", f"Closed condor at {condor.level:,.0f}",
             level=condor.level, reason=reason, pnl=round(condor.realised_pnl(), 2),
         )
 
@@ -388,14 +410,22 @@ class ForwardRunner:
 
         now = dt.datetime.now(tz=IST)
         self.last_spot, self.last_tick = spot, now
+        if self.store is not None and self.session_id:
+            try:
+                self.store.record_tick(self.session_id, now.isoformat(), spot)
+            except Exception:                       # noqa: BLE001
+                log.exception("Could not record tick")
 
         if self.expiry is None:
             self.expiry = self.market.master.nearest_expiry(NIFTY, now.date(), min_days=0)
             self.emit("info", f"Trading expiry {self.expiry:%d-%b-%Y}", expiry=self.expiry.isoformat())
 
         for trigger in self.ladder.on_price(spot, now):
-            if len([c for c in self.condors if c.is_open]) >= engine_config.max_condors:
-                self.emit("warn", "Max concurrent rungs reached; trigger ignored", level=trigger.level)
+            # The ladder enforces the same cap when it decides whether to fire,
+            # so this is a backstop -- but it must read the *run's* limit, not a
+            # global one, or a run configured for 30 would silently drop 10.
+            if len([c for c in self.condors if c.is_open]) >= self.strategy.max_condors:
+                self.emit("warn", "Max concurrent condors reached; trigger ignored", level=trigger.level)
                 continue
             self._open_condor(trigger.level, self.expiry)
 
@@ -403,7 +433,6 @@ class ForwardRunner:
         total = self.realised + sum(mtm.values())
         if total <= -abs(engine_config.daily_loss_limit):
             self.stopped_reason = f"daily loss limit hit ({total:,.0f})"
-            self.armed = False
             self.emit("error", "KILL SWITCH: " + self.stopped_reason, pnl=round(total, 2))
 
     # ---------------------------------------------------------------- state
@@ -416,7 +445,6 @@ class ForwardRunner:
         return {
             "session": {
                 "mode": self.mode,
-                "armed": self.armed,
                 "status": "stopped" if self.stopped_reason else "running",
                 "stopped_reason": self.stopped_reason,
                 "started_at": self.started_at.isoformat(),
@@ -426,6 +454,20 @@ class ForwardRunner:
                 "expiry": self.expiry.isoformat() if self.expiry else None,
                 "last_error": self.last_error,
                 "quote_format": getattr(self.market, "touchline_format", None),
+            },
+            # How much of this run was priced on a real order book. A run made
+            # mostly of modelled spreads is still useful, but it is not the
+            # same claim as one filled against live depth, so say which it is.
+            "fill_quality": {
+                "legs_on_real_depth": self.legs_on_real_depth,
+                "legs_on_modelled_spread": self.legs_on_modelled_spread,
+                "real_depth_fraction": (
+                    self.legs_on_real_depth
+                    / (self.legs_on_real_depth + self.legs_on_modelled_spread)
+                    if (self.legs_on_real_depth + self.legs_on_modelled_spread)
+                    else 0.0
+                ),
+                "total_slippage": round(self.total_slippage, 2),
             },
             "market": {"spot": self.last_spot, "ts": self.last_tick.isoformat() if self.last_tick else None},
             "ladder": {
@@ -480,12 +522,42 @@ class ForwardRunner:
         }
 
     def save(self) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps(self.snapshot(), separators=(",", ":")), encoding="utf-8"
-        )
+        """Persist the run, durably first and then as a readable snapshot.
+
+        The database is what a restart reads back; the JSON file is a
+        convenience for eyeballing state on the box. A failure to write either
+        must not kill the tick loop -- a run that stops trading because its
+        disk is full is a worse outcome than one that stops being saved.
+        """
+        if self.store is not None and self.session_id and self.user_id:
+            try:
+                self.store.save_forward(
+                    session_id=self.session_id,
+                    user_id=self.user_id,
+                    status="stopped" if self.stopped_reason else "running",
+                    started_at=self.started_at.isoformat(),
+                    stopped_reason=self.stopped_reason,
+                    state=self.to_state(),
+                )
+            except Exception:                       # noqa: BLE001
+                log.exception("Could not persist forward state")
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(
+                json.dumps(self.snapshot(), separators=(",", ":")), encoding="utf-8"
+            )
+        except OSError:
+            log.exception("Could not write the state snapshot file")
 
     # ------------------------------------------------------------------ run
+
+    def is_market_open(self, now: dt.datetime | None = None) -> bool:
+        """Choice's answer if it has one, the local calendar otherwise."""
+        if self.market_status is not None:
+            live = self.market_status.is_open(now)
+            if live is not None:
+                return live
+        return market_is_open(now)
 
     def run(
         self,
@@ -499,14 +571,20 @@ class ForwardRunner:
         )
         ticks = 0
         try:
+            idle_logged = False
             while max_ticks is None or ticks < max_ticks:
-                if not market_is_open():
-                    self.emit("info", "Market closed; idling")
-                    self.save()
+                if not self.is_market_open():
+                    # Log the transition once, not every minute all weekend.
+                    if not idle_logged:
+                        nxt = market_calendar.next_open()
+                        self.emit("info", f"Market closed; idling until {nxt:%d-%b %H:%M}")
+                        self.save()
+                        idle_logged = True
                     if max_ticks is not None:
                         break
                     time.sleep(60)
                     continue
+                idle_logged = False
                 self.tick()
                 self.save()
                 if on_tick:
@@ -521,3 +599,169 @@ class ForwardRunner:
         finally:
             self.emit("info", "Forward run stopped", ticks=ticks)
             self.save()
+
+    # -------------------------------------------------------------- resume
+
+    STATE_VERSION = 1
+
+    @staticmethod
+    def _condor_state(condor: Condor) -> dict[str, Any]:
+        return {
+            "index": condor.index,
+            "level": condor.level,
+            "entry_time": condor.entry_time.isoformat(),
+            "expiry": condor.expiry.isoformat(),
+            "status": condor.status.value,
+            "exit_time": condor.exit_time.isoformat() if condor.exit_time else None,
+            "exit_reason": condor.exit_reason,
+            "entry_costs": condor.entry_costs,
+            "exit_costs": condor.exit_costs,
+            "legs": [
+                {
+                    "right": fl.leg.right,
+                    "side": fl.leg.side.value,
+                    "strike": fl.leg.strike,
+                    "qty": fl.leg.qty,
+                    "entry_price": fl.entry_price,
+                    "source": fl.source.value,
+                    "token": fl.token,
+                    "exit_price": fl.exit_price,
+                    "exit_source": fl.exit_source.value if fl.exit_source else None,
+                }
+                for fl in condor.legs
+            ],
+        }
+
+    def to_state(self) -> dict[str, Any]:
+        """Everything needed to resume this run in a fresh process.
+
+        Deliberately not ``snapshot()``: that is shaped for the dashboard, and
+        rebuilding a strategy from its own rendering is how a resumed run ends
+        up subtly different from the one it replaced. This is the ladder's
+        actual state -- anchor, fired levels, open positions and their fills.
+        """
+        return {
+            "version": self.STATE_VERSION,
+            "mode": self.mode,
+            "started_at": self.started_at.isoformat(),
+            "last_tick": self.last_tick.isoformat() if self.last_tick else None,
+            "last_spot": self.last_spot,
+            "expiry": self.expiry.isoformat() if self.expiry else None,
+            "realised": self.realised,
+            "stopped_reason": self.stopped_reason,
+            "legs_on_real_depth": self.legs_on_real_depth,
+            "legs_on_modelled_spread": self.legs_on_modelled_spread,
+            "total_slippage": self.total_slippage,
+            "strategy": asdict(self.strategy),
+            "ladder": {
+                "anchor": self.ladder.anchor,
+                "last_level": self.ladder.last_level,
+                "fired_levels": sorted(self.ladder.fired_levels),
+            },
+            "condors": [self._condor_state(c) for c in self.condors],
+            "fills": [asdict(f) for f in self.fills],
+            "events": [asdict(e) for e in self.events],
+        }
+
+    @classmethod
+    def restore(
+        cls,
+        state: dict[str, Any],
+        *,
+        market: ChoiceMarketData,
+        costs: CostModel | None = None,
+        state_path: Path | None = None,
+        fill_model: FillModel | None = None,
+        store: "Store | None" = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> "ForwardRunner":
+        """Rebuild a runner from :meth:`to_state`.
+
+        A restore that silently dropped positions would be worse than no
+        restore at all -- the ladder would re-fire levels it already holds --
+        so every open condor is reconstructed with its original fills, and the
+        fired-level set is restored so nothing opens twice.
+        """
+        version = state.get("version")
+        if version != cls.STATE_VERSION:
+            raise ValueError(f"Unsupported forward state version {version!r}")
+
+        known = {f.name for f in dataclass_fields(StrategyConfig)}
+        strategy = StrategyConfig(**{k: v for k, v in state["strategy"].items() if k in known})
+
+        runner = cls(
+            market=market, strategy=strategy, costs=costs,
+            state_path=state_path, fill_model=fill_model,
+            store=store, session_id=session_id, user_id=user_id,
+        )
+        runner.started_at = _parse_dt(state.get("started_at")) or runner.started_at
+        runner.last_tick = _parse_dt(state.get("last_tick"))
+        runner.last_spot = state.get("last_spot")
+        runner.expiry = _parse_date(state.get("expiry"))
+        runner.realised = float(state.get("realised") or 0.0)
+        runner.stopped_reason = state.get("stopped_reason")
+        runner.legs_on_real_depth = int(state.get("legs_on_real_depth") or 0)
+        runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)
+        runner.total_slippage = float(state.get("total_slippage") or 0.0)
+
+        ladder_state = state.get("ladder") or {}
+        runner.ladder.anchor = ladder_state.get("anchor")
+        runner.ladder.last_level = ladder_state.get("last_level")
+        runner.ladder.fired_levels = set(ladder_state.get("fired_levels") or [])
+
+        runner.condors = [
+            _restore_condor(raw, strategy) for raw in state.get("condors") or []
+        ]
+        runner.fills = [Fill(**raw) for raw in state.get("fills") or []]
+        runner.events = [Event(**raw) for raw in state.get("events") or []]
+        return runner
+
+
+def _parse_dt(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=IST)
+
+
+def _parse_date(value: str | None) -> dt.date | None:
+    if not value:
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> Condor:
+    legs = [
+        FilledLeg(
+            leg=Leg(
+                right=item["right"], side=Side(item["side"]),
+                strike=float(item["strike"]), qty=int(item["qty"]),
+            ),
+            entry_price=float(item["entry_price"]),
+            source=PriceSource(item.get("source") or PriceSource.CHOICE.value),
+            token=item.get("token"),
+            exit_price=item.get("exit_price"),
+            exit_source=PriceSource(item["exit_source"]) if item.get("exit_source") else None,
+        )
+        for item in raw.get("legs") or []
+    ]
+    return Condor(
+        level=float(raw["level"]),
+        entry_time=_parse_dt(raw.get("entry_time")) or dt.datetime.now(tz=IST),
+        expiry=_parse_date(raw.get("expiry")) or dt.date.today(),
+        legs=legs,
+        config=strategy,
+        status=CondorStatus(raw.get("status") or CondorStatus.OPEN.value),
+        exit_time=_parse_dt(raw.get("exit_time")),
+        exit_reason=raw.get("exit_reason"),
+        entry_costs=float(raw.get("entry_costs") or 0.0),
+        exit_costs=float(raw.get("exit_costs") or 0.0),
+        index=int(raw.get("index") or 0),
+    )
