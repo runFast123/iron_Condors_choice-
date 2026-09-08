@@ -198,8 +198,11 @@ def empty_bundle(reason: str) -> dict:
             "step": 100.0, "short_offset": 200.0, "long_offset": 400.0,
             "lots": 1, "lot_size": 75, "qty": 75, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
-            "anchor_mode": "floor", "label": "Awaiting Choice connection",
+            "anchor_mode": "floor", "roll_to_next_expiry": True,
+            "label": "Awaiting Choice connection",
         },
+        "campaigns": 0,
+        "rolls": [],
         "metrics": {
             k: 0 for k in (
                 "net_pnl gross_pnl total_costs total_credit condors wins losses win_rate "
@@ -291,10 +294,16 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "take_profit_pct": strategy.take_profit_pct,
             "stop_loss_mult": strategy.stop_loss_mult,
             "anchor_mode": params.anchor_mode,
+            "roll_to_next_expiry": params.roll_to_next_expiry,
             "label": params.label,
         },
         "metrics": result.metrics.to_dict(),
         "netting": result.netting,
+        "campaigns": result.campaigns,
+        "rolls": [
+            {"when": w.isoformat(), "from": a.isoformat(), "to": b.isoformat()}
+            for w, a, b in result.rolls
+        ],
         "condors": condors,
         "equity": curve,
         "payoff": payoff,

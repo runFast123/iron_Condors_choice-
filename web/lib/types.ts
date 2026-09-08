@@ -43,6 +43,7 @@ export interface Params {
   take_profit_pct: number | null;
   stop_loss_mult: number | null;
   anchor_mode: string;
+  roll_to_next_expiry?: boolean;
   label: string;
 }
 
@@ -113,11 +114,19 @@ export interface Netting {
 
 export interface Trigger { level: number; time: string; spot: number; reason: string; }
 
+export interface Roll {
+  when: string;
+  from: string;
+  to: string;
+}
+
 export interface Dataset {
   provenance: Provenance;
   params: Params;
   metrics: Metrics;
   netting: Netting;
+  campaigns?: number;
+  rolls?: Roll[];
   condors: Condor[];
   equity: EquityPoint[];
   payoff: { spot: number; pnl: number }[];

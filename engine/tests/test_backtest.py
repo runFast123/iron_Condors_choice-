@@ -261,3 +261,80 @@ def test_expiry_resolver_rolls_past_the_front_week():
     resolve = weekly_expiry_resolver([EXPIRY, dt.date(2026, 4, 2)], min_dte=1)
     assert resolve(dt.date(2026, 3, 23)) == EXPIRY
     assert resolve(EXPIRY) == dt.date(2026, 4, 2)   # on expiry day, roll out
+
+
+# ====================================================== expiry roll
+
+
+EXPIRY_2 = dt.date(2026, 4, 2)
+
+
+def two_expiry_run(prices, roll: bool, minutes=60):
+    params = BacktestParams(strategy=cfg(), costs=ZERO_COST, roll_to_next_expiry=roll)
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2], min_dte=1))
+    return engine.run(spot_path(prices, minutes=minutes))
+
+
+def test_ladder_re_anchors_in_the_new_expiry():
+    """After an expiry settles, a fresh ladder starts at the prevailing spot.
+
+    Without this the ladder keeps its old reference level, sits waiting for a
+    price far below the market, and simply stops trading.
+    """
+    # Fall to 23,800 before expiry, then trade flat at 24,500 well after it.
+    prices = [24_000, 23_900, 23_800] + [24_500] * 120
+    result = two_expiry_run(prices, roll=True)
+
+    assert result.rolls, "expected a roll into the next expiry"
+    expiries = {c.expiry for c in result.condors}
+    assert expiries == {EXPIRY, EXPIRY_2}
+    # The second campaign anchors near 24,500, not at the stale 23,800.
+    second = [c for c in result.condors if c.expiry == EXPIRY_2]
+    assert second and max(c.level for c in second) >= 24_400
+
+
+def test_without_the_roll_the_ladder_stalls():
+    """The old behaviour, kept available and shown to be the worse one."""
+    prices = [24_000, 23_900, 23_800] + [24_500] * 120
+    result = two_expiry_run(prices, roll=False)
+
+    assert result.rolls == []
+    assert {c.expiry for c in result.condors} == {EXPIRY}
+    # Price spent the rest of the range far above the stale reference level,
+    # so nothing else ever fired.
+    assert len(result.condors) == 3
+
+
+def test_each_campaign_gets_its_own_rung_budget():
+    params = BacktestParams(strategy=cfg(max_condors=2), costs=ZERO_COST, roll_to_next_expiry=True)
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2], min_dte=1))
+    result = engine.run(spot_path([24_000, 23_900, 23_800] + [24_500] * 120, minutes=60))
+
+    for expiry in {c.expiry for c in result.condors}:
+        assert len([c for c in result.condors if c.expiry == expiry]) <= 2
+
+
+def test_offsetting_never_crosses_an_expiry():
+    """The strategy's premise holds only within one expiry.
+
+    A long 23,600 PE in March and a short 23,600 PE in April are different
+    instruments; they must not be reported as cancelling.
+    """
+    result = two_expiry_run([24_000, 23_900, 23_800] + [24_500] * 120, roll=True)
+    rows = result.strike_matrix()
+    for row in rows:
+        contributors = row["by_condor"]
+        expiries = {c.expiry.isoformat() for c in result.condors if c.index in contributors}
+        assert expiries <= {row["expiry"]}, f"row {row['strike']}{row['right']} mixes expiries"
+
+
+def test_roll_is_reported_to_the_user():
+    result = two_expiry_run([24_000, 23_900, 23_800] + [24_500] * 120, roll=True)
+    assert result.campaigns == len(result.rolls) + 1
+    assert any("expiry campaigns" in w for w in result.warnings)
+
+
+def test_a_single_expiry_run_reports_one_campaign():
+    result = run([24_000] * 40)
+    assert result.rolls == []
+    assert result.campaigns == 1

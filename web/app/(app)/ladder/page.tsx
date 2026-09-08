@@ -71,7 +71,10 @@ export default function LadderPage() {
             Read down the <strong>Long PE</strong> column and across the <strong>Short PE</strong> column:
             rung 24,000 buys the 23,600 put, and rung 23,800 sells it. Same strike, opposite sides,
             equal size &mdash; the pair nets flat. The same happens on the call side two rungs later.
-            Across this campaign that mechanism cancelled{" "}
+            Offsetting is always <strong>within one expiry</strong>: a long 23,600 PE in March and a
+            short 23,600 PE in April are different instruments and net to nothing, so the ladder
+            re-anchors at each new expiry rather than carrying a stale reference level across one.
+            Across this campaign the mechanism cancelled{" "}
             <strong>{pct(netting.offset_ratio)}</strong> of everything traded, which is why the book stays
             far smaller than the {condors.length}&times;4 = {condors.length * 4} legs suggest.
           </p>

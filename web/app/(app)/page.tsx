@@ -5,7 +5,7 @@ import { EquityChart } from "@/components/charts/EquityChart";
 import Link from "next/link";
 
 export default function Overview() {
-  const { metrics: m, equity, netting, condors, params, provenance } = getDataset();
+  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = getDataset();
   const awaiting = provenance.awaiting_connection ?? false;
   const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
 
@@ -62,6 +62,11 @@ export default function Overview() {
                 tone={m.expectancy > 0 ? "pos" : "neg"} delta={`avg hold ${m.avg_days_held.toFixed(1)}d`} />
           <Stat label="Peak capital at risk" value={inr(m.capital_at_risk)}
                 delta={`${m.max_concurrent} rungs open at once`} />
+          <Stat label="Expiry campaigns" value={num(campaigns ?? 1)}
+                delta={(rolls?.length ?? 0) > 0
+                  ? `${rolls!.length} roll${rolls!.length === 1 ? "" : "s"}`
+                  : "single expiry"}
+                hint="ladder re-anchors each expiry" />
         </StatGrid>
         )}
 

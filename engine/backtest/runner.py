@@ -85,6 +85,13 @@ class BacktestResult:
     requirements: list[LegRequirement] = field(default_factory=list)
     skipped: list[tuple[dt.datetime, float, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # (when, expiry left behind, expiry rolled into)
+    rolls: list[tuple[dt.datetime, dt.date, dt.date]] = field(default_factory=list)
+
+    @property
+    def campaigns(self) -> int:
+        """How many separate expiry campaigns this run covered."""
+        return len(self.rolls) + 1 if self.condors else 0
 
     @property
     def netting(self) -> dict[str, float]:
@@ -138,11 +145,20 @@ def discover_requirements(
     )
     requirements: dict[tuple[dt.date, float, str], LegRequirement] = {}
     triggers: list[LadderTrigger] = []
+    campaign_expiry: dt.date | None = None
 
     for when, spot in spots:
+        expiry = expiry_for(when.date())
+        # Mirror the roll in pass 2, or this pass discovers the wrong legs.
+        if campaign_expiry is None:
+            campaign_expiry = expiry
+        elif expiry != campaign_expiry:
+            if params.roll_to_next_expiry:
+                ladder.reset()
+            campaign_expiry = expiry
+
         for trigger in ladder.on_price(spot, when):
             triggers.append(trigger)
-            expiry = expiry_for(when.date())
             for leg in build_legs(trigger.level, params.strategy):
                 requirement = LegRequirement(expiry, leg.strike, leg.right, when)
                 requirements.setdefault(requirement.key(), requirement)
@@ -229,10 +245,35 @@ class Backtest:
         max_concurrent = 0
         next_index = 0
 
+        campaign_expiry: dt.date | None = None
+
         for when, spot in spots:
+            expiry = self.expiry_for(when.date())
+
+            # 0. Roll into the next expiry.
+            #
+            # The strategy's whole premise is that overlapping strikes of later
+            # condors offset earlier ones -- but that only holds *within one
+            # expiry*. A long 23,600 PE expiring in March does not offset a
+            # short 23,600 PE expiring in April; they are separate instruments
+            # and net to nothing. So a campaign lives inside a single expiry,
+            # and when that expiry settles a fresh ladder is anchored at the
+            # prevailing spot.
+            #
+            # Without this the ladder keeps its old reference level forever:
+            # after its rungs settle it sits waiting for a level far below the
+            # market and simply stops trading, which is an artefact of ignoring
+            # expiry rather than anything the strategy asks for.
+            if campaign_expiry is None:
+                campaign_expiry = expiry
+            elif expiry != campaign_expiry:
+                if params.roll_to_next_expiry:
+                    ladder.reset()
+                    result.rolls.append((when, campaign_expiry, expiry))
+                campaign_expiry = expiry
+
             # 1. Open new rungs.
             for trigger in ladder.on_price(spot, when):
-                expiry = self.expiry_for(when.date())
                 legs = build_legs(trigger.level, params.strategy)
                 priced = self._price_legs(legs, expiry, when, spot)
                 if priced is None:
@@ -338,6 +379,11 @@ class Backtest:
             result.warnings.append(
                 f"{100 * (1 - result.metrics.real_price_fraction):.1f}% of quotes were MODELED "
                 "(Black-76 from India VIX), not real Choice premiums."
+            )
+        if result.rolls:
+            result.warnings.append(
+                f"Rolled through {len(result.rolls) + 1} expiry campaigns; the ladder re-anchors "
+                "at each new expiry because offsetting only works within one."
             )
         if result.skipped:
             result.warnings.append(
