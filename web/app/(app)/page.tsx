@@ -23,7 +23,9 @@ export default function Overview() {
         }
         right={
           <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-            <Badge tone="brand">{params.lots} lot &middot; {num(params.qty)} qty</Badge>
+            <Badge tone="brand">
+              {params.qty > 0 ? `${params.lots} lot · ${num(params.qty)} qty` : "lot size from scrip master"}
+            </Badge>
             <Badge>{params.max_condors} rung cap</Badge>
           </div>
         }

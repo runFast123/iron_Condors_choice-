@@ -52,7 +52,10 @@ class StrategyConfig:
     short_offset: float = 200.0    # short strike distance from the level
     long_offset: float = 400.0     # long (protective) strike distance
     lots: int = 1
-    lot_size: int = 75             # NIFTY; read from the scrip master at runtime
+    # Placeholder only. NSE revises this (25 -> 50 -> 75 -> 65), so the real
+    # value is always read from the Choice scrip master at runtime and this
+    # default is never used on a live path.
+    lot_size: int = 65
     strike_step: float = 50.0      # listed strike grid, for rounding
     max_condors: int = 20
     fill_gaps: bool = True         # a gap-down fires every level it skipped

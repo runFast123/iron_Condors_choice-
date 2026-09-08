@@ -58,11 +58,14 @@ _COLUMN_CANDIDATES: dict[str, tuple[str, ...]] = {
     "strike": ("strikeprice", "strike", "strikeprc"),
     "option_type": ("optiontype", "opttype", "option_type", "righttype", "callput"),
     "tick_size": ("ticksize", "tick"),
+    "price_divisor": ("pricedivisor", "divisor", "pricediv"),
     "underlying": ("underlying", "underlyingsymbol", "assettoken", "basesymbol"),
 }
 
+# Choice writes expiries as DDMONYY -- "23NOV26". That form is first because
+# it is what the live master actually uses; the rest are defensive.
 _EXPIRY_FORMATS = (
-    "%d-%b-%Y", "%d%b%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y",
+    "%d%b%y", "%d-%b-%Y", "%d%b%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y",
     "%d-%b-%y", "%Y%m%d", "%b %d %Y", "%d %b %Y",
 )
 
@@ -91,6 +94,7 @@ class Contract:
     option_type: str | None = None       # "CE" | "PE" | None
     underlying: str | None = None
     tick_size: float | None = None
+    price_divisor: float = 1.0
 
     @property
     def is_option(self) -> bool:
@@ -282,7 +286,13 @@ class ScripMaster:
             lot_size = 0
 
         option_type = _parse_option_type(self._get(row, "option_type"), description)
-        strike = _parse_float(self._get(row, "strike"))
+
+        # StrikePrice is scaled by PriceDivisor: the master carries 2325000
+        # with a divisor of 100, meaning strike 23250. Without this every
+        # strike is 100x too large and no contract ever resolves.
+        divisor = _parse_float(self._get(row, "price_divisor")) or 1.0
+        raw_strike = _parse_float(self._get(row, "strike"))
+        strike = raw_strike / divisor if raw_strike is not None else None
         expiry = _parse_expiry(self._get(row, "expiry"))
         underlying = str(self._get(row, "underlying") or "").strip() or None
         if underlying is None and option_type and symbol:
@@ -302,6 +312,7 @@ class ScripMaster:
             option_type=option_type,
             underlying=underlying,
             tick_size=_parse_float(self._get(row, "tick_size")),
+            price_divisor=divisor,
         )
 
     # --------------------------------------------------------------- query
