@@ -417,3 +417,70 @@ def test_forward_history_does_not_drag_every_state_blob_off_disk(store):
     assert rows and "state_json" not in rows[0]
     assert set(rows[0]) == {"session_id", "status", "started_at", "updated_at",
                             "stopped_reason"}
+
+
+# ================================= marks survive a resume, and unknown != zero
+
+
+def _runner_with_open_condor(tmp_path, store):
+    """A runner holding one open condor with a known mark."""
+    import datetime as dt
+
+    from engine.forward.runner import ForwardRunner
+    from engine.strategy.condor import (
+        Condor, FilledLeg, PriceSource, StrategyConfig, build_legs,
+    )
+
+    cfg = StrategyConfig(lots=1, lot_size=65, strike_step=50.0)
+    runner = ForwardRunner.__new__(ForwardRunner)
+    ForwardRunner.__init__(
+        runner, market=None, strategy=cfg,  # type: ignore[arg-type]
+        state_path=tmp_path / "live.json", store=store, session_id="s1", user_id="u1",
+    )
+    legs = [FilledLeg(leg=leg, entry_price=100.0, source=PriceSource.CHOICE, token=900 + i)
+            for i, leg in enumerate(build_legs(23_500.0, cfg))]
+    runner.condors.append(Condor(
+        level=23_500.0, entry_time=dt.datetime(2026, 9, 9, 10, 54),
+        expiry=dt.date(2026, 9, 29), legs=legs, config=cfg, entry_costs=120.0, index=0,
+    ))
+    return runner
+
+
+def test_an_unmarked_position_reads_as_unknown_not_zero(tmp_path, store):
+    """A condor opened for Rs7,595 showed "+Rs0" overnight after an engine
+    restart, because `last_mtm.get(index, 0.0)` renders "never marked" exactly
+    like "worth nothing"."""
+    runner = _runner_with_open_condor(tmp_path, store)
+    snap = runner.snapshot()
+
+    assert snap["positions"][0]["pnl"] is None, "an unmarked position must not claim zero"
+    assert snap["pnl"]["unmarked_condors"] == 1
+    assert snap["pnl"]["open_condors"] == 1
+
+
+def test_a_marked_position_reports_its_mark(tmp_path, store):
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.last_mtm[0] = -1_933.45
+    snap = runner.snapshot()
+
+    assert snap["positions"][0]["pnl"] == pytest.approx(-1_933.45)
+    assert snap["pnl"]["unmarked_condors"] == 0
+    assert snap["pnl"]["unrealised"] == pytest.approx(-1_933.45)
+
+
+def test_marks_survive_a_resume(tmp_path, store):
+    """Outside market hours there is no next tick to recompute them, so a run
+    resumed in the evening would sit at zero until the morning."""
+    from engine.forward.runner import ForwardRunner
+
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.last_mtm[0] = -1_933.45
+    state = runner.to_state()
+
+    revived = ForwardRunner.restore(
+        state, market=None, state_path=tmp_path / "live.json",  # type: ignore[arg-type]
+        store=store, session_id="s1", user_id="u1",
+    )
+    assert revived.last_mtm.get(0) == pytest.approx(-1_933.45)
+    assert revived.snapshot()["pnl"]["unrealised"] == pytest.approx(-1_933.45)
+    assert revived.snapshot()["pnl"]["unmarked_condors"] == 0

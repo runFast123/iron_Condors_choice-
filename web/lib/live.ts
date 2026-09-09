@@ -96,6 +96,8 @@ export interface LiveState {
   pnl: {
     realised: number; unrealised: number; total: number;
     open_condors: number; total_condors: number;
+    /** Open condors the total does NOT include, because they have no mark yet. */
+    unmarked_condors?: number;
   };
   netting: {
     strikes_touched: number; strikes_fully_offset: number; gross_qty: number;

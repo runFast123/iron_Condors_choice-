@@ -1,0 +1,62 @@
+# systemd unit for the engine.
+#
+# The Linux equivalent of scripts\install-tasks.ps1, and simpler: systemd is
+# built for exactly this and has none of Task Scheduler's surprises -- no
+# three-day execution limit, no battery rules, no dependence on anyone being
+# logged in.
+#
+# Install:
+#   sudo cp scripts/iron-condor-engine.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now iron-condor-engine
+#
+# Watch it:
+#   systemctl status iron-condor-engine
+#   journalctl -u iron-condor-engine -f
+
+[Unit]
+Description=Iron Condor engine (NIFTY ladder backtest and paper forward testing)
+Documentation=https://github.com/runFast123/iron_Condors_choice-
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=condor
+Group=condor
+WorkingDirectory=/opt/iron-condor
+
+# ENGINE_SHARED_SECRET lives here, never on the command line where it would
+# show up in `ps` for every user on the box.
+EnvironmentFile=/opt/iron-condor/.env.engine.local
+Environment=ENGINE_DB=/opt/iron-condor/state/engine.db
+Environment=ENGINE_STATE_DIR=/opt/iron-condor/state
+Environment=PYTHONUNBUFFERED=1
+
+# Bound to localhost. Nothing should reach the engine except through the
+# reverse proxy, which terminates TLS and is the only thing facing the network.
+ExecStart=/opt/iron-condor/.venv/bin/uvicorn engine.api:app \
+    --host 127.0.0.1 --port 8020 --log-level info
+
+# Restart always, with a backoff so a crash loop does not spin the CPU.
+# StartLimitIntervalSec=0 disables systemd's "give up after N tries": the
+# engine holds live forward runs, and a supervisor that stops trying is worse
+# than one that keeps failing loudly.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# Hardening. The engine reads a scrip master and writes SQLite; it has no
+# business anywhere else on the filesystem.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/iron-condor/state
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

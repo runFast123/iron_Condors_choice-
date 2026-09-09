@@ -31,6 +31,9 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const session = state?.session;
   const running = session?.status === "running";
   const openPositions = (state?.positions ?? []).filter((p) => p.status === "OPEN");
+  // Positions with no mark yet. Their value is unknown, not zero -- after an
+  // engine restart outside market hours there is no tick to compute one.
+  const unmarked = state?.pnl.unmarked_condors ?? 0;
 
   const refresh = useCallback(async () => {
     try {
@@ -274,8 +277,12 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                 value={state?.market.spot != null ? num(state.market.spot) : "—"}
               />
               <Metric
-                label="Total P&L"
-                value={inr(state?.pnl.total ?? 0, { sign: true })}
+                label={unmarked > 0 ? "Total P&L (partial)" : "Total P&L"}
+                value={
+                  unmarked > 0 && (state?.pnl.open_condors ?? 0) === unmarked
+                    ? "--"
+                    : inr(state?.pnl.total ?? 0, { sign: true })
+                }
                 tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
               />
               <Metric label="Open condors" value={num(state?.pnl.open_condors ?? 0)} />
@@ -286,6 +293,15 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               <Metric label="Self-hedged" value={pct(state?.netting.offset_ratio ?? 0)} />
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>
+
+            {unmarked > 0 && (
+              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 10px", lineHeight: 1.6 }}>
+                {unmarked} open {unmarked === 1 ? "condor has" : "condors have"} no live mark yet, so
+                {unmarked === (state?.pnl.open_condors ?? 0) ? " no" : " the"} unrealised P&amp;L
+                {unmarked === (state?.pnl.open_condors ?? 0) ? " can be shown" : " above is partial"}.
+                Marks are computed on each tick; the run resumes marking when the market reopens.
+              </p>
+            )}
 
             {state?.market.stale && (
               <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 10px", lineHeight: 1.6 }}>
@@ -344,10 +360,11 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                             className="tnum"
                             style={{
                               textAlign: "right", fontWeight: 700,
-                              color: (p.pnl ?? 0) > 0 ? "var(--pos)" : (p.pnl ?? 0) < 0 ? "var(--neg)" : "var(--ink)",
+                              color: p.pnl == null ? "var(--ink-muted)"
+                                : p.pnl > 0 ? "var(--pos)" : p.pnl < 0 ? "var(--neg)" : "var(--ink)",
                             }}
                           >
-                            {inr(p.pnl ?? 0, { sign: true })}
+                            {p.pnl == null ? "--" : inr(p.pnl, { sign: true })}
                           </td>
                           <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
                             {inr(-p.max_loss)}

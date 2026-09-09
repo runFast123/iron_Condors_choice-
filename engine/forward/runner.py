@@ -549,8 +549,13 @@ class ForwardRunner:
             return self._snapshot_locked()
 
     def _snapshot_locked(self) -> dict[str, Any]:
-        mtm = {c.index: self.last_mtm.get(c.index, 0.0) for c in self.condors if c.is_open}
-        unrealised = sum(mtm.values())
+        # "Not marked yet" and "worth exactly zero" are different facts, and
+        # rendering both as 0 hid a resumed run's entire unrealised P&L behind
+        # a confident-looking "+0".
+        open_condors = [c for c in self.condors if c.is_open]
+        marked = {c.index: self.last_mtm[c.index] for c in open_condors if c.index in self.last_mtm}
+        unmarked = [c.index for c in open_condors if c.index not in self.last_mtm]
+        unrealised = sum(marked.values())
         summary = netting_summary(self.condors, open_only=False)
 
         return {
@@ -597,7 +602,10 @@ class ForwardRunner:
                 "realised": round(self.realised, 2),
                 "unrealised": round(unrealised, 2),
                 "total": round(self.realised + unrealised, 2),
-                "open_condors": len([c for c in self.condors if c.is_open]),
+                # How many open condors the total does NOT include, so a
+                # partial figure is never mistaken for a complete one.
+                "unmarked_condors": len(unmarked),
+                "open_condors": len(open_condors),
                 "total_condors": len(self.condors),
             },
             "netting": summary,
@@ -606,8 +614,12 @@ class ForwardRunner:
                     "index": c.index, "level": c.level, "expiry": c.expiry.isoformat(),
                     "entry_time": c.entry_time.isoformat(), "status": c.status.value,
                     "credit": round(c.credit, 2), "max_loss": round(c.max_loss, 2),
-                    "pnl": round(
-                        self.last_mtm.get(c.index, 0.0) if c.is_open else c.realised_pnl(), 2
+                    # None, not 0.0, when this condor has never been marked.
+                    "pnl": (
+                        round(self.last_mtm[c.index], 2)
+                        if c.is_open and c.index in self.last_mtm
+                        else round(c.realised_pnl(), 2) if not c.is_open
+                        else None
                     ),
                     "is_open": c.is_open,
                     "exit_reason": c.exit_reason,
@@ -787,6 +799,11 @@ class ForwardRunner:
                 "last_level": self.ladder.last_level,
                 "fired_levels": sorted(self.ladder.fired_levels),
             },
+            # The last marks. Without these a resumed run reports every open
+            # condor at zero until the next tick -- and outside market hours
+            # there is no next tick, so a position with real P&L sits at "+0"
+            # overnight looking perfectly settled.
+            "last_mtm": {str(k): v for k, v in self.last_mtm.items()},
             "condors": [self._condor_state(c) for c in self.condors],
             "fills": [asdict(f) for f in self.fills],
             "events": [asdict(e) for e in self.events],
@@ -832,6 +849,14 @@ class ForwardRunner:
         runner.last_spot = state.get("last_spot")
         runner.expiry = _parse_date(state.get("expiry"))
         runner.realised = float(state.get("realised") or 0.0)
+        # Restore the marks, so a resumed run reports the P&L it last knew
+        # rather than zero until the next tick -- which, outside market hours,
+        # never comes.
+        for key, value in (state.get("last_mtm") or {}).items():
+            try:
+                runner.last_mtm[int(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
         runner.stopped_reason = state.get("stopped_reason")
         runner.legs_on_real_depth = int(state.get("legs_on_real_depth") or 0)
         runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)

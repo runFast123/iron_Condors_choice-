@@ -1,0 +1,20 @@
+# Engine runtime dependencies.
+#
+# Pinned, not ranged. This runs on a box that must not change behaviour on its
+# own: an unattended `pip install` that silently picks up a new pandas is
+# exactly the kind of thing that breaks a forward run at 09:15 with positions
+# open. Bump these deliberately, then run the tests.
+#
+#   pip install -r requirements.txt
+#
+# Versions match what the test suite is green against.
+
+fastapi==0.141.1
+uvicorn==0.52.1
+pydantic==2.13.4
+pandas==3.0.3
+requests==2.34.2
+
+# pandas pulls these, but pinning them keeps a rebuild reproducible.
+numpy==2.5.1
+python-dateutil==2.9.0.post0
