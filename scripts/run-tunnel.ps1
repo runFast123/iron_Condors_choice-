@@ -113,7 +113,13 @@ while ($true) {
 
     if ($url) {
         Write-Log "Tunnel is up at $url"
-        Set-Content -Path (Join-Path $LogDir "tunnel-url.txt") -Value $url -Encoding utf8
+        # No BOM. PowerShell 5.1's `-Encoding utf8` writes one, and anything
+        # that reads this file then gets "﻿https://..." -- a URL that
+        # looks perfectly correct on screen and fails every request.
+        [System.IO.File]::WriteAllText(
+            (Join-Path $LogDir "tunnel-url.txt"), $url,
+            (New-Object System.Text.UTF8Encoding $false)
+        )
         if ($UpdateVercel) { Set-VercelEngineUrl $url }
     } else {
         Write-Log "WARNING: could not read a tunnel URL from cloudflared output"

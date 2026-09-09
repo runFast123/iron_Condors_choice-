@@ -74,3 +74,7 @@ engine/state/
 # Runtime forward-test state written by the engine. Positions rather than
 # secrets, but per-run state has no business being versioned.
 web/data/live.json
+
+# Vendored binaries. cloudflared is 54 MB and belongs to Cloudflare, not here.
+tools/
+*.exe
