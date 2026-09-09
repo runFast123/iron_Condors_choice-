@@ -69,6 +69,33 @@ Import-EngineEnv
 # restarts. The database mints one on first use, so this is only a fallback.
 if (-not $env:ENGINE_DB) { $env:ENGINE_DB = "engine/state/engine.db" }
 
+# Only one supervisor, ever.
+#
+# Task Scheduler's MultipleInstancesPolicy only stops the *same task* running
+# twice. It says nothing about a copy started by hand from a terminal, and two
+# supervisors both restarting uvicorn against one port is not a harmless
+# duplicate: whichever loses the bind exits 3, backs off, retries, and keeps
+# losing -- so the log fills with restarts while the engine looks fine, and a
+# stop of the winner hands the port to a process nobody knows about.
+#
+# Global\ so it spans sessions: the point is to catch the terminal-versus-task
+# case, which Local\ would miss.
+$createdNew = $false
+$mutex = $null
+try {
+    $mutex = New-Object System.Threading.Mutex($true, "Global\IronCondorEngineSupervisor", [ref]$createdNew)
+}
+catch [System.UnauthorizedAccessException] {
+    # A mutex we cannot open is one another session already holds.
+    $createdNew = $false
+}
+
+if (-not $createdNew) {
+    Write-Log "Another engine supervisor is already running; exiting rather than fighting it for port $Port."
+    Write-Log "  Stop it first, or use that one:  Get-ScheduledTask IronCondor-Engine"
+    return
+}
+
 $delay = 2
 $maxDelay = 60
 
