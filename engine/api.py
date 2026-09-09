@@ -95,6 +95,17 @@ class RunBacktestRequest(BaseModel):
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
     roll: bool = True
+    # Term structure of the modelled IV surface.
+    #
+    # 0.0 is a FLAT term structure: every tenor is priced off the 30-day India
+    # VIX. That is the conservative default, but it is not neutral -- it is
+    # known to be wrong for the weeklies this ladder trades, and wrong in one
+    # direction. At NIFTY 24,000 with VIX 14 the modelled condor credit comes
+    # out at Rs1,372 for 1 DTE against Rs6,020 at -0.25 and Rs8,383 at -0.40.
+    # Left as a knob rather than a new default, because picking a number here
+    # silently improves every reported result, and that is the user's call to
+    # make, not this engine's.
+    term_exponent: float = Field(default=0.0, ge=-1.0, le=1.0)
 
 
 class StartForwardRequest(BaseModel):

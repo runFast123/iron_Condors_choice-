@@ -312,3 +312,34 @@ def test_history_lists_runs_newest_first(store):
     rows = js.history("u1")
     assert len(rows) == 2
     assert rows[0]["created_at"] >= rows[1]["created_at"]
+
+
+# ============================================== modelled-IV term structure
+
+
+def test_the_term_structure_assumption_is_recorded_on_every_run():
+    """Every reported number rests on this, so a run must say which
+    assumption produced it."""
+    job = run_job()
+    assert job.result["provenance"]["term_exponent"] == 0.0
+    assert "flat-term" in job.result["provenance"]["vol_source"]
+
+
+def test_a_term_slope_lifts_short_dated_credit_and_is_labelled():
+    """Flat is not neutral: it prices a 1-DTE weekly off the 30-day VIX.
+
+    At NIFTY 24,000 with VIX 14 that is Rs1,372 of modelled condor credit
+    against Rs6,020 at -0.25 -- on a strategy whose entire P&L is the credit.
+    """
+    flat = run_job()
+    sloped = run_job(term_exponent=-0.25)
+    assert flat.status == "done" and sloped.status == "done"
+
+    def mean_credit(job):
+        condors = job.result["condors"]
+        return sum(c["credit"] for c in condors) / len(condors)
+
+    assert mean_credit(sloped) > mean_credit(flat)
+    prov = sloped.result["provenance"]
+    assert prov["term_exponent"] == -0.25
+    assert "term^-0.25" in prov["vol_source"]

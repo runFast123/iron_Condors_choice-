@@ -12,6 +12,7 @@ session. Nobody sees anyone else's run.
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 import logging
 import threading
 import traceback
@@ -137,12 +138,18 @@ class BacktestRunner:
 
         self._step("vix", 0.12, "Fetching India VIX")
         vix_map = market.vix_by_date(start, end)
+        term_exponent = float(p.get("term_exponent") or 0.0)
         if vix_map:
             surface = from_vix(list(vix_map.values())[-1])
             vol_source = "choice:INDIAVIX"
         else:
             surface = IVSurface(atm_vol=DEFAULT_ATM_VOL)
             vol_source = f"default:{DEFAULT_ATM_VOL:.0%}"
+        if term_exponent:
+            surface = replace(surface, term_exponent=term_exponent)
+            vol_source += f" term^{term_exponent:+.2f}"
+        else:
+            vol_source += " flat-term"
 
         first_day, last_day = spots[0][0].date(), spots[-1][0].date()
 
@@ -213,6 +220,7 @@ class BacktestRunner:
         provenance = {
             "spot_source": "choice:NIFTY",
             "vol_source": vol_source,
+            "term_exponent": term_exponent,
             "premium_source": "choice:ChartData" if fetched else "modeled:black76",
             # The scrip master delists expired contracts, so a historical run
             # necessarily rests partly on a derived calendar. Say how much.
