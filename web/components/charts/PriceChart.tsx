@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { EquityPoint, Trigger } from "@/lib/types";
+import { istClock, istDay } from "@/lib/format";
 
 /**
  * NIFTY with the ladder's trigger levels drawn on top.
@@ -50,11 +51,18 @@ export function PriceChart({
             horzLines: { color: v("--grid", "#e7edf2") },
           },
           rightPriceScale: { borderColor: v("--border", "#dfe7ec") },
-          timeScale: { borderColor: v("--border", "#dfe7ec"), timeVisible: false },
+          timeScale: {
+            borderColor: v("--border", "#dfe7ec"),
+            timeVisible: false,
+            // Dates only here, but a pre-05:30 IST bar still lands on the
+            // previous calendar day if the library is left on UTC.
+            tickMarkFormatter: (time: number) => istDay(time),
+          },
           crosshair: { mode: lib.CrosshairMode.Normal },
           localization: {
             priceFormatter: (p: number) =>
               new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(p),
+            timeFormatter: (time: number) => `${istDay(time)} ${istClock(time)} IST`,
           },
         });
 

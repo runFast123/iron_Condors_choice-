@@ -74,3 +74,29 @@ export function dateTime(iso: string): string {
 }
 
 export const signClass = (v: number) => (v > 0 ? "pos" : v < 0 ? "neg" : "flat");
+
+/**
+ * Axis and crosshair labels for lightweight-charts, in IST.
+ *
+ * The library renders UNIX timestamps in UTC unless told otherwise, so a tick
+ * stamped 09:33 IST appeared on the axis as 04:03 -- next to a "Last tick"
+ * metric that read 09:33 am, because that one goes through dateTime(). Same
+ * data, two clocks, five and a half hours apart.
+ */
+export function istClock(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleTimeString("en-IN", {
+    timeZone: IST,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+export function istDay(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString("en-IN", {
+    timeZone: IST,
+    day: "2-digit",
+    month: "short",
+  });
+}
+

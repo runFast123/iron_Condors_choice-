@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { istClock, istDay } from "@/lib/format";
 
 export interface LivePoint {
   t: number;      // epoch seconds
@@ -63,11 +64,15 @@ export function LiveChart({
           timeVisible: true,
           secondsVisible: false,
           rightOffset: 6,
+          // The library defaults to UTC, which put 09:33 IST on the axis as
+          // 04:03 -- beside a "Last tick" metric reading 09:33 am.
+          tickMarkFormatter: (time: number) => istClock(time),
         },
         crosshair: { mode: lib.CrosshairMode.Normal },
         localization: {
           priceFormatter: (p: number) =>
             new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(p),
+          timeFormatter: (time: number) => `${istDay(time)} ${istClock(time)} IST`,
         },
       });
 
