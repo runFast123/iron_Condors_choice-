@@ -41,19 +41,29 @@ function Write-Log([string]$message) {
 
 # Secrets live in a gitignored file, never in the repo and never on a command
 # line where they would land in the process list.
+#
+# Re-read before every start, not once at launch. Loading it only at startup
+# meant rotating the shared secret had no effect until somebody remembered to
+# restart this supervisor too -- so the engine kept running wide open while
+# both the rotation script and Vercel reported success.
 $envFile = Join-Path $root ".env.engine.local"
-if (Test-Path $envFile) {
-    foreach ($line in Get-Content $envFile) {
-        if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$') {
-            $name = $Matches[1]
-            $value = $Matches[2].Trim('"').Trim("'")
-            Set-Item -Path "env:$name" -Value $value
+
+function Import-EngineEnv {
+    if (Test-Path $envFile) {
+        foreach ($line in Get-Content $envFile) {
+            if ($line -match '^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*)$') {
+                $name = $Matches[1]
+                $value = $Matches[2].Trim('"').Trim("'")
+                Set-Item -Path "env:$name" -Value $value
+            }
         }
+        Write-Log "Loaded environment from .env.engine.local"
+    } else {
+        Write-Log "WARNING: no .env.engine.local found. Without ENGINE_SHARED_SECRET the engine accepts any caller."
     }
-    Write-Log "Loaded environment from .env.engine.local"
-} else {
-    Write-Log "WARNING: no .env.engine.local found. Without ENGINE_SHARED_SECRET the engine accepts any caller."
 }
+
+Import-EngineEnv
 
 # A stable salt keeps user ids -- and therefore saved runs -- resolvable across
 # restarts. The database mints one on first use, so this is only a fallback.
@@ -63,6 +73,7 @@ $delay = 2
 $maxDelay = 60
 
 while ($true) {
+    Import-EngineEnv
     Write-Log "Starting engine on ${BindHost}:${Port}"
     $start = Get-Date
 
