@@ -22,7 +22,7 @@ import pandas as pd
 from engine.choice.errors import ChoiceError, ChoiceInstrumentError, ChoiceNoDataError
 from engine.config import IST
 from engine.choice.history import FetchReport, HistoryClient
-from engine.choice.instruments import Contract, ScripMaster
+from engine.choice.instruments import Contract, ScripMaster, shared_master
 from engine.choice.session import ChoiceSession
 
 log = logging.getLogger(__name__)
@@ -156,8 +156,9 @@ class ChoiceMarketData:
         session = session or ChoiceSession()
         session.ensure_session()
 
-        master = ScripMaster()
-        master.fetch()
+        # Shared across users: 19 MB of public reference data, identical for
+        # everyone, and previously re-downloaded and re-parsed per session.
+        master = shared_master()
 
         history = HistoryClient(session)
         index = master.find_index(NIFTY)

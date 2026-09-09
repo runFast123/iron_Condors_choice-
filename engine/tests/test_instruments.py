@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import pytest
 
@@ -236,3 +237,89 @@ def test_strike_grid_is_read_correctly(real_master):
 def test_indices_resolve_from_the_real_format(real_master):
     assert real_master.index("NIFTY").token == 26000
     assert real_master.index("INDIAVIX").token == 26017
+
+
+# ------------------------------------------------- shared process-wide cache
+
+
+def test_the_scrip_master_is_parsed_once_for_the_whole_process(monkeypatch):
+    """It is 19 MB of public reference data, identical for every user.
+
+    Loading it per session cost each user about five seconds on their first
+    request, and again after every engine restart, for bytes the process
+    already had.
+    """
+    from engine.choice import instruments as inst
+
+    inst.clear_shared_master()
+    fetches = {"n": 0}
+
+    def counting_fetch(self, on=None, lookback_days=7):
+        fetches["n"] += 1
+        self.loaded_for = on or dt.date(2026, 9, 9)
+        return True
+
+    monkeypatch.setattr(inst.ScripMaster, "fetch", counting_fetch)
+    try:
+        first = inst.shared_master(dt.date(2026, 9, 9))
+        again = inst.shared_master(dt.date(2026, 9, 9))
+        assert first is again, "each caller re-parsed the master"
+        assert fetches["n"] == 1
+    finally:
+        inst.clear_shared_master()
+
+
+def test_a_new_trading_day_reloads_the_master(monkeypatch):
+    """Contracts are listed and delisted daily; yesterday's file is stale."""
+    from engine.choice import instruments as inst
+
+    inst.clear_shared_master()
+    fetches = {"n": 0}
+
+    def counting_fetch(self, on=None, lookback_days=7):
+        fetches["n"] += 1
+        self.loaded_for = on
+        return True
+
+    monkeypatch.setattr(inst.ScripMaster, "fetch", counting_fetch)
+    try:
+        a = inst.shared_master(dt.date(2026, 9, 9))
+        b = inst.shared_master(dt.date(2026, 9, 10))
+        assert a is not b
+        assert fetches["n"] == 2
+    finally:
+        inst.clear_shared_master()
+
+
+def test_concurrent_first_users_download_it_once_between_them(monkeypatch):
+    import threading as _threading
+
+    from engine.choice import instruments as inst
+
+    inst.clear_shared_master()
+    fetches = {"n": 0}
+    barrier = _threading.Barrier(6)
+
+    def slow_fetch(self, on=None, lookback_days=7):
+        fetches["n"] += 1
+        time.sleep(0.05)                      # a download in flight
+        self.loaded_for = on
+        return True
+
+    monkeypatch.setattr(inst.ScripMaster, "fetch", slow_fetch)
+    seen: list = []
+    try:
+        def grab():
+            barrier.wait()
+            seen.append(inst.shared_master(dt.date(2026, 9, 9)))
+
+        threads = [_threading.Thread(target=grab) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert fetches["n"] == 1, f"downloaded {fetches['n']} times"
+        assert len({id(m) for m in seen}) == 1
+    finally:
+        inst.clear_shared_master()

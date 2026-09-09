@@ -24,6 +24,7 @@ import datetime as dt
 import io
 import logging
 import re
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -452,3 +453,52 @@ class ScripMaster:
             if contract.is_option and contract.lot_size > 0:
                 return contract.lot_size
         raise ChoiceInstrumentError(f"No lot size found for {underlying.upper()}")
+
+
+# --------------------------------------------------------------- shared cache
+
+_MASTER_LOCK = threading.Lock()
+_MASTER_CACHE: tuple[dt.date, "ScripMaster"] | None = None
+
+
+def shared_master(on: dt.date | None = None) -> "ScripMaster":
+    """The day's scrip master, parsed once for the whole process.
+
+    The file is ~19 MB and identical for every user -- it is public market
+    reference data, carrying no per-user content whatsoever. Loading it per
+    session cost every user about five seconds on their first request, and
+    again after each engine restart, for bytes the process already had.
+
+    Safe to share because a ``ScripMaster`` is written only by ``fetch()`` and
+    read-only afterwards. The lock means ten users signing in together download
+    it once between them rather than ten times.
+    """
+    global _MASTER_CACHE
+
+    today = on or dt.datetime.now(tz=IST).date()
+    cached = _MASTER_CACHE
+    if cached is not None and cached[0] == today:
+        return cached[1]
+
+    with _MASTER_LOCK:
+        # Re-check: another thread may have loaded it while we waited.
+        cached = _MASTER_CACHE
+        if cached is not None and cached[0] == today:
+            return cached[1]
+
+        master = ScripMaster()
+        master.fetch(on=today)
+        _MASTER_CACHE = (today, master)
+        log.info(
+            "Scrip master loaded for %s (%d contracts), shared process-wide",
+            today, len(master.contracts),
+        )
+        return master
+
+
+def clear_shared_master() -> None:
+    """Drop the cache. For tests, and for a forced mid-day refresh."""
+    global _MASTER_CACHE
+    with _MASTER_LOCK:
+        _MASTER_CACHE = None
+
