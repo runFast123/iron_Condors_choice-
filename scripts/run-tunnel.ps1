@@ -32,7 +32,12 @@ param(
     [string]$Named = "",
     [string]$TunnelHostname = "",
     [switch]$UpdateVercel,
-    [string]$LogDir = "engine/state/logs"
+    [string]$LogDir = "engine/state/logs",
+    # How often to ask the public URL whether it still reaches the engine, and
+    # how many consecutive failures before restarting the tunnel. Two minutes
+    # of silence is a real outage; one failed probe is usually a blip.
+    [int]$CheckSeconds = 60,
+    [int]$FailuresBeforeRestart = 2
 )
 
 $ErrorActionPreference = "Stop"
@@ -125,7 +130,61 @@ while ($true) {
         Write-Log "WARNING: could not read a tunnel URL from cloudflared output"
     }
 
-    $proc.WaitForExit()
+    # Watch the tunnel, not just the process.
+    #
+    # Waiting on exit only catches cloudflared *dying*. A quick tunnel can stop
+    # routing while the process sits there perfectly healthy -- Cloudflare
+    # retires the hostname, or the edge connection drops and does not recover.
+    # From the outside that is indistinguishable from the engine being down,
+    # and it presents as "Engine unreachable" on the login page with nothing in
+    # any log to explain it. So: ask the public URL whether it still reaches
+    # the engine, and if it stops answering, restart and republish.
+    $failures = 0
+    while (-not $proc.HasExited) {
+        Start-Sleep -Seconds $CheckSeconds
+
+        if (-not $url) { continue }
+        $alive = $false
+        try {
+            $probe = Invoke-WebRequest -Uri "$url/health" -TimeoutSec 20 -UseBasicParsing
+            $alive = ($probe.StatusCode -eq 200)
+        }
+        catch {
+            $alive = $false
+        }
+
+        if ($alive) {
+            if ($failures -gt 0) { Write-Log "Tunnel answering again after $failures failed check(s)" }
+            $failures = 0
+            continue
+        }
+
+        $failures++
+        Write-Log "Tunnel health check failed ($failures/$FailuresBeforeRestart) for $url"
+        if ($failures -ge $FailuresBeforeRestart) {
+            # The engine itself may simply be down -- restarting the tunnel
+            # would not help and would needlessly remint the URL, so check
+            # locally before blaming the tunnel.
+            $engineUp = $false
+            try {
+                $local = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/health" -TimeoutSec 5 -UseBasicParsing
+                $engineUp = ($local.StatusCode -eq 200)
+            }
+            catch { $engineUp = $false }
+
+            if (-not $engineUp) {
+                Write-Log "  engine is down too, so this is not the tunnel's fault; waiting"
+                $failures = 0
+                continue
+            }
+
+            Write-Log "  engine is up but unreachable through the tunnel; restarting it"
+            try { $proc.Kill() } catch { }
+            break
+        }
+    }
+
+    if (-not $proc.HasExited) { try { $proc.WaitForExit(10000) } catch { } }
     Write-Log "Tunnel exited with code $($proc.ExitCode); restarting in 5s"
     Start-Sleep -Seconds 5
 }
