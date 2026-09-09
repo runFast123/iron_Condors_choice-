@@ -137,3 +137,38 @@ def expiry_calendar(
         start, end, len(listed_in_range), len(derived), weekday, cadence,
     )
     return combined, derived
+
+
+def nearest_listed_expiry(
+    listed: Sequence[dt.date],
+    on: dt.date,
+    *,
+    cadence: str = "weekly",
+    min_days: int = 1,
+) -> dt.date | None:
+    """The next expiry to trade, honouring the campaign's cadence.
+
+    A monthly campaign must not be handed the nearest *weekly*: it would open
+    a structure with days to run where the strategy intends weeks, and its
+    ladder would settle before the offsetting the thesis depends on has any
+    chance to accumulate.
+
+    The monthly contract is the last expiry of its calendar month, which is
+    what NSE lists -- derived from the listed dates rather than a rule, since
+    for a live run the exchange's own list is authoritative.
+    """
+    cutoff = on + dt.timedelta(days=min_days)
+    candidates = sorted(e for e in listed if e >= cutoff)
+    if not candidates:
+        return None
+    if cadence != "monthly":
+        return candidates[0]
+
+    last_of_month: dict[tuple[int, int], dt.date] = {}
+    for expiry in sorted(listed):
+        last_of_month[(expiry.year, expiry.month)] = expiry
+    monthlies = sorted(e for e in last_of_month.values() if e >= cutoff)
+    # If the current month's monthly has already passed, the next month's is
+    # the right answer -- never a weekly standing in for it.
+    return monthlies[0] if monthlies else None
+

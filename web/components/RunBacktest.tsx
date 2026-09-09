@@ -32,6 +32,7 @@ export function RunBacktest({
   const [days, setDays] = useState(90);
   const [lots, setLots] = useState(1);
   const [resolution, setResolution] = useState("D");
+  const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -93,7 +94,10 @@ export function RunBacktest({
       const res = await fetch("/api/backtest/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days, lots, resolution, step: 100, max_condors: 20, roll: true }),
+        body: JSON.stringify({
+          days, lots, resolution, step: 100, max_condors: 20, roll: true,
+          expiry_cadence: cadence,
+        }),
       });
       const body = await res.json();
       if (!res.ok) {
@@ -192,6 +196,19 @@ export function RunBacktest({
                   <option value="60">Hourly</option>
                   <option value="15">15 min</option>
                   <option value="5">5 min</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Expiry
+                <select
+                  value={cadence}
+                  onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 130 }}
+                >
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
                 </select>
               </label>
 

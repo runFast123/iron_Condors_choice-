@@ -49,7 +49,11 @@ log = logging.getLogger(__name__)
 #   2 -> expiries derived for historical ranges; before this every condor in a
 #        past range carried the nearest *currently listed* expiry, which priced
 #        weeklies as half-year options and understated max loss about threefold.
-RESULT_VERSION = 2
+RESULT_VERSION = 3
+
+# A fitted surface describes the market on the day it was measured. Older than
+# this and the shape has moved enough that the flat default is more honest.
+CALIBRATION_MAX_AGE_DAYS = 14
 
 DEFAULT_ATM_VOL = 0.14
 
@@ -88,9 +92,29 @@ class BacktestJob:
 class BacktestRunner:
     """Runs one backtest for one user on a worker thread."""
 
-    def __init__(self, market: ChoiceMarketData, job: BacktestJob) -> None:
+    def __init__(
+        self, market: ChoiceMarketData, job: BacktestJob, db: "Store | None" = None
+    ) -> None:
         self.market = market
         self.job = job
+        self.db = db
+
+    def _calibration(self) -> dict | None:
+        """The most recent stored surface fit, if it is recent enough to use.
+
+        Read rather than fitted here: fitting needs a burst of live quote
+        requests and the market to be open, neither of which a backtest can
+        assume. The engine refits on demand and on login.
+        """
+        db = getattr(self, "db", None)
+        if db is None:
+            return None
+        cutoff = (dt.datetime.now(tz=IST).date() - dt.timedelta(days=CALIBRATION_MAX_AGE_DAYS))
+        try:
+            return db.latest_calibration(not_before=cutoff.isoformat())
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not read the stored IV calibration")
+            return None
 
     def _step(self, stage: str, progress: float, message: str = "") -> None:
         self.job.stage = stage
@@ -138,17 +162,43 @@ class BacktestRunner:
 
         self._step("vix", 0.12, "Fetching India VIX")
         vix_map = market.vix_by_date(start, end)
-        term_exponent = float(p.get("term_exponent") or 0.0)
         if vix_map:
             surface = from_vix(list(vix_map.values())[-1])
             vol_source = "choice:INDIAVIX"
         else:
             surface = IVSurface(atm_vol=DEFAULT_ATM_VOL)
             vol_source = f"default:{DEFAULT_ATM_VOL:.0%}"
-        if term_exponent:
-            surface = replace(surface, term_exponent=term_exponent)
-            vol_source += f" term^{term_exponent:+.2f}"
-        else:
+
+        # Shape from the live chain where we have it.
+        #
+        # Almost every leg in a historical range is modelled -- the contracts
+        # were delisted -- so the surface *is* the result. Its skew and term
+        # structure are measured from Choice's own currently-traded chain
+        # rather than assumed; India VIX still sets the day-by-day level,
+        # because that is the one thing there is real history for.
+        calibration = self._calibration()
+        if calibration:
+            surface = replace(
+                surface,
+                slope=float(calibration["slope"]),
+                curvature=float(calibration["curvature"]),
+                term_exponent=float(calibration["term_exponent"]),
+                fitted_from=int(calibration.get("observations") or 0),
+            )
+            vol_source += (
+                f" +chain-fit({calibration['as_of_date']},"
+                f"{calibration.get('observations', 0)}q,"
+                f"term^{float(calibration['term_exponent']):+.2f})"
+            )
+
+        # An explicit override always wins, so a run can be compared against
+        # its own assumption rather than only against the fit.
+        override = p.get("term_exponent")
+        term_exponent = float(override) if override else float(surface.term_exponent)
+        if override:
+            surface = replace(surface, term_exponent=float(override))
+            vol_source += f" override-term^{float(override):+.2f}"
+        elif not calibration:
             vol_source += " flat-term"
 
         first_day, last_day = spots[0][0].date(), spots[-1][0].date()
@@ -221,6 +271,7 @@ class BacktestRunner:
             "spot_source": "choice:NIFTY",
             "vol_source": vol_source,
             "term_exponent": term_exponent,
+            "iv_calibration": calibration,
             "premium_source": "choice:ChartData" if fetched else "modeled:black76",
             # The scrip master delists expired contracts, so a historical run
             # necessarily rests partly on a derived calendar. Say how much.
@@ -288,7 +339,7 @@ class JobStore:
         return job
 
     def _run_and_persist(self, market: ChoiceMarketData, job: BacktestJob) -> None:
-        BacktestRunner(market, job).run()
+        BacktestRunner(market, job, db=self._db).run()
         if self._db is None:
             return
         try:

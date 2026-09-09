@@ -41,6 +41,7 @@ from engine.choice.errors import (
     StaticIpRejectedError,
 )
 from engine.config import IST, engine_config
+from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
 from engine.store.db import Store
@@ -95,6 +96,9 @@ class RunBacktestRequest(BaseModel):
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
     roll: bool = True
+    # Weekly or monthly contracts. Read by the job runner all along, but never
+    # sent by anything, so every run silently used weeklies.
+    expiry_cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
     # Term structure of the modelled IV surface.
     #
     # 0.0 is a FLAT term structure: every tenor is priced off the 30-day India
@@ -113,6 +117,9 @@ class StartForwardRequest(BaseModel):
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
     max_condors: int = Field(default=20, ge=1, le=100)
+    # Must match whatever the backtest used, or the forward run is testing a
+    # different strategy from the one that justified it.
+    expiry_cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
     # Without these the forward runner has no exit at all: `exit_signal`
     # returns None when both are unset, so `_close` is unreachable and every
     # condor is held to expiry regardless of what was backtested. A ladder
@@ -440,7 +447,20 @@ def forward_start(
 
     try:
         lot_size = market.master.lot_size_for(NIFTY)
-        expiry = market.master.nearest_expiry(NIFTY, dt.datetime.now(tz=IST).date(), min_days=0)
+        # min_days=1, not 0: on expiry day the nearest contract settles in
+        # hours, so the wings are nearly worthless and the structure is a
+        # condor in name only.
+        expiry = nearest_listed_expiry(
+            market.master.expiries(NIFTY),
+            dt.datetime.now(tz=IST).date(),
+            cadence=body.expiry_cadence,
+            min_days=1,
+        )
+        if expiry is None:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                f"No {body.expiry_cadence} NIFTY expiry is listed after today.",
+            )
         strike_step = market.master.strike_step(NIFTY, expiry)
     except ChoiceInstrumentError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
@@ -455,6 +475,7 @@ def forward_start(
             stop_loss_mult=body.stop_loss,
         ),
         costs=CostModel(),
+        expiry_cadence=body.expiry_cadence,
         # Per-user state file: one user's run must never overwrite another's.
         state_path=_state_path(session),
         store=store,

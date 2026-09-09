@@ -30,7 +30,7 @@ def cfg(**kw) -> StrategyConfig:
 def contract(token: int, strike: float, right: str) -> Contract:
     return Contract(
         token=token, segment_id=2, symbol="NIFTY", description="", lot_size=LOT,
-        expiry=dt.date(2026, 9, 8), strike=strike, option_type=right, underlying="NIFTY",
+        expiry=EXPIRY, strike=strike, option_type=right, underlying="NIFTY",
     )
 
 
@@ -80,6 +80,10 @@ class FakeMaster:
     def nearest_expiry(self, underlying, on, *, min_days=0):
         return EXPIRY
 
+    def expiries(self, underlying, *, after=None):
+        return [e for e in (EXPIRY, EXPIRY + dt.timedelta(days=28))
+                if after is None or e >= after]
+
     def option(self, underlying, expiry, strike, right):
         if (strike, right) in self.missing:
             raise ChoiceError(f"no contract for {strike} {right}")
@@ -95,7 +99,10 @@ def runner(prices=None, depth=None, missing=None, fails=False, fill_model=None, 
     )
 
 
-EXPIRY = dt.date(2026, 9, 8)
+# Relative to today: a hard-coded date silently became "in the past" and the
+# cadence resolver -- which refuses to trade an expiry that has already gone --
+# then had nothing to return.
+EXPIRY = dt.date.today() + dt.timedelta(days=7)
 
 
 # ==================================================== the fill model itself

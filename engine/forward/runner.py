@@ -33,6 +33,8 @@ from typing import Any, Callable
 from engine.choice.errors import ChoiceError
 from engine.choice.instruments import Contract
 from engine.config import IST, engine_config
+from engine.choice.errors import ChoiceInstrumentError
+from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.data.market import NIFTY, ChoiceMarketData, Quote
 from engine.data.market_calendar import MARKET_CLOSE as MARKET_CLOSE_TIME
 from engine.data.market_calendar import MARKET_OPEN as MARKET_OPEN_TIME
@@ -134,6 +136,7 @@ class ForwardRunner:
         state_path: Path | None = None,
         max_events: int = 500,
         fill_model: FillModel | None = None,
+        expiry_cadence: str = "weekly",
         store: "Store | None" = None,
         session_id: str | None = None,
         user_id: str | None = None,
@@ -145,6 +148,9 @@ class ForwardRunner:
         self.mode = "paper"
         self.costs = costs or CostModel()
         self.fill_model = fill_model or FillModel()
+        # Weekly or monthly. A forward run on a different cadence from the
+        # backtest that justified it is a different strategy.
+        self.expiry_cadence = expiry_cadence
         self.state_path = state_path or Path("web/data/live.json")
         # Durable home for this run. Without it the run exists only for as long
         # as this process does, which is the failure being fixed here.
@@ -486,7 +492,14 @@ class ForwardRunner:
 
         if self.expiry is None:
             try:
-                self.expiry = self.market.master.nearest_expiry(NIFTY, now.date(), min_days=0)
+                self.expiry = nearest_listed_expiry(
+                    self.market.master.expiries(NIFTY), now.date(),
+                    cadence=self.expiry_cadence, min_days=1,
+                )
+                if self.expiry is None:
+                    raise ChoiceInstrumentError(
+                        f"No {self.expiry_cadence} NIFTY expiry is listed after today."
+                    )
             except ChoiceError as exc:
                 # Outside the guard above this escaped tick(), escaped run(),
                 # and killed the worker -- while stopped_reason stayed None, so

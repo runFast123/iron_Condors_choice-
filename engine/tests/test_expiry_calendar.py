@@ -176,3 +176,63 @@ def test_a_derived_calendar_keeps_every_condor_inside_the_dte_limit():
 def test_no_expiries_at_all_is_refused_at_construction():
     with pytest.raises(ValueError):
         weekly_expiry_resolver([])
+
+
+# ============================================= monthly cadence, end to end
+
+
+def test_a_monthly_campaign_gets_month_end_contracts_not_weeklies():
+    """The gap the user caught: `expiry_cadence` was read by the job runner
+    but never sent by anything, so every run silently used weeklies."""
+    start, end = dt.date(2026, 3, 1), dt.date(2026, 5, 31)
+    weekly, _ = expiry_calendar(start, end, [], cadence="weekly")
+    monthly, _ = expiry_calendar(start, end, [], cadence="monthly")
+
+    assert len(weekly) > len(monthly) * 3, "monthly should be far sparser"
+    assert monthly == [dt.date(2026, 3, 31), dt.date(2026, 4, 28), dt.date(2026, 5, 26)]
+    for expiry in monthly:
+        later_same_month = [
+            w for w in weekly if (w.year, w.month) == (expiry.year, expiry.month) and w > expiry
+        ]
+        assert not later_same_month, f"{expiry} is not the last expiry of its month"
+
+
+def test_a_monthly_ladder_holds_long_enough_for_offsetting_to_accumulate():
+    """The reason the cadence matters. Offsetting needs several condors alive
+    in ONE expiry, and a weekly settles before the ladder gets that deep."""
+    start, end = dt.date(2026, 3, 1), dt.date(2026, 4, 30)
+    weekly, _ = expiry_calendar(start, end, [], cadence="weekly")
+    monthly, _ = expiry_calendar(start, end, [], cadence="monthly")
+
+    def mean_life(expiries):
+        gaps = [(b - a).days for a, b in zip(expiries, expiries[1:])]
+        return sum(gaps) / len(gaps)
+
+    assert mean_life(weekly) == pytest.approx(7.0, abs=1.0)
+    assert mean_life(monthly) > 25
+
+
+def test_the_live_resolver_never_substitutes_a_weekly_for_a_monthly():
+    from engine.data.expiry_calendar import nearest_listed_expiry
+
+    listed = [dt.date(2026, 9, 8), dt.date(2026, 9, 15), dt.date(2026, 9, 22),
+              dt.date(2026, 9, 29), dt.date(2026, 10, 6), dt.date(2026, 10, 27)]
+    on = dt.date(2026, 9, 9)
+    assert nearest_listed_expiry(listed, on, cadence="weekly") == dt.date(2026, 9, 15)
+    assert nearest_listed_expiry(listed, on, cadence="monthly") == dt.date(2026, 9, 29)
+
+
+def test_a_monthly_run_rolls_to_the_next_month_once_this_one_has_gone():
+    from engine.data.expiry_calendar import nearest_listed_expiry
+
+    listed = [dt.date(2026, 9, 29), dt.date(2026, 10, 6), dt.date(2026, 10, 27)]
+    assert nearest_listed_expiry(listed, dt.date(2026, 9, 30), cadence="monthly") == dt.date(2026, 10, 27)
+
+
+def test_todays_expiry_is_never_opened():
+    """0 DTE settles in hours: the wings are worthless and it is a condor in
+    name only."""
+    from engine.data.expiry_calendar import nearest_listed_expiry
+
+    listed = [dt.date(2026, 9, 8), dt.date(2026, 9, 15)]
+    assert nearest_listed_expiry(listed, dt.date(2026, 9, 8)) == dt.date(2026, 9, 15)

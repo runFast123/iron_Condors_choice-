@@ -19,6 +19,7 @@ const POLL_MS = 10_000;
 export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [state, setState] = useState<LiveState | null>(initial);
   const [lots, setLots] = useState(1);
+  const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -126,7 +127,11 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   }
 
   const start = () =>
-    post("/api/forward/start", { lots, step: 100, poll_seconds: 10 }, "starting");
+    post(
+      "/api/forward/start",
+      { lots, step: 100, poll_seconds: 10, expiry_cadence: cadence },
+      "starting",
+    );
   const stop = () => post("/api/forward/stop", undefined, "stopping");
 
   return (
@@ -167,6 +172,19 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
         {!running ? (
           <>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Expiry
+                <select
+                  value={cadence}
+                  onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 130 }}
+                >
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </label>
+
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Lots per condor
                 <input

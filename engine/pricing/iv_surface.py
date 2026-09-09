@@ -29,6 +29,9 @@ DEFAULT_CURVATURE = 40.0
 
 MIN_IV, MAX_IV = 0.03, 2.5
 
+# Used only when there is nothing to fit and no level was supplied.
+DEFAULT_ATM_VOL = 0.14
+
 # India VIX is a 30-day measure. Shorter tenors trade richer, longer flatter.
 VIX_TENOR_DAYS = 30.0
 
@@ -108,15 +111,27 @@ def fit_skew(points: Sequence[VolPoint], *, atm_vol: float | None = None) -> IVS
         for p in points
         if p.forward > 0 and p.strike > 0 and p.iv and math.isfinite(p.iv) and MIN_IV <= p.iv <= MAX_IV
     ]
+    def _level() -> float:
+        """The at-the-money level, from the observation nearest the money."""
+        nearest = min(usable, key=lambda p: abs(p.strike / p.forward - 1.0))
+        return nearest.iv
+
     if len(usable) < 4:
-        return IVSurface(atm_vol=atm_vol or (usable[0].iv if usable else 0.14))
+        # `usable[0]` is whatever happened to come first in the input, which on
+        # a chain ordered by strike is the furthest-out-of-the-money put -- the
+        # single most skewed point in the set. Taking that as the ATM level and
+        # then applying the skew on top double-counts it.
+        if atm_vol is None:
+            atm_vol = _level() if usable else DEFAULT_ATM_VOL
+        return IVSurface(atm_vol=atm_vol if atm_vol > 0 else DEFAULT_ATM_VOL)
 
     if atm_vol is None:
-        # The observation closest to the money defines the level.
-        nearest = min(usable, key=lambda p: abs(p.strike / p.forward - 1.0))
-        atm_vol = nearest.iv
+        atm_vol = _level()
+    # `atm_vol or ...` treated a caller-supplied 0.0 as "not supplied"; an
+    # explicit zero is a bad level, not a missing one, and either way the fit
+    # cannot proceed on it.
     if atm_vol <= 0:
-        return IVSurface(atm_vol=0.14)
+        return IVSurface(atm_vol=DEFAULT_ATM_VOL)
 
     # Design matrix columns are m and m^2; target is iv/atm - 1.
     s11 = s12 = s22 = t1 = t2 = 0.0

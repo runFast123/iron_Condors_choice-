@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_backtest_user ON backtest_runs (user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS iv_calibrations (
+    as_of_date   TEXT PRIMARY KEY,
+    created_at   TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -242,6 +248,51 @@ class Store:
             "(SELECT ts FROM forward_ticks WHERE session_id = ? ORDER BY ts DESC LIMIT ?)",
             (session_id, session_id, keep),
         )
+
+    # -------------------------------------------------- IV calibration
+
+    def save_calibration(self, as_of_date: str, payload: dict[str, Any]) -> None:
+        """Store the day's fitted surface.
+
+        Market-wide rather than per user: it is the shape of the public option
+        chain, identical for everyone, and fitting it costs a burst of quote
+        requests nobody should pay twice. Keyed by date so a new session
+        naturally refits.
+        """
+        self._write(
+            "INSERT INTO iv_calibrations (as_of_date, created_at, payload_json) "
+            "VALUES (?, ?, ?) ON CONFLICT(as_of_date) DO UPDATE SET "
+            "created_at=excluded.created_at, payload_json=excluded.payload_json",
+            (as_of_date, _now(), json.dumps(payload, separators=(",", ":"))),
+        )
+
+    def latest_calibration(self, *, not_before: str | None = None) -> dict[str, Any] | None:
+        """The most recent fit, optionally no older than ``not_before``.
+
+        A surface goes stale: a fit from three weeks ago describes a market
+        that has moved. The caller decides how old is too old, because a stale
+        measurement is still better than an unmeasured guess -- but only if it
+        is labelled as stale.
+        """
+        sql = "SELECT * FROM iv_calibrations"
+        params: tuple = ()
+        if not_before:
+            sql += " WHERE as_of_date >= ?"
+            params = (not_before,)
+        sql += " ORDER BY as_of_date DESC LIMIT 1"
+        rows = self._rows(sql, params)
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            payload = json.loads(row["payload_json"])
+        except json.JSONDecodeError:
+            return None
+        return {
+            "as_of_date": row["as_of_date"],
+            "created_at": row["created_at"],
+            **payload,
+        }
 
     # ----------------------------------------------------------- backtests
 
