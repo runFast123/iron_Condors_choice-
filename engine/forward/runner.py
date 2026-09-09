@@ -23,6 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dataclass_fields
@@ -159,6 +160,17 @@ class ForwardRunner:
         # The exchange is the only real authority on an unscheduled closure;
         # the calendar is the fallback when the endpoint is unreachable.
         self.market_status = MarketStatus(session, market_calendar) if session else None
+        # One lock for the whole runner.
+        #
+        # Two callers legitimately drive this object: the background poll
+        # thread and POST /forward/tick, while GET /forward/state serialises it
+        # concurrently. Unguarded that produced double-counted realised P&L, a
+        # condor's fills split across two indices, and -- worst -- `emit`
+        # trimming the event list while `snapshot` iterated it in reverse,
+        # duplicating entries in the run log most of the time.
+        #
+        # Reentrant because tick() -> _open_condor() -> emit() all take it.
+        self._lock = threading.RLock()
         # Whether the most recent spot came from a candle rather than the book.
         self.spot_is_stale = False
         self.legs_on_real_depth = 0
@@ -179,7 +191,8 @@ class ForwardRunner:
         event = Event(
             ts=dt.datetime.now(tz=IST).isoformat(), level=severity, message=message, detail=detail
         )
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
         if len(self.events) > self.max_events:
             del self.events[: len(self.events) - self.max_events]
         getattr(log, "error" if severity == "error" else "info")("%s %s", message, detail or "")
@@ -323,8 +336,16 @@ class ForwardRunner:
             for fl in condor.legs:
                 try:
                     contracts.append(self._contract(condor.expiry, fl.leg.strike, fl.leg.right))
-                except ChoiceError:
-                    pass
+                except ChoiceError as exc:
+                    # Swallowed silently, this drops the condor out of MTM, out
+                    # of the kill-switch total, and out of exit evaluation --
+                    # take-profit and stop-loss stop working for that rung with
+                    # no trace anywhere.
+                    self.emit(
+                        "warn", "Could not resolve a leg for MTM; condor not marked",
+                        level=condor.level, strike=fl.leg.strike, right=fl.leg.right,
+                        error=str(exc),
+                    )
         try:
             quotes = self.market.quotes(contracts)
         except ChoiceError as exc:
@@ -350,6 +371,10 @@ class ForwardRunner:
 
     def _close(self, condor: Condor, quotes: dict[Leg, Quote], reason: str) -> None:
         """Close a condor, crossing the spread the other way on every leg."""
+        if not condor.is_open:
+            # Two callers reaching this for the same condor booked its P&L
+            # twice and wrote eight CLOSE fills for four legs.
+            return
         now = dt.datetime.now(tz=IST)
         exit_costs = 0.0
         exits: dict[Leg, FillPrice] = {}
@@ -393,7 +418,17 @@ class ForwardRunner:
     # ----------------------------------------------------------------- tick
 
     def tick(self) -> None:
-        """One polling cycle: read spot, fire triggers, refresh MTM."""
+        """One polling cycle: read spot, fire triggers, refresh MTM.
+
+        Serialised against every other caller. The lock is held across the
+        broker round-trip, which briefly delays a concurrent snapshot -- that
+        is the intended trade: a reader waiting 200ms beats a reader seeing a
+        condor whose fills exist but whose position does not.
+        """
+        with self._lock:
+            self._tick_locked()
+
+    def _tick_locked(self) -> None:
         try:
             index = self.market.master.index(NIFTY)
             quote = self.market.quotes([index]).get(index.token)
@@ -426,7 +461,16 @@ class ForwardRunner:
                 log.exception("Could not record tick")
 
         if self.expiry is None:
-            self.expiry = self.market.master.nearest_expiry(NIFTY, now.date(), min_days=0)
+            try:
+                self.expiry = self.market.master.nearest_expiry(NIFTY, now.date(), min_days=0)
+            except ChoiceError as exc:
+                # Outside the guard above this escaped tick(), escaped run(),
+                # and killed the worker -- while stopped_reason stayed None, so
+                # every surface kept reporting the run as live with a frozen
+                # timestamp.
+                self.last_error = str(exc)
+                self.emit("error", "Could not resolve an expiry", error=str(exc))
+                return
             self.emit("info", f"Trading expiry {self.expiry:%d-%b-%Y}", expiry=self.expiry.isoformat())
 
         for trigger in self.ladder.on_price(spot, now):
@@ -447,6 +491,10 @@ class ForwardRunner:
     # ---------------------------------------------------------------- state
 
     def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> dict[str, Any]:
         mtm = {c.index: self.last_mtm.get(c.index, 0.0) for c in self.condors if c.is_open}
         unrealised = sum(mtm.values())
         summary = netting_summary(self.condors, open_only=False)
@@ -586,6 +634,11 @@ class ForwardRunner:
         try:
             idle_logged = False
             while max_ticks is None or ticks < max_ticks:
+                # Checked before the market-hours branch, not after the tick:
+                # a stopped run used to sit in the closed-market sleep all
+                # night and then trade once more at the open.
+                if self.stopped_reason:
+                    break
                 if not self.is_market_open():
                     # Log the transition once, not every minute all weekend.
                     if not idle_logged:
@@ -608,7 +661,16 @@ class ForwardRunner:
                 if max_ticks is None or ticks < max_ticks:
                     time.sleep(poll_seconds)
         except KeyboardInterrupt:
+            self.stopped_reason = self.stopped_reason or "interrupted"
             self.emit("warn", "Interrupted by user")
+        except Exception as exc:                    # noqa: BLE001
+            # A worker thread that dies with stopped_reason unset leaves every
+            # surface reporting a live run that will never tick again. Whatever
+            # went wrong, record it where the user can see it.
+            self.stopped_reason = f"engine error: {type(exc).__name__}: {exc}"
+            self.last_error = str(exc)
+            log.exception("Forward run crashed")
+            self.emit("error", "Forward run stopped by an unexpected error", error=str(exc))
         finally:
             self.emit("info", "Forward run stopped", ticks=ticks)
             self.save()

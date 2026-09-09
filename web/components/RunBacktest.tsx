@@ -37,7 +37,6 @@ export function RunBacktest({
   // Collapsed once there is something to look at, so the controls stay
   // available without pushing the results down the page.
   const [open, setOpen] = useState(!hasData);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // True once a run has been observed in flight during this page's life.
   const sawActive = useRef(false);
 
@@ -47,34 +46,45 @@ export function RunBacktest({
     try {
       const res = await fetch("/api/backtest/status", { cache: "no-store" });
       const body = await res.json();
-      if (res.ok) setJob(body.job ?? null);
-    } catch {
-      /* transient; the next tick retries */
+      if (res.ok) {
+        setJob(body.job ?? null);
+        setError(null);
+      } else if (res.status === 401) {
+        window.location.href = "/login?reason=expired";
+      } else {
+        setError(body.error ?? `Could not read progress (${res.status}).`);
+      }
+    } catch (err) {
+      // Not swallowed: the interval keeps polling, but the user is told the
+      // bar has stopped moving because we lost the engine, not because the
+      // run stalled.
+      setError(`Lost contact with the engine while the run was in flight (${(err as Error).message}).`);
     }
   }, []);
 
+  // A repeating interval keyed only on `active`.
+  //
+  // The previous version chained a setTimeout off `state` changing identity,
+  // so a single failed poll -- a blip, a 500, an expired session -- meant no
+  // setState, no re-render, and therefore no next timer. The progress bar
+  // froze at its last percentage forever while the run finished on the server.
   useEffect(() => {
-    if (active) {
-      // Remember that we saw work in flight, so we know a later "done" is a
-      // transition rather than the state the page loaded in.
-      sawActive.current = true;
-      timer.current = setTimeout(poll, 2000);
-      return () => {
-        if (timer.current) clearTimeout(timer.current);
-      };
-    }
+    if (!active) return;
+    sawActive.current = true;
+    const id = setInterval(poll, 2000);
+    return () => clearInterval(id);
+  }, [active, poll]);
 
-    if (timer.current) clearTimeout(timer.current);
-
+  useEffect(() => {
     // Reload only when a run finished *while this page was open*. Reloading
     // whenever the job is "done" was an infinite loop: the completed job is
     // still the latest one after the reload, so the effect fired again
     // immediately and the page reloaded forever.
-    if (job?.status === "done" && sawActive.current) {
+    if (!active && job?.status === "done" && sawActive.current) {
       sawActive.current = false;
       window.location.reload();
     }
-  }, [active, job, poll]);
+  }, [active, job]);
 
   async function start() {
     setError(null);

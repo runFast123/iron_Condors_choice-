@@ -218,7 +218,12 @@ class SessionRegistry:
             # so a leaked token cannot outlive a re-login.
             previous = self._by_user.get(user_id)
             if previous:
-                self._sessions.pop(previous, None)
+                # Must go through _drop_locked: popping the session leaves its
+                # forward runner ticking on a thread nobody owns, and the next
+                # login resumes the same run from the database -- two ladders
+                # driving one run id, both writing the whole state, last writer
+                # wins. A second browser tab was enough to trigger it.
+                self._drop_locked(previous)
             if len(self._sessions) >= self.max_sessions:
                 oldest = min(self._sessions.values(), key=lambda s: s.last_seen)
                 self._drop_locked(oldest.token)
@@ -248,18 +253,29 @@ class SessionRegistry:
         return session
 
     def logout(self, token: str | None) -> bool:
+        """Drop the session, then tell Choice.
+
+        The registry lock guards every authenticated request, and `logoff()` is
+        a network call that can retry for minutes against a slow broker.
+        Holding the lock across it stalls every other user's request for as
+        long as it takes, so the session is removed under the lock and the
+        round-trip happens outside it. Dropping first is also the safer order:
+        if the broker call hangs, the session is already gone here.
+        """
         if not token:
             return False
         with self._lock:
             session = self._sessions.get(token)
             if session is None:
                 return False
-            try:
-                session.choice.logoff()
-            except ChoiceError:
-                pass
             self._drop_locked(token)
-            return True
+
+        try:
+            session.choice.logoff()
+        except ChoiceError as exc:
+            log.info("Choice logoff failed for %s (session already dropped): %s",
+                     session.user_id, exc)
+        return True
 
     # ------------------------------------------------------------- internals
 

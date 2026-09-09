@@ -9,25 +9,30 @@ import { engine, engineConfigured } from "@/lib/engine";
 import { getSessionToken } from "@/lib/session";
 import Link from "next/link";
 
-export default async function Overview() {
-  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = await getDataset();
-  const awaiting = provenance.awaiting_connection ?? false;
-
-  // Signed in, but nothing computed yet: offer to run one rather than showing
-  // an empty dashboard with no way forward.
-  let job = null;
-  if (engineConfigured()) {
-    const token = await getSessionToken();
-    if (token) {
-      try {
-        job = (await engine.backtestStatus(token)).job;
-      } catch {
-        /* the banner below already explains an unreachable engine */
-      }
-    }
+/** The latest job, or null — never a reason to fail the whole page. */
+async function latestJob() {
+  if (!engineConfigured()) return null;
+  const token = await getSessionToken();
+  if (!token) return null;
+  try {
+    return (await engine.backtestStatus(token)).job;
+  } catch {
+    /* the banner below already explains an unreachable engine */
+    return null;
   }
+}
+
+export default async function Overview() {
+  // Both calls go to the same engine and neither depends on the other, so they
+  // go together. Awaiting them in sequence made the landing page cost two
+  // round-trips where every other page costs one -- the first screen after
+  // login was the slowest in the app.
+  const [dataset, job] = await Promise.all([getDataset(), latestJob()]);
+  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = dataset;
+
   const hasData = condors.length > 0;
-  const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
+  // A finished run that opened nothing is not the same as never having run.
+  const ranButEmpty = !hasData && job?.status === "done";
 
   return (
     <>
@@ -61,6 +66,18 @@ export default async function Overview() {
           awaiting={provenance.awaiting_connection ?? false}
           hasData={condors.length > 0}
         />
+
+        {ranButEmpty && (
+          <div className="card" style={{ padding: "13px 15px", borderColor: "var(--warn)" }}>
+            <strong style={{ fontSize: 13 }}>The run finished, but opened no condors.</strong>
+            <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.65, maxWidth: "76ch" }}>
+              The ladder is down-only: it opens a condor at each {num(params.step)}-point{" "}
+              <em>decline</em>, so a window in which NIFTY never fell a full step produces
+              nothing. This is a real result, not a failure. Try a longer range, or a smaller
+              step, to give the ladder something to trigger on.
+            </p>
+          </div>
+        )}
 
         <RunBacktest
           initialJob={job}

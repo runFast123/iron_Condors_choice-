@@ -185,8 +185,27 @@ class Condor:
         return self.credit - self.entry_costs
 
     @property
+    def wing_width(self) -> float:
+        """The widest wing, measured from the strikes actually traded.
+
+        Not ``config.wing_width``. ``build_legs`` snaps every strike to the
+        listed grid, so the nominal offsets only describe the real structure
+        when both are exact multiples of ``strike_step``. With short 225 and
+        long 400 on a 50-point grid the strikes land 200 apart while the config
+        says 175 -- and every risk figure derived from it understates the loss
+        by 25 points a lot.
+        """
+        widest = 0.0
+        for right in (PUT, CALL):
+            strikes = sorted(fl.leg.strike for fl in self.legs if fl.leg.right == right)
+            if len(strikes) >= 2:
+                widest = max(widest, strikes[-1] - strikes[0])
+        return widest or self.config.wing_width
+
+    @property
     def max_profit(self) -> float:
-        return self.net_credit
+        """Best case at expiry, net of every cost the structure will incur."""
+        return self.net_credit - self.exit_costs
 
     @property
     def max_loss(self) -> float:
@@ -195,22 +214,34 @@ class Condor:
         Only one wing can finish in the money, so the exposure is one wing's
         width rather than both.
 
-        Exit costs are included once they are known, because otherwise the
-        stated worst case is smaller than the worst case ``payoff_at_expiry``
-        actually reports -- a risk figure that understates risk, however
-        slightly, is the wrong way round.
+        Exit costs are included once they are known, and they are subtracted
+        from ``max_profit`` for the same reason: a risk figure that understates
+        risk, or a profit figure that overstates it, is the wrong way round.
         """
-        return (
-            self.config.wing_width * self.config.qty - self.net_credit + self.exit_costs
-        )
+        return self.wing_width * self.config.qty - self.net_credit + self.exit_costs
 
     @property
     def breakevens(self) -> tuple[float, float]:
-        credit_per_share = self.credit / self.config.qty if self.config.qty else 0.0
-        return (
-            self.level - self.config.short_offset - credit_per_share,
-            self.level + self.config.short_offset + credit_per_share,
+        """Where the structure breaks even at expiry, costs included.
+
+        Measured from the strikes actually sold and from the *net* credit.
+        Using the nominal level and the gross credit put both points 13-14
+        points too far out on a typical condor -- reporting the position as
+        safer than it is, which is the one direction this must never err.
+        """
+        qty = self.config.qty
+        if not qty:
+            return (self.level, self.level)
+        net_per_share = (self.net_credit - self.exit_costs) / qty
+        short_put = max(
+            (fl.leg.strike for fl in self.legs if fl.leg.right == PUT and fl.leg.side is Side.SELL),
+            default=self.level - self.config.short_offset,
         )
+        short_call = min(
+            (fl.leg.strike for fl in self.legs if fl.leg.right == CALL and fl.leg.side is Side.SELL),
+            default=self.level + self.config.short_offset,
+        )
+        return (short_put - net_per_share, short_call + net_per_share)
 
     @property
     def is_open(self) -> bool:

@@ -118,10 +118,17 @@ def greeks(
     gamma = discount * _norm_pdf(d1) / (forward * vol * sqrt_t)
     vega = discount * forward * _norm_pdf(d1) * sqrt_t
 
-    # Theta per calendar day: the decay term plus the drift of the discount
-    # factor (Black-76 discounts the whole payoff, so -r*premium applies to
-    # both rights).
-    theta_annual = -discount * forward * _norm_pdf(d1) * vol / (2.0 * sqrt_t) - rate * premium
+    # Theta per calendar day.
+    #
+    # C = e^{-rT}[F N(d1) - K N(d2)], so dC/dT = -r*C + e^{-rT} F phi(d1) sigma / (2 sqrt(T)),
+    # and theta = -dC/dT = +r*C - e^{-rT} F phi(d1) sigma / (2 sqrt(T)).
+    #
+    # The rate term is POSITIVE for both rights: as the calendar advances T
+    # shrinks, so e^{-rT} rises and the discounted payoff gains value. Carrying
+    # it negative flipped that contribution, leaving an error of exactly
+    # 2*r*premium/365 per share per day -- small at the money, but it never
+    # cancels and it grows with both the rate and the premium.
+    theta_annual = rate * premium - discount * forward * _norm_pdf(d1) * vol / (2.0 * sqrt_t)
 
     return Greeks(
         price=max(premium, 0.0),

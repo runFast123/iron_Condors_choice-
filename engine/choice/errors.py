@@ -11,9 +11,26 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Patterns for values that must never reach a log line or an HTTP response.
+# Values that must never reach a log line or an HTTP response.
+#
+# The *shape* matters as much as the key name. A Choice response is normally
+# interpolated as a Python dict repr, which quotes with ' rather than ", so a
+# pattern accepting only double quotes matched nothing on exactly the strings
+# that carry a live SessionId and AccessToken. Bearer tokens and OTPs arrive
+# whitespace-separated, which a ':'/'=' pattern also misses.
+_SECRET_KEYS = (
+    r"(?:Bearer|VendorId|vendor_?id|api_?key|AccessToken|access_token|SessionId"
+    r"|session_?id|OTP|token|mobile(?:_?no)?|password)"
+)
+
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r'("?(?:Bearer|VendorId|api_?key|AccessToken|SessionId|OTP|token)"?\s*[:=]\s*"?)([^",;&\s}]{4,})', re.I),
+    # key: value / key = value, value optionally quoted with either quote.
+    re.compile(
+        r"""(['"]?""" + _SECRET_KEYS + r"""['"]?\s*[:=]\s*)(['"]?)([^'",;&\s}\]]{4,})""",
+        re.I,
+    ),
+    # `Bearer <token>`, `OTP 483920` -- whitespace-separated, no delimiter.
+    re.compile(r"\b(" + _SECRET_KEYS + r")(\s+)([A-Za-z0-9._-]{4,})", re.I),
     re.compile(r"(eyJ[A-Za-z0-9_-]{8,})\.[A-Za-z0-9._-]+"),  # JWTs
 )
 
@@ -21,10 +38,10 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
 def scrub(text: Any) -> str:
     """Redact anything that looks like a credential."""
     s = str(text)
-    s = _SECRET_PATTERNS[0].sub(r"\1<redacted>", s)
-    s = _SECRET_PATTERNS[1].sub(r"\1.<redacted>", s)
+    s = _SECRET_PATTERNS[0].sub(r"\1\2<redacted>", s)
+    s = _SECRET_PATTERNS[1].sub(r"\1\2<redacted>", s)
+    s = _SECRET_PATTERNS[2].sub(r"\1.<redacted>", s)
     return s
-
 
 class ChoiceError(Exception):
     """Base class for every failure originating from the Choice API."""

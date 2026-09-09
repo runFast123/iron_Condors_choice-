@@ -42,8 +42,13 @@ async function call<T>(
       signal: AbortSignal.timeout(30_000),
     });
   } catch (err) {
+    // The URL is deliberately not in the message. It is the address of the
+    // machine holding every user's live broker session, and this string is
+    // rendered in the browser.
+    console.error(`[engine] ${method} ${path} unreachable at ${ENGINE_URL}:`, err);
     throw new EngineError(
-      `Could not reach the engine at ${ENGINE_URL}. Is it running? (${(err as Error).message})`,
+      "The analysis engine is not reachable right now. It runs on the machine whose " +
+        "IP is declared with Choice; check that it is running.",
       504,
     );
   }
@@ -57,9 +62,18 @@ async function call<T>(
   }
 
   if (!res.ok) {
-    const detail =
-      (parsed as { detail?: string } | null)?.detail ?? text.slice(0, 300) ?? res.statusText;
-    throw new EngineError(detail || `Engine returned ${res.status}`, res.status);
+    // Only the engine's own `detail` is passed through. Echoing the raw body
+    // put Python tracebacks -- with server filesystem paths and module
+    // structure -- straight into the browser, and they are not something a
+    // trader can act on either.
+    const detail = (parsed as { detail?: string } | null)?.detail;
+    if (!detail) {
+      console.error(`[engine] ${method} ${path} -> ${res.status}:`, text.slice(0, 2000));
+    }
+    throw new EngineError(
+      detail || `The engine returned an error (${res.status}). Check the engine log for details.`,
+      res.status,
+    );
   }
   return parsed as T;
 }

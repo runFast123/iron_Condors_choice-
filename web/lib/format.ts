@@ -1,8 +1,25 @@
 /** Indian-numbering helpers. A lakh-grouped figure is what the user expects. */
 
+/**
+ * Every timestamp in this app is an Indian market time, and these render on
+ * the server -- which on Vercel runs in UTC. Without an explicit zone a trade
+ * stamped 10:18 IST is shown to every user as 04:48, and a pre-05:30 stamp
+ * moves to the previous calendar day. The zone is pinned, not inherited.
+ */
+const IST = "Asia/Kolkata";
+
+/**
+ * Collapse negative zero, and values that round to it, onto plain zero.
+ * Float noise on a leg's P&L otherwise reaches the screen as "-₹0".
+ */
+function snapZero(value: number, decimals: number): number {
+  return Math.abs(value) < 0.5 / 10 ** decimals ? 0 : value;
+}
+
 export function inr(value: number, opts: { decimals?: number; sign?: boolean } = {}): string {
   const { decimals = 0, sign = false } = opts;
   if (!Number.isFinite(value)) return "--";
+  value = snapZero(value, decimals);
   const formatted = new Intl.NumberFormat("en-IN", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
@@ -13,6 +30,7 @@ export function inr(value: number, opts: { decimals?: number; sign?: boolean } =
 
 /** Compact form for axis ticks: 1.2L, 45.0k. */
 export function inrCompact(value: number): string {
+  if (!Number.isFinite(value)) return "--";
   const abs = Math.abs(value);
   const s = value < 0 ? "-" : "";
   if (abs >= 1e7) return `${s}\u20B9${(abs / 1e7).toFixed(1)}Cr`;
@@ -23,6 +41,7 @@ export function inrCompact(value: number): string {
 
 export function num(value: number, decimals = 0): string {
   if (!Number.isFinite(value)) return "--";
+  value = snapZero(value, decimals);
   return new Intl.NumberFormat("en-IN", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
@@ -41,12 +60,15 @@ export function ratio(value: number, decimals = 2): string {
 
 export function shortDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
+  if (Number.isNaN(d.getTime())) return "--";
+  return d.toLocaleDateString("en-IN", { timeZone: IST, day: "2-digit", month: "short", year: "2-digit" });
 }
 
 export function dateTime(iso: string): string {
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "--";
   return d.toLocaleString("en-IN", {
+    timeZone: IST,
     day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit",
   });
 }

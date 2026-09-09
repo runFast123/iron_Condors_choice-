@@ -34,6 +34,38 @@ from engine.config import ChoiceConfig, choice_config
 
 log = logging.getLogger(__name__)
 
+# A broker may legitimately answer with an HTTP-date rather than a number
+# (RFC 7231), and may ask for an unreasonable wait. float() on the former
+# raises ValueError, which escapes request() -- ForwardRunner.tick catches only
+# ChoiceError, so the polling thread died silently while /forward/state
+# happily kept reporting the run as live.
+MAX_RETRY_AFTER = 120.0
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Seconds to wait, from a numeric or HTTP-date Retry-After. Capped."""
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        try:
+            from email.utils import parsedate_to_datetime
+
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        seconds = (when - dt.datetime.now(tz=dt.timezone.utc)).total_seconds()
+    if seconds <= 0:
+        return None
+    # Honouring an unbounded value would park the engine for days and drain
+    # the rate-limit bucket into deep negative territory behind it.
+    return min(seconds, MAX_RETRY_AFTER)
+
 # Choice exposes the same API on two gateways. If one is unreachable the other
 # usually still answers, so a transport failure retries against the alternate
 # before giving up -- this is a host outage, not a bad request.
@@ -170,7 +202,14 @@ class ChoiceSession:
     # ---------------------------------------------------------- persistence
 
     def save_session(self, path: Path | None = None) -> bool:
+        """Cache the session to disk. No-op unless a path is configured.
+
+        Writing this file stores a live session id and the raw API key in
+        plaintext, so it happens only when a caller explicitly asks for it.
+        """
         path = path or self.config.session_file
+        if path is None:
+            return False
         try:
             path.write_text(
                 json.dumps(
@@ -196,6 +235,8 @@ class ChoiceSession:
         worse than none: it produces confusing 401s deep inside a backfill.
         """
         path = path or self.config.session_file
+        if path is None:
+            return False
         try:
             data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
@@ -272,7 +313,7 @@ class ChoiceSession:
                     url = f"{other}/{endpoint.lstrip('/')}"
             else:
                 if resp.status_code == 429:
-                    retry_after = float(resp.headers.get("Retry-After") or 0) or None
+                    retry_after = _retry_after_seconds(resp.headers.get("Retry-After"))
                     bucket.penalise(retry_after or 2.0)
                     last = ChoiceRateLimitError("Rate limited by Choice", retry_after=retry_after)
                 elif 500 <= resp.status_code < 600:

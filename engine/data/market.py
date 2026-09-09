@@ -155,7 +155,6 @@ class ChoiceMarketData:
         """Log in, load the scrip master and calibrate the ChartData epoch."""
         session = session or ChoiceSession()
         session.ensure_session()
-        session.save_session()
 
         master = ScripMaster()
         master.fetch()

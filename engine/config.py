@@ -68,7 +68,16 @@ class ChoiceConfig:
     order_rate_limit: float = field(default_factory=lambda: _f("ENGINE_ORDER_RATE_LIMIT", 5.0))
 
     max_retries: int = field(default_factory=lambda: _i("ENGINE_MAX_RETRIES", 4))
-    session_file: Path = REPO_ROOT / ".choice_session.json"
+    # Off by default, and deliberately not a shared path.
+    #
+    # This is a multi-user engine: each signed-in user has their own Choice
+    # session held in memory. A single default file meant every user wrote
+    # their live session id and raw API key over the previous user's, and any
+    # code path that read it back adopted whoever wrote last -- one user's
+    # requests going out under another's broker session. The same file has
+    # already leaked once. Sessions now stay in memory unless a single-user
+    # tool explicitly asks for a cache and names its own path.
+    session_file: Path | None = None
 
     @property
     def configured(self) -> bool:

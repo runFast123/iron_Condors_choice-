@@ -12,12 +12,16 @@ import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
  * The engine ticks on its own thread, so the run continues whether or not this
  * page is open; this polls for state rather than driving the ladder itself.
  */
+/** Matched to the engine's own poll cadence; polling faster only re-ships
+ *  the same session payload. */
+const POLL_MS = 10_000;
+
 export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [state, setState] = useState<LiveState | null>(initial);
   const [lots, setLots] = useState(1);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Tick history for the live chart. Seeded from the engine's database so a
   // reload shows the whole session rather than restarting from an empty line,
   // then extended in place as new ticks arrive.
@@ -30,15 +34,25 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/forward/state", { cache: "no-store" });
+      if (res.status === 401) {
+        window.location.href = "/login?reason=expired";
+        return;
+      }
       const body = await res.json();
       if (res.ok && body.state) {
-        const next = body.state as LiveState;
-        setState(next);
-        recordTick(next);
+        setState(body.state as LiveState);
+        recordTick(body.state as LiveState);
+        setError(null);
+      } else if (!res.ok) {
+        setError(body.error ?? `Lost contact with the engine (${res.status}).`);
       }
-    } catch {
-      /* transient; the next tick retries */
+    } catch (err) {
+      // Swallowed, this froze the panel on "RUNNING" with a stale P&L and no
+      // explanation: one blip meant no setState, so the effect never re-ran
+      // and no further poll was ever scheduled.
+      setError(`Lost contact with the engine (${(err as Error).message}).`);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // One point per distinct tick timestamp, capped so a long session cannot
@@ -80,16 +94,17 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keyed only on `running`, so a failed poll cannot end the loop, and paused
+  // while the tab is hidden -- there is nobody watching a chart they cannot
+  // see, and each response carries the whole session.
   useEffect(() => {
-    if (!running) {
-      if (timer.current) clearTimeout(timer.current);
-      return;
-    }
-    timer.current = setTimeout(refresh, 4000);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [running, state, refresh]);
+    if (!running) return;
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void refresh();
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [running, refresh]);
 
   async function post(path: string, body?: unknown, label = "working") {
     setError(null);

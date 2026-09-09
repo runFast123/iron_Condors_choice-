@@ -7,6 +7,8 @@ touchline payload shape.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from engine.choice.errors import ChoiceError
@@ -66,6 +68,7 @@ def test_emit_accepts_a_level_detail_without_colliding():
     from engine.forward.runner import ForwardRunner
 
     runner = ForwardRunner.__new__(ForwardRunner)
+    runner._lock = threading.RLock()
     runner.events = []
     runner.max_events = 100
 
@@ -82,6 +85,7 @@ def test_emit_trims_the_log_to_its_cap():
     from engine.forward.runner import ForwardRunner
 
     runner = ForwardRunner.__new__(ForwardRunner)
+    runner._lock = threading.RLock()
     runner.events = []
     runner.max_events = 5
     for i in range(20):

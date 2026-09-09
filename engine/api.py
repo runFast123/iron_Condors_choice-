@@ -101,6 +101,14 @@ class StartForwardRequest(BaseModel):
     lots: int = Field(default=1, ge=1, le=100)
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
+    max_condors: int = Field(default=20, ge=1, le=100)
+    # Without these the forward runner has no exit at all: `exit_signal`
+    # returns None when both are unset, so `_close` is unreachable and every
+    # condor is held to expiry regardless of what was backtested. A ladder
+    # backtested with a 50% take-profit was then forward-tested as a different
+    # strategy -- exactly the divergence this engine exists to prevent.
+    take_profit: float | None = Field(default=None, gt=0, le=1)
+    stop_loss: float | None = Field(default=None, gt=0, le=20)
 
 
 # ----------------------------------------------------------------- dependencies
@@ -411,7 +419,10 @@ def forward_start(
         market=market,
         strategy=StrategyConfig(
             step=body.step, lots=body.lots, lot_size=lot_size,
-            max_condors=engine_config.max_condors, strike_step=strike_step,
+            max_condors=min(body.max_condors, engine_config.max_condors),
+            strike_step=strike_step,
+            take_profit_pct=body.take_profit,
+            stop_loss_mult=body.stop_loss,
         ),
         costs=CostModel(),
         # Per-user state file: one user's run must never overwrite another's.
@@ -445,7 +456,18 @@ def forward_start(
 
 @app.post("/forward/tick", dependencies=[Depends(check_engine_key)])
 def forward_tick(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """Force one polling cycle. Refused once the run has stopped.
+
+    Without this guard the kill switch was advisory: a run that had tripped its
+    daily loss limit reported itself stopped and then opened fresh condors on
+    the next manual tick.
+    """
     runner = _require_runner(session)
+    if runner.stopped_reason:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This run has stopped ({runner.stopped_reason}). Start a new one to continue.",
+        )
     runner.tick()
     runner.save()
     return {"ok": True, "state": runner.snapshot()}

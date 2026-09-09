@@ -9,6 +9,10 @@ from typing import Sequence
 
 TRADING_DAYS = 252
 
+# Below this, an annualised growth rate says more about the calendar than the
+# strategy. A 2% gain over one day annualises to five figures.
+MIN_CAGR_DAYS = 90.0
+
 
 @dataclass
 class EquityPoint:
@@ -67,10 +71,28 @@ def _stdev(values: Sequence[float]) -> float:
     return math.sqrt(sum((v - mu) ** 2 for v in values) / (len(values) - 1))
 
 
+def _downside_deviation(values: Sequence[float], target: float = 0.0) -> float:
+    """Root-mean-square of the shortfalls below ``target``.
+
+    Deliberately not ``stdev`` of the negative subset. That measures how much
+    the losses vary about their own mean -- so a run of identical small losses
+    scores zero downside risk and reports a Sortino of 0 no matter how good the
+    upside is. The denominator is the count of *all* observations, because a
+    period with no shortfall genuinely contributes zero risk.
+    """
+    if not values:
+        return 0.0
+    shortfalls = [min(v - target, 0.0) ** 2 for v in values]
+    return math.sqrt(sum(shortfalls) / len(values))
+
+
 def drawdown_series(equity: Sequence[float]) -> list[float]:
     """Peak-to-trough drawdown at each point (negative or zero)."""
     out: list[float] = []
-    peak = float("-inf")
+    # Seeded at zero, not -inf: the curve's first point is recorded *after* the
+    # first bar's marks, so there is no explicit zero. Starting the peak at the
+    # first value hides a run that is under water from the opening trade.
+    peak = 0.0
     for value in equity:
         peak = max(peak, value)
         out.append(value - peak)
@@ -123,6 +145,14 @@ def compute(
     if not realised:
         return metrics
 
+    # One NaN makes net_pnl, expectancy, best and worst all NaN while still
+    # counting as a condor -- it is neither a win nor a loss, so win_rate and
+    # profit_factor quietly describe a different population than net_pnl does.
+    realised = [p for p in realised if math.isfinite(p)]
+    metrics.condors = len(realised)
+    if not realised:
+        return metrics
+
     wins = [p for p in realised if p > 0]
     losses = [p for p in realised if p < 0]
 
@@ -153,16 +183,23 @@ def compute(
             sigma = _stdev(rets)
             mu = _mean(rets)
             metrics.sharpe = (mu / sigma) * math.sqrt(TRADING_DAYS) if sigma > 0 else 0.0
-            downside = [r for r in rets if r < 0]
-            dsigma = _stdev(downside) if len(downside) > 1 else 0.0
+            dsigma = _downside_deviation(rets)
             metrics.sortino = (mu / dsigma) * math.sqrt(TRADING_DAYS) if dsigma > 0 else 0.0
 
-        span_days = (equity[-1].ts - equity[0].ts).days
-        if span_days > 0 and capital_at_risk > 0:
+        span = (equity[-1].ts - equity[0].ts).total_seconds() / 86_400.0
+        # Annualising a few days produces a headline like "137,641%" from a 2%
+        # move, and compounding a large return over a fraction of a year
+        # overflows outright: 7.0 ** 365 raises OverflowError and takes the
+        # whole metric set with it. Below a quarter there is no meaningful
+        # annual rate to report, so none is reported.
+        if span >= MIN_CAGR_DAYS and capital_at_risk > 0:
             total_return = metrics.net_pnl / capital_at_risk
-            years = span_days / 365.0
-            if years > 0 and total_return > -1:
-                metrics.cagr = (1.0 + total_return) ** (1.0 / years) - 1.0
+            years = span / 365.0
+            if total_return > -1:
+                try:
+                    metrics.cagr = (1.0 + total_return) ** (1.0 / years) - 1.0
+                except OverflowError:
+                    metrics.cagr = float("inf")
         if metrics.max_drawdown < 0:
             metrics.calmar = metrics.cagr / abs(metrics.max_drawdown_pct) if metrics.max_drawdown_pct else 0.0
 

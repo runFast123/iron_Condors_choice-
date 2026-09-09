@@ -387,18 +387,31 @@ class ScripMaster:
         ("NIFTY", "NIFTY 50", "Nifty50", "INDIAVIX", "INDIA VIX").
         """
         wanted = name.upper().replace(" ", "")
-        non_options = [c for c in self.contracts if not c.is_option]
+        # A futures line carries Symbol "NIFTY" too, is not an option, and in
+        # today's master appears *after* the cash row purely by file order --
+        # so `exact[0]` returned the right thing by luck. One reordering and
+        # the whole ladder would silently run on futures, which trade at a
+        # basis of tens of points and drift into expiry. An index has no
+        # expiry and no strike; every derivative has both.
+        non_options = [
+            c for c in self.contracts
+            if not c.is_option and c.expiry is None and not c.strike
+        ]
 
         def norm(text: str) -> str:
             return re.sub(r"[^A-Z0-9]", "", str(text).upper())
 
+        def preferred(candidates: list[Contract]) -> Contract:
+            # Deterministic, not file order: the cash segment carries the index.
+            return min(candidates, key=lambda c: (c.segment_id, c.token))
+
         exact = [c for c in non_options if norm(c.symbol) == wanted]
         if exact:
-            return exact[0]
+            return preferred(exact)
 
         by_desc = [c for c in non_options if norm(c.description) == wanted]
         if by_desc:
-            return by_desc[0]
+            return preferred(by_desc)
 
         # "NIFTY" must not match "NIFTYNXT50" or a futures line, so prefer the
         # shortest symbol that contains the name.

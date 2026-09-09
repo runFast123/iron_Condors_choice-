@@ -17,6 +17,7 @@ Two honesty rules follow from that:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from engine.data.market import Quote
@@ -25,9 +26,22 @@ from engine.strategy.condor import Side
 # NSE quotes NIFTY options in 5-paisa ticks, and no premium trades below it.
 TICK = 0.05
 
+# Binary float noise must not push an exact tick onto the next one.
+_TICK_EPS = 1e-9
 
-def _round_to_tick(price: float) -> float:
-    return max(TICK, round(price / TICK) * TICK)
+
+def _round_to_tick(price: float, side: Side) -> float:
+    """Snap to the tick grid, always against the trader.
+
+    Symmetric rounding gave a better price than the market showed on roughly
+    40% of fills -- a sell rounded *up* through the bid, a buy rounded *down*
+    through the offer. Small per share, free money in aggregate, and always in
+    the direction that flatters the result. A buy pays the next tick up, a sell
+    receives the next tick down.
+    """
+    ticks = price / TICK
+    snapped = math.ceil(ticks - _TICK_EPS) if side is Side.BUY else math.floor(ticks + _TICK_EPS)
+    return max(TICK, snapped * TICK)
 
 
 @dataclass(frozen=True)
@@ -70,19 +84,28 @@ class FillModel:
             spread = quote.spread or 0.0
             if quote.mid > 0 and spread / quote.mid > self.max_spread_pct:
                 return None
-            price = quote.ask if side is Side.BUY else quote.bid
+            touch = float(quote.ask if side is Side.BUY else quote.bid)
             reference = quote.mid
+            price = _round_to_tick(touch, side)
             return FillPrice(
-                price=_round_to_tick(float(price)),
+                price=price,
+                # Measured against the price actually paid, not the unrounded
+                # touch -- otherwise the reported cost describes a fill the
+                # user did not get.
                 reference=reference,
-                slippage=abs(float(price) - reference),
+                slippage=abs(price - reference),
                 spread_modelled=False,
             )
 
         reference = quote.ltp
         half = max(self.min_half_spread, reference * self.modelled_spread_pct / 2.0)
         raw = reference + half if side is Side.BUY else reference - half
-        price = _round_to_tick(raw)
+        price = _round_to_tick(raw, side)
+        # The one-tick floor exists so a fill is never nonsensical, but on a
+        # 5-paisa wing it would otherwise let a sale print *above* the last
+        # trade -- turning the modelled spread into a modelled profit.
+        if side is Side.SELL:
+            price = min(price, _round_to_tick(reference, side))
         return FillPrice(
             price=price,
             reference=reference,
