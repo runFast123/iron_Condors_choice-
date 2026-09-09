@@ -380,3 +380,40 @@ def test_a_database_from_an_earlier_build_gains_the_version_column(tmp_path):
         assert store.backtest_history("u1")[0]["run_id"] == "a"
     finally:
         store.close()
+
+
+# ============================================ bounded history and safe resume
+
+
+def test_tick_history_is_trimmed_rather_than_growing_forever(store):
+    """prune_ticks existed but nothing called it, so the table grew for the
+    life of the database -- ~150 MB per user per year at the fastest poll, for
+    a chart that draws a few hundred points."""
+    for i in range(120):
+        store.record_tick("s1", f"2026-09-09T09:{i // 60:02d}:{i % 60:02d}+05:30", 24_000.0 + i)
+    store.prune_ticks("s1", keep=50)
+    kept = store.ticks("s1", limit=10_000)
+    assert len(kept) == 50
+    # The newest are the ones worth keeping.
+    assert kept[-1]["spot"] == pytest.approx(24_119.0)
+
+
+def test_pruning_one_run_leaves_another_alone(store):
+    for i in range(30):
+        store.record_tick("keep-me", f"2026-09-09T10:00:{i:02d}+05:30", 100.0 + i)
+        store.record_tick("trim-me", f"2026-09-09T10:00:{i:02d}+05:30", 200.0 + i)
+    store.prune_ticks("trim-me", keep=5)
+    assert len(store.ticks("keep-me", limit=100)) == 30
+    assert len(store.ticks("trim-me", limit=100)) == 5
+
+
+def test_forward_history_does_not_drag_every_state_blob_off_disk(store):
+    """It returns five scalar columns; SELECT * pulled tens of kilobytes of
+    state_json per row on every login."""
+    store.save_forward(session_id="s1", user_id="u1", status="running",
+                       state={"blob": "x" * 50_000},
+                       started_at="2026-09-09T09:15:00+05:30", stopped_reason=None)
+    rows = store.forward_history("u1")
+    assert rows and "state_json" not in rows[0]
+    assert set(rows[0]) == {"session_id", "status", "started_at", "updated_at",
+                            "stopped_reason"}

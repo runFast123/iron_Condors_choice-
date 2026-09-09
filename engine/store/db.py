@@ -31,6 +31,10 @@ from typing import Any, Iterable
 
 log = logging.getLogger(__name__)
 
+# Roughly a full trading day at the fastest allowed poll, which is far more
+# than the live chart draws and enough to rebuild it after a reload.
+TICKS_KEPT = 5_000
+
 DEFAULT_PATH = Path(os.environ.get("ENGINE_DB", "engine/state/engine.db"))
 
 SCHEMA = """
@@ -187,7 +191,10 @@ class Store:
                 "stopped_reason": r["stopped_reason"],
             }
             for r in self._rows(
-                "SELECT * FROM forward_sessions WHERE user_id = ? "
+                # Projected, not SELECT *: state_json is tens of kilobytes per
+                # row and none of it is used here.
+                "SELECT session_id, status, started_at, updated_at, stopped_reason "
+                "FROM forward_sessions WHERE user_id = ? "
                 "ORDER BY started_at DESC LIMIT ?",
                 (user_id, limit),
             )
@@ -222,7 +229,14 @@ class Store:
         )
         return [{"ts": r["ts"], "spot": r["spot"]} for r in reversed(rows)]
 
-    def prune_ticks(self, session_id: str, keep: int = 5_000) -> None:
+    def prune_ticks(self, session_id: str, keep: int = TICKS_KEPT) -> None:
+        """Keep only the most recent ``keep`` ticks for a run.
+
+        Without this the table grows for the life of the database: at the
+        five-second floor that is ~4,500 rows a day per user and about 150 MB a
+        year, for a chart that never shows more than the last few hundred
+        points.
+        """
         self._write(
             "DELETE FROM forward_ticks WHERE session_id = ? AND ts NOT IN "
             "(SELECT ts FROM forward_ticks WHERE session_id = ? ORDER BY ts DESC LIMIT ?)",

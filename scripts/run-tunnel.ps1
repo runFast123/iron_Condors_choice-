@@ -49,11 +49,31 @@ function Write-Log([string]$message) {
 
 function Set-VercelEngineUrl([string]$url) {
     # Vercel has no "update"; the value has to be removed and re-added.
-    Write-Log "Pointing Vercel ENGINE_URL at $url"
-    & npx vercel env rm ENGINE_URL production --yes 2>&1 | Out-Null
-    $url | & npx vercel env add ENGINE_URL production 2>&1 | Out-Null
-    Write-Log "Redeploying so the new value is picked up"
-    & npx vercel --prod --yes 2>&1 | Select-Object -Last 3 | ForEach-Object { Write-Log $_ }
+    #
+    # Windows PowerShell 5.1 turns a native command's stderr into ErrorRecords
+    # when you redirect it, so `2>&1` on npx made a *successful* vercel call
+    # look like a failure -- and with $ErrorActionPreference = "Stop" that
+    # killed the tunnel this function exists to publish. So: no stderr
+    # redirection here, and errors are non-terminating for this block only.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        Write-Log "Pointing Vercel ENGINE_URL at $url"
+        & npx vercel env rm ENGINE_URL production --yes | Out-Null
+        $url | & npx vercel env add ENGINE_URL production | Out-Null
+        Write-Log "Redeploying so the new value is picked up"
+        & npx vercel --prod --yes | Select-Object -Last 3 | ForEach-Object { Write-Log $_ }
+        Write-Log "Vercel now points at $url"
+    }
+    catch {
+        # A failed publish must never take the tunnel down with it: the tunnel
+        # is still useful, and the URL can be pasted into Vercel by hand.
+        Write-Log "WARNING: could not update Vercel ($($_.Exception.Message))."
+        Write-Log "         Set ENGINE_URL to $url manually, then redeploy."
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
 }
 
 if ($Named) {

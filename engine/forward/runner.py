@@ -59,6 +59,21 @@ log = logging.getLogger(__name__)
 MARKET_OPEN = MARKET_OPEN_TIME
 MARKET_CLOSE = MARKET_CLOSE_TIME
 
+# How often to trim the stored tick history. Every 500 ticks is roughly two
+# hours at the default poll -- often enough to bound the table, rare enough
+# that the delete never sits on the polling path.
+TICK_PRUNE_EVERY = 500
+
+
+class UnsupportedStateVersion(ValueError):
+    """A saved run was written by an engine whose state format we cannot read.
+
+    Distinct from every other ValueError `restore` can raise -- enum lookups,
+    float parsing, config validation -- because only this one is genuinely
+    unrecoverable. Catching plain ValueError meant one malformed byte
+    permanently retired a run that still had positions open.
+    """
+
 # One calendar for the process: holidays are global, and learning one in a
 # forward run should stop every other run polling a shut exchange too.
 market_calendar = MarketCalendar.load()
@@ -171,6 +186,7 @@ class ForwardRunner:
         #
         # Reentrant because tick() -> _open_condor() -> emit() all take it.
         self._lock = threading.RLock()
+        self._ticks_recorded = 0
         # Whether the most recent spot came from a candle rather than the book.
         self.spot_is_stale = False
         self.legs_on_real_depth = 0
@@ -457,6 +473,14 @@ class ForwardRunner:
         if self.store is not None and self.session_id:
             try:
                 self.store.record_tick(self.session_id, now.isoformat(), spot)
+                # Nothing else called prune_ticks, so the table grew for the
+                # life of the database -- roughly 150 MB per user per year at
+                # the fastest poll, for a chart that draws a few hundred
+                # points. Trimmed occasionally rather than every tick, since
+                # the delete is the expensive half.
+                self._ticks_recorded += 1
+                if self._ticks_recorded % TICK_PRUNE_EVERY == 0:
+                    self.store.prune_ticks(self.session_id)
             except Exception:                       # noqa: BLE001
                 log.exception("Could not record tick")
 
@@ -760,7 +784,10 @@ class ForwardRunner:
         """
         version = state.get("version")
         if version != cls.STATE_VERSION:
-            raise ValueError(f"Unsupported forward state version {version!r}")
+            raise UnsupportedStateVersion(
+                f"Unsupported forward state version {version!r}; this engine writes "
+                f"{cls.STATE_VERSION!r}"
+            )
 
         known = {f.name for f in dataclass_fields(StrategyConfig)}
         strategy = StrategyConfig(**{k: v for k, v in state["strategy"].items() if k in known})

@@ -42,7 +42,7 @@ from engine.choice.errors import (
 )
 from engine.config import IST, engine_config
 from engine.data.market import NIFTY, ChoiceMarketData
-from engine.forward.runner import ForwardRunner, market_calendar, market_is_open
+from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
 from engine.store.db import Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
@@ -266,7 +266,24 @@ def _resume_forward(session: UserSession) -> bool:
     if not pending:
         return False
 
-    record = pending[-1]                            # most recent wins
+    # Only one run can be driven at a time, so the newest is resumed -- but the
+    # older ones must not be left marked `running` forever. They would be
+    # re-read on every login and would never become resumable, while claiming
+    # to have live positions. Retire them explicitly so the record is honest.
+    record = pending[-1]
+    for stale in pending[:-1]:
+        log.warning(
+            "Superseded forward run %s for user %s; retiring it",
+            stale["session_id"], session.user_id,
+        )
+        try:
+            store.mark_stopped(
+                stale["session_id"],
+                "superseded by a newer run; not resumed after the engine restarted",
+            )
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not retire superseded run %s", stale["session_id"])
+
     # The scrip master is expensive, which is why it is normally attached
     # lazily on first use -- but a run cannot be resumed without it, and the
     # cost is only paid by users who actually have a run waiting.
@@ -283,9 +300,11 @@ def _resume_forward(session: UserSession) -> bool:
             state_path=_state_path(session), store=store,
             session_id=record["session_id"], user_id=session.user_id,
         )
-    except ValueError:
-        # An explicitly unsupported state version will never load, so retiring
-        # it is honest rather than destructive.
+    except UnsupportedStateVersion:
+        # Only an explicitly unsupported version is retired. `ValueError` was
+        # far too wide a net: StrategyConfig validation, every enum lookup and
+        # every float() in restore() raise it, so one malformed byte
+        # permanently abandoned a run with open positions.
         log.exception("Saved forward run %s is not a supported version", record["session_id"])
         store.mark_stopped(record["session_id"], "saved state is not a supported version")
         return False
