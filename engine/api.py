@@ -41,7 +41,9 @@ from engine.choice.errors import (
     StaticIpRejectedError,
 )
 from engine.config import IST, engine_config
+from engine.backtest.jobs import CALIBRATION_MAX_AGE_DAYS
 from engine.data.expiry_calendar import nearest_listed_expiry
+from engine.pricing.calibrate import calibrate
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
 from engine.store.db import Store
@@ -262,6 +264,7 @@ def login(body: LoginRequest, request: Request) -> dict[str, Any]:
 
     log.info("Login from %s for user %s", request.client.host if request.client else "?", session.user_id)
     resumed = _resume_forward(session)
+    _refresh_calibration_if_stale(session)
     return {"token": session.token, "user": session.public(), "resumed_forward": resumed}
 
 
@@ -434,6 +437,72 @@ def backtest_clear(session: UserSession = Depends(current_user)) -> dict[str, bo
 
 
 # ------------------------------------------------------------ forward testing
+
+
+def _refresh_calibration_if_stale(session: UserSession) -> None:
+    """Fit the IV surface from the live chain, at most once a day.
+
+    On login rather than on demand, because fitting needs a Choice session and
+    an open market, and because a feature nobody remembers to trigger is a
+    feature that never runs. Failure is silent by design: a backtest falls back
+    to the flat surface and says so in its provenance.
+    """
+    today = dt.datetime.now(tz=IST).date().isoformat()
+    try:
+        if store.latest_calibration(not_before=today):
+            return
+    except Exception:                               # noqa: BLE001
+        log.exception("Could not read the stored calibration")
+        return
+
+    market = session.market
+    if market is None:
+        # Deliberately not connecting here. Attaching market data downloads and
+        # parses the scrip master, which does not belong on the login path --
+        # and assigning it from a background thread would race with the request
+        # that is already resolving `user_market`. The next login after any
+        # market call will have it, or /calibration/refresh can be asked
+        # directly.
+        log.debug("Skipping calibration: no market data attached yet")
+        return
+
+    def worker() -> None:
+        try:
+            result = calibrate(market)
+            if result is None:
+                log.info("Chain calibration produced nothing usable today")
+                return
+            store.save_calibration(today, result.summary())
+            log.info("Stored IV calibration for %s: %s", today, result.summary())
+        except Exception:                           # noqa: BLE001
+            log.exception("Chain calibration failed")
+
+    threading.Thread(target=worker, name="calibrate", daemon=True).start()
+
+
+@app.get("/calibration", dependencies=[Depends(check_engine_key)])
+def read_calibration(_: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """The stored surface fit, and how old it is."""
+    fit = store.latest_calibration()
+    return {"calibration": fit, "stale_after_days": CALIBRATION_MAX_AGE_DAYS}
+
+
+@app.post("/calibration/refresh", dependencies=[Depends(check_engine_key)])
+def refresh_calibration(
+    session: UserSession = Depends(current_user),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """Refit now, from the chain Choice is quoting at this moment."""
+    result = calibrate(market)
+    if result is None:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Could not fit the surface: Choice returned too few usable option quotes. "
+            "This needs an open market and a live chain.",
+        )
+    today = dt.datetime.now(tz=IST).date().isoformat()
+    store.save_calibration(today, result.summary())
+    return {"ok": True, "calibration": result.summary()}
 
 
 @app.post("/forward/start", dependencies=[Depends(check_engine_key)])

@@ -7,6 +7,7 @@ nothing at all.
 
 from __future__ import annotations
 
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -309,3 +310,14 @@ def test_engine_serves_no_files_from_disk(client, path):
     otherwise silently expose credentials and source.
     """
     assert client.get(path).status_code == 404
+
+
+# ================================================= IV surface calibration
+
+
+def test_calibration_is_readable_and_gated(client):
+    assert client.get("/calibration").status_code == 401
+    token = login(client, ALICE).json()["token"]
+    body = client.get("/calibration", headers=bearer(token)).json()
+    assert "calibration" in body
+    assert body["stale_after_days"] > 0

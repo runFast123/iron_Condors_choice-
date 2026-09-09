@@ -64,6 +64,12 @@ def _roll_back_to_trading_day(day: dt.date, calendar: MarketCalendar) -> dt.date
     return day
 
 
+def _end_of_month(day: dt.date) -> dt.date:
+    """The last calendar day of ``day``'s month."""
+    first_next = dt.date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+    return first_next - dt.timedelta(days=1)
+
+
 def weekly_expiries(
     start: dt.date,
     end: dt.date,
@@ -93,7 +99,16 @@ def monthly_expiries(
     Offered because the ladder's offsetting thesis needs three condors deep in
     one expiry, which a weekly rarely allows and a monthly often does.
     """
-    weeklies = weekly_expiries(start, end, weekday=weekday, calendar=calendar)
+    # Generate out to the end of the final month, not to `end`.
+    #
+    # Clipping at the range boundary made the last month's "monthly" whichever
+    # weekly happened to fall before the range stopped -- so a run ending on
+    # the 9th got a 8th-of-the-month weekly presented as a month-end contract,
+    # with a week of life where it should have had four. The same applies at
+    # the front: a monthly that expires inside the range but began before it is
+    # still that month's contract.
+    span_end = _end_of_month(end)
+    weeklies = weekly_expiries(start, span_end, weekday=weekday, calendar=calendar)
     by_month: dict[tuple[int, int], dt.date] = {}
     for expiry in weeklies:
         by_month[(expiry.year, expiry.month)] = expiry
@@ -115,8 +130,23 @@ def expiry_calendar(
     caller can report how much of a run rests on an inferred calendar rather
     than on contracts the exchange actually published.
     """
-    listed_in_range = {e for e in listed if start <= e <= end}
-    weekday = infer_expiry_weekday(sorted(listed))
+    listed_all = sorted(listed)
+    weekday = infer_expiry_weekday(listed_all)
+
+    # A monthly campaign must not be handed a listed *weekly*. The union of
+    # listed and derived otherwise mixed the exchange's weeklies straight into
+    # a monthly ladder, giving some condors a week of life where the strategy
+    # intends a month. Month-ends are taken from the whole listed set, not just
+    # the part inside the range, or a range ending mid-month promotes a weekly.
+    if cadence == "monthly":
+        last_of_month: dict[tuple[int, int], dt.date] = {}
+        for expiry in listed_all:
+            last_of_month[(expiry.year, expiry.month)] = expiry
+        eligible = set(last_of_month.values())
+    else:
+        eligible = set(listed_all)
+
+    listed_in_range = {e for e in eligible if start <= e <= end}
 
     build = monthly_expiries if cadence == "monthly" else weekly_expiries
     derived_all = build(start, end, weekday=weekday, calendar=calendar)

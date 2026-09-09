@@ -343,3 +343,80 @@ def test_a_term_slope_lifts_short_dated_credit_and_is_labelled():
     prov = sloped.result["provenance"]
     assert prov["term_exponent"] == -0.25
     assert "term^-0.25" in prov["vol_source"]
+
+
+# ==================================== expiry cadence and surface provenance
+
+
+def test_a_monthly_run_uses_month_end_contracts():
+    """`expiry_cadence` was read by this runner all along and never sent, so
+    every run silently used weeklies."""
+    weekly = run_job(days=120, expiry_cadence="weekly")
+    monthly = run_job(days=120, expiry_cadence="monthly")
+    assert weekly.status == "done" and monthly.status == "done", monthly.error
+
+    def expiries(job):
+        return sorted({c["expiry"] for c in job.result["condors"]})
+
+    assert len(expiries(monthly)) < len(expiries(weekly))
+
+    # The property is "last contract of its month", not a day-of-month
+    # threshold: which date that is depends on the exchange calendar.
+    weeklies = [dt.date.fromisoformat(e) for e in expiries(weekly)]
+    for iso in expiries(monthly):
+        expiry = dt.date.fromisoformat(iso)
+        later_same_month = [
+            w for w in weeklies
+            if (w.year, w.month) == (expiry.year, expiry.month) and w > expiry
+        ]
+        assert not later_same_month, f"{expiry} is not the last contract of its month"
+
+
+def test_a_monthly_condor_is_held_longer_than_a_weekly_one():
+    """The reason the cadence matters: offsetting needs several condors alive
+    in one expiry, and a weekly settles before the ladder gets that deep."""
+    def mean_dte(job):
+        d = [(dt.date.fromisoformat(c["expiry"]) - dt.date.fromisoformat(c["entry_time"][:10])).days
+             for c in job.result["condors"]]
+        return sum(d) / len(d)
+
+    assert mean_dte(run_job(days=120, expiry_cadence="monthly")) > mean_dte(
+        run_job(days=120, expiry_cadence="weekly")
+    )
+
+
+def test_every_run_names_the_surface_that_produced_it():
+    prov = run_job().result["provenance"]
+    assert "iv_calibration" in prov
+    assert "chain-fit" in prov["vol_source"] or "flat-term" in prov["vol_source"]
+
+
+def test_a_stored_chain_fit_is_applied_and_credited(store):
+    """Without a fit the surface is flat, which prices a 1-DTE weekly off the
+    30-day VIX."""
+    store.save_calibration(
+        dt.date.today().isoformat(),
+        {"atm_vol": 0.15, "slope": -2.4, "curvature": 55.0,
+         "term_exponent": -0.28, "observations": 96},
+    )
+    job = BacktestJob(job_id="cal-1", user_id="u1", params=params())
+    BacktestRunner(FakeMarket(), job, db=store).run()
+    assert job.status == "done", job.error
+
+    prov = job.result["provenance"]
+    assert "chain-fit" in prov["vol_source"]
+    assert "term^-0.28" in prov["vol_source"]
+    assert prov["iv_calibration"]["observations"] == 96
+    assert prov["term_exponent"] == pytest.approx(-0.28)
+
+
+def test_a_stale_fit_is_ignored_rather_than_trusted(store):
+    """A surface measured a month ago describes a market that has moved."""
+    old = (dt.date.today() - dt.timedelta(days=60)).isoformat()
+    store.save_calibration(old, {"atm_vol": 0.15, "slope": -2.4, "curvature": 55.0,
+                                 "term_exponent": -0.28, "observations": 96})
+    job = BacktestJob(job_id="cal-2", user_id="u1", params=params())
+    BacktestRunner(FakeMarket(), job, db=store).run()
+    assert job.status == "done", job.error
+    assert "flat-term" in job.result["provenance"]["vol_source"]
+    assert job.result["provenance"]["iv_calibration"] is None
