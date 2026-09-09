@@ -310,3 +310,30 @@ def test_the_runner_has_no_order_placing_surface_at_all():
     for gone in ("_place", "_next_order_no", "arm", "armed"):
         assert not hasattr(r, gone), gone
     assert r.mode == "paper"
+
+
+def test_an_implausibly_small_credit_is_flagged_as_a_pricing_fault():
+    """Seen live: a 20-DTE 200-point condor opened for Rs62 against Rs13,000 of
+    risk, because every premium was a hundredth of its value. The structure
+    itself looked perfectly well formed, so nothing else would have caught it.
+    """
+    r = runner(prices={})
+    legs = build_legs(24_000, cfg())
+    tokens = [r.market.master.option("NIFTY", EXPIRY, leg.strike, leg.right).token for leg in legs]
+    # build_legs orders wings first, then shorts. Prices chosen so the condor
+    # still opens for a positive credit after crossing the spread -- a debit
+    # would trip the separate net-debit warning instead.
+    r.market.prices = {t: (1.00 if i < 2 else 1.40) for i, t in enumerate(tokens)}
+
+    condor = r._open_condor(24_000, EXPIRY)
+    assert condor is not None and condor.credit > 0
+    assert any("implausibly small" in e.message for e in r.events), [e.message for e in r.events]
+
+
+def test_a_normal_credit_is_not_flagged():
+    r = runner()
+    legs = build_legs(24_000, cfg())
+    tokens = [r.market.master.option("NIFTY", EXPIRY, leg.strike, leg.right).token for leg in legs]
+    r.market.prices = {t: (40.0 if i < 2 else 120.0) for i, t in enumerate(tokens)}
+    r._open_condor(24_000, EXPIRY)
+    assert not any("implausibly small" in e.message for e in r.events)

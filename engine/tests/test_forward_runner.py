@@ -40,7 +40,7 @@ class _Session:
 
     def __init__(self, accepts: str | None, rows=None):
         self.accepts = accepts
-        self.rows = rows if rows is not None else [{"Token": 26000, "LTP": 2400000}]
+        self.rows = rows if rows is not None else [{"Token": 26000, "LTP": 24_000}]
         self.seen: list[str] = []
 
     def request(self, method, endpoint, data=None, **kw):
@@ -127,19 +127,19 @@ def test_touchline_reports_what_it_tried_when_nothing_works():
     assert market.last_touchline_error
 
 
-def test_prices_are_converted_from_paisa():
-    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 12345}])
+def test_a_raw_price_is_taken_at_face_value_until_calibration_says_otherwise():
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 123.45}])
     assert _market(session).touchline([_contract(42632)]) == {42632: 123.45}
 
 
 def test_alternative_field_names_are_understood():
-    session = _Session(accepts="segment@token,", rows=[{"scripcode": 42632, "LastTradedPrice": 5000}])
+    session = _Session(accepts="segment@token,", rows=[{"scripcode": 42632, "LastTradedPrice": 50.0}])
     assert _market(session).touchline([_contract(42632)]) == {42632: 50.0}
 
 
 def test_rows_nested_under_an_envelope_key_are_found():
     session = _Session(accepts="segment@token,")
-    session.rows = {"Touchline": [{"Token": 26000, "LTP": 2400000}]}  # type: ignore[assignment]
+    session.rows = {"Touchline": [{"Token": 26000, "LTP": 24_000}]}  # type: ignore[assignment]
     assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
 
 
@@ -162,20 +162,20 @@ def test_rows_nested_as_a_dict_keyed_by_token_are_found():
     """
     session = _Session(accepts="segment@token,")
     session.rows = {  # type: ignore[assignment]
-        "MultipleTouchline": {"26000": {"Token": 26000, "LTP": 2400000}}
+        "MultipleTouchline": {"26000": {"Token": 26000, "LTP": 24_000}}
     }
     assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
 
 
 def test_a_lone_row_under_an_envelope_key_is_found():
     session = _Session(accepts="segment@token,")
-    session.rows = {"MultipleTouchline": {"Token": 26000, "LTP": 2400000}}  # type: ignore[assignment]
+    session.rows = {"MultipleTouchline": {"Token": 26000, "LTP": 24_000}}  # type: ignore[assignment]
     assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
 
 
 def test_deeply_wrapped_rows_are_still_found():
     session = _Session(accepts="segment@token,")
-    session.rows = {"Response": {"data": [{"Token": 26000, "LTP": 2400000}]}}  # type: ignore[assignment]
+    session.rows = {"Response": {"data": [{"Token": 26000, "LTP": 24_000}]}}  # type: ignore[assignment]
     assert _market(session).touchline([_contract(26000, 1)]) == {26000: 24_000.0}
 
 
@@ -198,7 +198,7 @@ def test_the_shape_diagnostic_names_the_inner_payload():
 
 def test_bid_and_ask_are_captured_when_the_response_carries_depth():
     session = _Session(accepts="segment@token,")
-    session.rows = [{"Token": 42632, "LTP": 12345, "BestBidPrice": 12300, "BestAskPrice": 12400}]
+    session.rows = [{"Token": 42632, "LTP": 123.45, "BestBidPrice": 123.00, "BestAskPrice": 124.00}]
     quote = _market(session).quotes([_contract(42632)])[42632]
     assert (quote.bid, quote.ask) == (123.0, 124.0)
     assert quote.has_depth
@@ -208,7 +208,7 @@ def test_bid_and_ask_are_captured_when_the_response_carries_depth():
 
 def test_a_quote_without_depth_reports_no_spread_and_falls_back_to_ltp():
     """Modelling a spread is a decision the fill model must make knowingly."""
-    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 12345}])
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 123.45}])
     quote = _market(session).quotes([_contract(42632)])[42632]
     assert not quote.has_depth
     assert quote.spread is None
@@ -217,7 +217,7 @@ def test_a_quote_without_depth_reports_no_spread_and_falls_back_to_ltp():
 
 def test_a_crossed_or_zero_book_is_not_treated_as_depth():
     session = _Session(accepts="segment@token,")
-    session.rows = [{"Token": 42632, "LTP": 12345, "BestBidPrice": 12400, "BestAskPrice": 12300}]
+    session.rows = [{"Token": 42632, "LTP": 123.45, "BestBidPrice": 124.00, "BestAskPrice": 123.00}]
     quote = _market(session).quotes([_contract(42632)])[42632]
     assert not quote.has_depth
     assert quote.mid == pytest.approx(123.45)
@@ -292,7 +292,7 @@ def test_a_fallback_price_is_flagged_stale_rather_than_passed_off_as_the_touch()
 def test_a_live_quote_is_preferred_and_skips_the_fallback_entirely():
     history = _HistoryStub({42632: 999.0})
     market = _market_with_history(_Session(accepts="segment@token,",
-                                           rows=[{"Token": 42632, "LTP": 12345}]), history)
+                                           rows=[{"Token": 42632, "LTP": 123.45}]), history)
     quote = market.quotes([_contract(42632)])[42632]
     assert quote.ltp == pytest.approx(123.45)
     assert quote.stale is False
@@ -300,7 +300,7 @@ def test_a_live_quote_is_preferred_and_skips_the_fallback_entirely():
 
 
 def test_only_the_legs_the_book_missed_fall_back():
-    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 12345}])
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 123.45}])
     history = _HistoryStub({26000: 24_000.0})
     market = _market_with_history(session, history)
     quotes = market.quotes([_contract(42632), _contract(26000, 1)])
@@ -328,3 +328,55 @@ def test_the_fallback_can_be_turned_off_for_callers_that_need_the_touch():
     with pytest.raises(ChoiceError):
         market.quotes([_contract(26000, 1)], allow_history_fallback=False)
     assert history.asked == []
+
+
+# ------------------------------------------------- touchline price scaling
+
+
+def test_the_quote_scale_is_measured_against_chartdata():
+    """The bug this exists to catch, seen on a live paper run.
+
+    A 29-Sep 23,700 CE filled at Rs2.00 when it was worth about Rs254, so a
+    20-DTE 200-point condor showed a credit of Rs62 against Rs13,000 of risk --
+    a 0.5% reward on risk, which is not a trade that exists. The premiums were
+    a hundredth of their value because the REST endpoint's units were assumed
+    from a comment about the *websocket* feed.
+    """
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 254.0}])
+    market = _market_with_history(session, _HistoryStub({42632: 254.0}))
+    assert market.calibrate_quote_scale(_contract(42632)) == 1.0
+    assert market.quotes([_contract(42632)])[42632].ltp == pytest.approx(254.0)
+
+
+def test_a_paisa_feed_is_detected_and_corrected():
+    """If Choice really did send paisa, the same measurement finds that too."""
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 25_400}])
+    market = _market_with_history(session, _HistoryStub({42632: 254.0}))
+    assert market.calibrate_quote_scale(_contract(42632)) == pytest.approx(0.01)
+    assert market.quotes([_contract(42632)])[42632].ltp == pytest.approx(254.0)
+
+
+def test_calibration_tolerates_the_two_sources_moving_apart():
+    """The book and the last candle are minutes apart in a live market."""
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 254.0}])
+    market = _market_with_history(session, _HistoryStub({42632: 231.0}))   # -9%
+    assert market.calibrate_quote_scale(_contract(42632)) == 1.0
+
+
+def test_a_disagreement_that_is_not_a_unit_error_leaves_the_scale_alone():
+    """5x is not a unit difference; it means the two are not the same thing."""
+    session = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 254.0}])
+    market = _market_with_history(session, _HistoryStub({42632: 1_270.0}))
+    before = market.quote_scale
+    assert market.calibrate_quote_scale(_contract(42632)) == (before or 1.0)
+
+
+def test_calibration_is_a_no_op_when_either_source_is_silent():
+    session = _Session(accepts="segment@token,")
+    session.rows = {"MultipleTouchline": []}  # type: ignore[assignment]
+    market = _market_with_history(session, _HistoryStub({42632: 254.0}))
+    assert market.calibrate_quote_scale(_contract(42632)) == 1.0
+
+    live = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 254.0}])
+    no_history = _market_with_history(live, _HistoryStub({}))
+    assert no_history.calibrate_quote_scale(_contract(42632)) == 1.0

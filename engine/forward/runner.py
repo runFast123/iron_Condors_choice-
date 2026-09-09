@@ -66,6 +66,10 @@ MARKET_CLOSE = MARKET_CLOSE_TIME
 # that the delete never sits on the polling path.
 TICK_PRUNE_EVERY = 500
 
+# A real iron condor collects a meaningful fraction of its wing width -- tens
+# of percent for a weekly. Below this the premiums are wrong, not merely thin.
+MIN_CREDIT_FRACTION = 0.02
+
 
 class UnsupportedStateVersion(ValueError):
     """A saved run was written by an engine whose state format we cannot read.
@@ -329,6 +333,19 @@ class ForwardRunner:
             max_loss=round(condor.max_loss, 2), expiry=expiry.isoformat(),
             modelled_legs=modelled,
         )
+        # A credit worth a rounding error against the risk is not a trade, it
+        # is a pricing fault. Seen live: a 20-DTE 200-point condor opened for
+        # Rs62 against Rs13,000 of risk, because every premium was a hundredth
+        # of its value. The structure looked perfectly well formed.
+        risk = condor.wing_width * condor.config.qty
+        if risk > 0 and 0 < condor.credit < risk * MIN_CREDIT_FRACTION:
+            self.emit(
+                "warn",
+                "Credit is implausibly small for the risk; check the quote scale",
+                level=level, credit=round(condor.credit, 2),
+                risk=round(risk, 2),
+                credit_pct_of_width=round(100 * condor.credit / risk, 3),
+            )
         if condor.credit <= 0:
             # An iron condor is a credit structure by construction. A debit
             # means the quotes are wrong -- a stale strike, the wrong divisor,

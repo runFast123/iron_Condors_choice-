@@ -82,10 +82,17 @@ class Quote:
         return (self.ask - self.bid) if self.has_depth else None
 
 
-def _paisa(value: Any) -> float | None:
-    """Choice quotes prices in paisa; anything unparseable or <=0 is absent."""
+# Until calibration proves otherwise, a raw touchline price is taken at face
+# value. Rupees is what the evidence says, and the failure mode is visible
+# (prices 100x too large) rather than silent (100x too small looks like a
+# cheap option).
+DEFAULT_QUOTE_SCALE = 1.0
+
+
+def _scaled(value: Any, scale: float) -> float | None:
+    """Raw feed price to rupees; None if unparseable or non-positive."""
     try:
-        price = float(value) / 100.0
+        price = float(value) * scale
     except (TypeError, ValueError):
         return None
     return price if price > 0 else None
@@ -149,6 +156,15 @@ class ChoiceMarketData:
     # Which payload shape MultipleTouchline actually accepted, once known.
     touchline_format: str | None = None
     last_touchline_error: str | None = None
+    # Multiplier turning a raw MultipleTouchline price into rupees.
+    #
+    # Measured, not assumed. `kkunal` documents paisa for the *websocket* feed
+    # and says nothing about this REST endpoint; carrying that across gave
+    # option premiums a hundredth of their value -- a 20-DTE 200-point condor
+    # showing a credit of Rs62 against Rs13,000 of risk, which is not a trade
+    # anyone could make. Calibrated against ChartData, whose scaling comes from
+    # the response's own PriceDivisor and is therefore known-good.
+    quote_scale: float | None = None
 
     @classmethod
     def connect(cls, session: ChoiceSession | None = None) -> "ChoiceMarketData":
@@ -168,7 +184,40 @@ class ChoiceMarketData:
             except ChoiceError as exc:
                 log.warning("Epoch calibration failed, using default offset: %s", exc)
 
-        return cls(session=session, master=master, history=history)
+        market = cls(session=session, master=master, history=history)
+
+        # Settle what a raw touchline price means before anything trades on
+        # one. An option is the right probe: the index is not served by this
+        # endpoint, so it can never reveal the scale.
+        if index is not None:
+            probe = market._scale_probe(NIFTY)
+            if probe is not None:
+                try:
+                    market.calibrate_quote_scale(probe)
+                except ChoiceError as exc:
+                    log.warning("Quote-scale calibration failed: %s", exc)
+
+        return market
+
+    def _scale_probe(self, underlying: str) -> Contract | None:
+        """A near-the-money option to measure the quote scale against.
+
+        Near the money because a far wing can be a couple of ticks wide, where
+        the touchline and the last candle genuinely disagree by more than the
+        tolerance and the measurement says nothing.
+        """
+        try:
+            expiry = self.master.nearest_expiry(underlying, dt.datetime.now(tz=IST).date(), min_days=1)
+            spot_row = self.master.index(underlying)
+            spot = self.last_prices([spot_row]).get(spot_row.token)
+            if not spot:
+                return None
+            step = self.master.strike_step(underlying, expiry)
+            atm = round(spot / step) * step
+            return self.master.option(underlying, expiry, atm, "CE")
+        except ChoiceError as exc:
+            log.info("No probe contract for quote-scale calibration: %s", exc)
+            return None
 
     # ------------------------------------------------------------ historical
 
@@ -316,6 +365,56 @@ class ChoiceMarketData:
         self.last_touchline_error = " | ".join(attempts[:4])
         return {}
 
+    def calibrate_quote_scale(self, contract: Contract) -> float:
+        """Work out what a raw touchline price means, in rupees.
+
+        Two independent sources quote the same instrument: MultipleTouchline,
+        whose units are undocumented, and ChartData, which reports its own
+        PriceDivisor and is therefore self-describing. Their ratio is the
+        answer -- snapped to a power of ten, because the only plausible
+        discrepancies are unit choices, and anything else means the two are not
+        describing the same instrument and should be left alone.
+
+        Assuming instead of measuring is what produced option premiums a
+        hundredth of their true value on a live paper run.
+        """
+        try:
+            raw = self._touchline_quotes([contract]).get(contract.token)
+            reference = self.last_prices([contract]).get(contract.token)
+        except ChoiceError as exc:
+            log.info("Cannot calibrate the quote scale: %s", exc)
+            return self.quote_scale or DEFAULT_QUOTE_SCALE
+        if raw is None or not reference or reference <= 0:
+            return self.quote_scale or DEFAULT_QUOTE_SCALE
+
+        # `raw.ltp` already carries whatever scale was in force; undo it to get
+        # back to the number Choice actually sent.
+        sent = raw.ltp / (self.quote_scale or DEFAULT_QUOTE_SCALE)
+        if sent <= 0:
+            return self.quote_scale or DEFAULT_QUOTE_SCALE
+
+        ratio = reference / sent
+        for candidate in (1.0, 0.01, 100.0, 0.001):
+            # Generous tolerance: the two prices are minutes apart in a moving
+            # market, so they will never agree exactly. Unit errors are orders
+            # of magnitude, so this cannot confuse 1.0 with 0.01.
+            if 0.5 <= ratio / candidate <= 2.0:
+                if candidate != (self.quote_scale or DEFAULT_QUOTE_SCALE):
+                    log.warning(
+                        "Touchline quotes are scaled by %g, not %g "
+                        "(token %s: touchline sent %.2f, ChartData says %.2f)",
+                        candidate, self.quote_scale or DEFAULT_QUOTE_SCALE,
+                        contract.token, sent, reference,
+                    )
+                self.quote_scale = candidate
+                return candidate
+
+        log.warning(
+            "Touchline and ChartData disagree by %.3gx on token %s, which is not a "
+            "unit difference; leaving the scale alone", ratio, contract.token,
+        )
+        return self.quote_scale or DEFAULT_QUOTE_SCALE
+
     def last_prices(self, contracts: Iterable[Contract], *, lookback_days: int = 7) -> dict[int, float]:
         """Latest traded price per token, from ChartData.
 
@@ -361,22 +460,22 @@ class ChoiceMarketData:
         """Describe an unparseable response precisely enough to act on it."""
         return describe_payload(resp.get("Response"))
 
-    @staticmethod
-    def _parse_quotes(resp: dict) -> dict[int, Quote]:
+    def _parse_quotes(self, resp: dict) -> dict[int, Quote]:
         out: dict[int, Quote] = {}
         for row in iter_quote_rows(resp.get("Response")):
             token, ltp = _first(row, _TOKEN_KEYS), _first(row, _LTP_KEYS)
             if token is None or ltp is None:
                 continue
-            price = _paisa(ltp)
+            scale = self.quote_scale or DEFAULT_QUOTE_SCALE
+            price = _scaled(ltp, scale)
             if price is None:
                 continue
             token = int(float(token))
             out[token] = Quote(
                 token=token,
                 ltp=price,
-                bid=_paisa(_first(row, _BID_KEYS)),
-                ask=_paisa(_first(row, _ASK_KEYS)),
+                bid=_scaled(_first(row, _BID_KEYS), scale),
+                ask=_scaled(_first(row, _ASK_KEYS), scale),
             )
         return out
 
