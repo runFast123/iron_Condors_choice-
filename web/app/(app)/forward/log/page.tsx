@@ -1,4 +1,4 @@
-import { getLiveState } from "@/lib/live";
+import { getLiveState, type LiveFill } from "@/lib/live";
 import { dateTime, inr, num } from "@/lib/format";
 import { Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
 
@@ -16,6 +16,36 @@ export default async function ForwardLogPage() {
   const session = state?.session ?? null;
   const events = state?.events ?? [];
   const fills = state?.fills ?? [];
+  const marks = state?.marks ?? {};
+
+  /** Where this contract trades now, or null if it has not been marked. */
+  const markOf = (f: LiveFill): number | null =>
+    f.token != null && marks[String(f.token)] != null ? marks[String(f.token)] : null;
+
+  /**
+   * Green when the move since the fill helped, red when it hurt.
+   *
+   * Which direction is "good" depends on the side, not on whether the number
+   * went up: a short leg gains when its premium falls. Colouring by raw
+   * direction would tell half the rows the opposite of the truth.
+   */
+  const cmpColour = (f: LiveFill): string => {
+    const mark = markOf(f);
+    if (mark == null) return "var(--ink-muted)";
+    const move = mark - f.price;
+    const favourable = f.side === "SELL" ? -move : move;
+    if (Math.abs(move) < 0.005) return "var(--ink)";
+    return favourable > 0 ? "var(--pos)" : "var(--neg)";
+  };
+
+  const cmpTitle = (f: LiveFill): string => {
+    const mark = markOf(f);
+    if (mark == null) return "Not marked yet — the next tick will price it.";
+    const move = mark - f.price;
+    const per = move >= 0 ? `+${move.toFixed(2)}` : move.toFixed(2);
+    const total = (f.side === "SELL" ? -move : move) * f.qty;
+    return `${per} per share since the fill — ${total >= 0 ? "+" : ""}${total.toFixed(0)} on this leg`;
+  };
   const positions = state?.positions ?? [];
   const pnl = state?.pnl ?? { realised: 0, unrealised: 0, total: 0, open_condors: 0, total_condors: 0 };
   const closed = positions.filter((p) => p.status !== "OPEN");
@@ -47,7 +77,7 @@ export default async function ForwardLogPage() {
         <Card
           title="Trade history"
           pad={0}
-          hint="One row per leg fill. OPEN rows are entries, CLOSE rows are exits. Every price is a live Choice quote."
+          hint="One row per leg fill. PRICE is what it filled at; CMP is where that contract trades now, as of the last tick, coloured by whether the move since the fill helped or hurt that side. Only legs of open condors are still quoted, so closed ones show --."
         >
           {fills.length === 0 ? (
             <Empty>
@@ -66,6 +96,7 @@ export default async function ForwardLogPage() {
                     <th style={{ textAlign: "right" }}>Qty</th>
                     <th style={{ textAlign: "right" }}>Price</th>
                     <th style={{ textAlign: "right" }}>Value</th>
+                    <th style={{ textAlign: "right" }}>CMP</th>
                     <th>Token</th>
                     <th>Mode</th>
                   </tr>
@@ -88,6 +119,13 @@ export default async function ForwardLogPage() {
                       <td className="tnum" style={{ textAlign: "right" }}>{f.price.toFixed(2)}</td>
                       <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
                         {inr(f.price * f.qty)}
+                      </td>
+                      <td
+                        className="tnum"
+                        style={{ textAlign: "right", fontWeight: 600, color: cmpColour(f) }}
+                        title={cmpTitle(f)}
+                      >
+                        {markOf(f) == null ? "--" : num(markOf(f) as number, 2)}
                       </td>
                       <td className="tnum mono" style={{ fontSize: 11, color: "var(--ink-muted)" }}>
                         {f.token ?? "--"}

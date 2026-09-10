@@ -179,6 +179,10 @@ class ForwardRunner:
         # Unrealised P&L per open condor from the most recent tick. Kept so
         # the snapshot reports a real number instead of a placeholder.
         self.last_mtm: dict[int, float] = {}
+        # Latest mid per option token. The per-condor MTM answers "is this
+        # structure up or down"; this answers "where is that leg now", which is
+        # the question a fill log actually raises.
+        self.last_marks: dict[int, float] = {}
         # How many legs were priced on a real book versus a modelled spread,
         # so the UI can say how trustworthy a run's P&L actually is.
         session = getattr(market, "session", None)
@@ -391,6 +395,9 @@ class ForwardRunner:
             self.emit("warn", "MTM refresh failed", error=str(exc))
             return out
 
+        for token, quote in quotes.items():
+            self.last_marks[token] = quote.mid
+
         for condor in open_condors:
             marks: dict[Leg, float] = {}
             leg_quotes: dict[Leg, Quote] = {}
@@ -585,6 +592,9 @@ class ForwardRunner:
                 ),
                 "total_slippage": round(self.total_slippage, 2),
             },
+            # Latest mid per token, so the fill log can show where each leg
+            # trades now next to what it filled at. As of `last_tick`.
+            "marks": {str(k): round(v, 2) for k, v in self.last_marks.items()},
             "market": {
                 "spot": self.last_spot,
                 "ts": self.last_tick.isoformat() if self.last_tick else None,
@@ -804,6 +814,7 @@ class ForwardRunner:
             # there is no next tick, so a position with real P&L sits at "+0"
             # overnight looking perfectly settled.
             "last_mtm": {str(k): v for k, v in self.last_mtm.items()},
+            "last_marks": {str(k): v for k, v in self.last_marks.items()},
             "condors": [self._condor_state(c) for c in self.condors],
             "fills": [asdict(f) for f in self.fills],
             "events": [asdict(e) for e in self.events],
@@ -855,6 +866,11 @@ class ForwardRunner:
         for key, value in (state.get("last_mtm") or {}).items():
             try:
                 runner.last_mtm[int(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        for key, value in (state.get("last_marks") or {}).items():
+            try:
+                runner.last_marks[int(key)] = float(value)
             except (TypeError, ValueError):
                 continue
         runner.stopped_reason = state.get("stopped_reason")

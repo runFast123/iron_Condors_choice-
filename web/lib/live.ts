@@ -78,6 +78,8 @@ export interface FillQuality {
 export interface LiveState {
   session: LiveSession;
   fill_quality?: FillQuality;
+  /** Latest mid per option token, as of `session.last_tick`. */
+  marks?: Record<string, number>;
   market: {
     spot: number | null;
     ts: string | null;

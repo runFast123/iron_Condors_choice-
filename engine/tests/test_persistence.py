@@ -484,3 +484,29 @@ def test_marks_survive_a_resume(tmp_path, store):
     assert revived.last_mtm.get(0) == pytest.approx(-1_933.45)
     assert revived.snapshot()["pnl"]["unrealised"] == pytest.approx(-1_933.45)
     assert revived.snapshot()["pnl"]["unmarked_condors"] == 0
+
+
+def test_the_snapshot_publishes_a_mark_per_contract(tmp_path, store):
+    """The fill log needs to answer "where is this leg now", which the
+    per-condor MTM cannot: it is one number for four contracts."""
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.last_marks[900] = 149.73
+    runner.last_marks[901] = 91.25
+
+    marks = runner.snapshot()["marks"]
+    assert marks["900"] == pytest.approx(149.73)
+    assert marks["901"] == pytest.approx(91.25)
+    # A contract never quoted must be absent, not zero -- the UI shows "--".
+    assert "902" not in marks
+
+
+def test_marks_per_contract_survive_a_resume(tmp_path, store):
+    from engine.forward.runner import ForwardRunner
+
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.last_marks[900] = 149.73
+    revived = ForwardRunner.restore(
+        runner.to_state(), market=None, state_path=tmp_path / "l.json",  # type: ignore[arg-type]
+        store=store, session_id="s1", user_id="u1",
+    )
+    assert revived.last_marks.get(900) == pytest.approx(149.73)
