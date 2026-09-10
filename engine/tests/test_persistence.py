@@ -510,3 +510,51 @@ def test_marks_per_contract_survive_a_resume(tmp_path, store):
         store=store, session_id="s1", user_id="u1",
     )
     assert revived.last_marks.get(900) == pytest.approx(149.73)
+
+
+# ============================== a session ending suspends, it does not stop
+
+
+def test_ending_a_session_suspends_the_run_rather_than_stopping_it(tmp_path, store):
+    """A run whose session expired still holds positions and a ladder
+    mid-flight. Marking it stopped made it unresumable, and the only way back
+    was editing the database by hand."""
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.save()
+
+    runner.suspend("session ended")
+
+    assert runner.suspended is True
+    assert runner.stopped_reason is None, "a suspended run has not stopped"
+
+    runner.save()
+    rows = [r for r in store.running_forwards() if r["session_id"] == "s1"]
+    assert rows, "the run must still be marked running so a login resumes it"
+
+
+def test_stopping_a_run_still_stops_it(tmp_path, store):
+    """The distinction only helps if a real stop is still a real stop."""
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.stopped_reason = "stopped by user"
+    runner.save()
+
+    assert [r for r in store.running_forwards() if r["session_id"] == "s1"] == []
+
+
+def test_a_suspended_run_round_trips_with_its_ladder_intact(tmp_path, store):
+    """Resuming must not re-fire a level the run already holds."""
+    from engine.forward.runner import ForwardRunner
+
+    runner = _runner_with_open_condor(tmp_path, store)
+    runner.ladder.on_price(23_500.0, dt.datetime(2026, 9, 9, 10, 54, tzinfo=IST))
+    fired_before = sorted(runner.ladder.levels())
+    runner.suspend()
+    runner.save()
+
+    revived = ForwardRunner.restore(
+        runner.to_state(), market=None, state_path=tmp_path / "l.json",  # type: ignore[arg-type]
+        store=store, session_id="s1", user_id="u1",
+    )
+    assert sorted(revived.ladder.levels()) == fired_before
+    assert revived.suspended is False, "a restored run starts live, not suspended"
+    assert revived.stopped_reason is None

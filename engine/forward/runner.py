@@ -201,6 +201,14 @@ class ForwardRunner:
         # Reentrant because tick() -> _open_condor() -> emit() all take it.
         self._lock = threading.RLock()
         self._ticks_recorded = 0
+        # Suspended, not stopped.
+        #
+        # When a session ends the runner loses the credentials it needs for
+        # quotes, so its thread must exit -- but the *run* has not ended. It
+        # still holds positions and a ladder mid-flight, and the next login
+        # should pick it back up. Conflating the two marked runs permanently
+        # stopped for the sin of the browser being closed.
+        self._suspended = False
         # Whether the most recent spot came from a candle rather than the book.
         self.spot_is_stale = False
         self.legs_on_real_depth = 0
@@ -209,6 +217,20 @@ class ForwardRunner:
         self._contracts: dict[tuple[str, float, str], Contract] = {}
 
     # ------------------------------------------------------------- logging
+
+    def suspend(self, reason: str = "session ended") -> None:
+        """Halt the tick thread without ending the run.
+
+        `stopped_reason` is deliberately untouched: it is what marks a run
+        finished in the database, and a run whose session expired is not
+        finished. It is waiting for someone to sign in again.
+        """
+        self._suspended = True
+        self.emit("info", f"Run suspended ({reason}); it resumes at the next login")
+
+    @property
+    def suspended(self) -> bool:
+        return self._suspended
 
     def emit(self, severity: str, message: str, **detail: Any) -> None:
         """Append one line to the run log.
@@ -713,7 +735,7 @@ class ForwardRunner:
                 # Checked before the market-hours branch, not after the tick:
                 # a stopped run used to sit in the closed-market sleep all
                 # night and then trade once more at the open.
-                if self.stopped_reason:
+                if self.stopped_reason or self._suspended:
                     break
                 if not self.is_market_open():
                     # Log the transition once, not every minute all weekend.
@@ -732,7 +754,7 @@ class ForwardRunner:
                 if on_tick:
                     on_tick(self)
                 ticks += 1
-                if self.stopped_reason:
+                if self.stopped_reason or self._suspended:
                     break
                 if max_ticks is None or ticks < max_ticks:
                     time.sleep(poll_seconds)
@@ -748,7 +770,10 @@ class ForwardRunner:
             log.exception("Forward run crashed")
             self.emit("error", "Forward run stopped by an unexpected error", error=str(exc))
         finally:
-            self.emit("info", "Forward run stopped", ticks=ticks)
+            if self._suspended and not self.stopped_reason:
+                self.emit("info", "Forward run suspended", ticks=ticks)
+            else:
+                self.emit("info", "Forward run stopped", ticks=ticks)
             self.save()
 
     # -------------------------------------------------------------- resume

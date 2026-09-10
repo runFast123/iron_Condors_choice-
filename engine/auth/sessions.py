@@ -416,7 +416,12 @@ class SessionRegistry:
         if session is not None:
             runner = getattr(session, "runner", None)
             if runner is not None:
-                runner.stopped_reason = "session ended"
+                # Suspend, do not stop. Ending a session means the engine can
+                # no longer fetch quotes for this user; it does not mean the
+                # user decided to close a ladder that still holds positions.
+                # Marking it stopped made the run unresumable, and the only
+                # way back was editing the database by hand.
+                runner.suspend("session ended")
             if self._by_user.get(session.user_id) == token:
                 self._by_user.pop(session.user_id, None)
 
