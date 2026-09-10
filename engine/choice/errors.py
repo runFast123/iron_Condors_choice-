@@ -9,6 +9,7 @@ catchable by type and scrubs secrets before the message is ever formatted.
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any
 
 # Values that must never reach a log line or an HTTP response.
@@ -35,9 +36,43 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+# Literal credentials this process is holding.
+#
+# The patterns above only catch a secret standing next to its own name. A
+# broker that echoes the key back inside a prose error -- "boom <key>" -- gets
+# through untouched, and that line then lands in a log file that is kept. We
+# know our own keys, so match them by value instead of guessing by shape.
+_known_secrets: set[str] = set()
+_known_lock = threading.Lock()
+
+# Below this, a "secret" is more likely to be an ordinary substring of a log
+# line than a credential, and blanking it would corrupt the message.
+MIN_SECRET_LENGTH = 8
+
+
+def remember_secret(value: Any) -> None:
+    """Register a credential so it is redacted wherever it later appears."""
+    text = str(value or "")
+    if len(text) < MIN_SECRET_LENGTH:
+        return
+    with _known_lock:
+        _known_secrets.add(text)
+
+
+def forget_secrets() -> None:
+    """Drop every registered credential. For tests."""
+    with _known_lock:
+        _known_secrets.clear()
+
+
 def scrub(text: Any) -> str:
-    """Redact anything that looks like a credential."""
+    """Redact anything that looks like a credential, or is known to be one."""
     s = str(text)
+    with _known_lock:
+        # Longest first, so a key that contains another is not half-replaced.
+        secrets = sorted(_known_secrets, key=len, reverse=True)
+    for secret in secrets:
+        s = s.replace(secret, "<redacted>")
     s = _SECRET_PATTERNS[0].sub(r"\1\2<redacted>", s)
     s = _SECRET_PATTERNS[1].sub(r"\1\2<redacted>", s)
     s = _SECRET_PATTERNS[2].sub(r"\1.<redacted>", s)

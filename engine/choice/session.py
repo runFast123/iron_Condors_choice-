@@ -27,6 +27,7 @@ from engine.choice.errors import (
     ChoiceRateLimitError,
     ChoiceTransportError,
     StaticIpRejectedError,
+    remember_secret,
     scrub,
 )
 from engine.choice.ratelimit import TokenBucket
@@ -106,6 +107,7 @@ class ChoiceSession:
 
     def __init__(self, config: ChoiceConfig | None = None) -> None:
         self.config = config or choice_config
+        remember_secret(self.config.api_key)
         self.session_id: str | None = None
         self.access_token: str | None = None
         self.bcast_ip: str | None = None
@@ -187,6 +189,11 @@ class ChoiceSession:
 
             if not self.session_id:
                 raise ChoiceAuthError("Login succeeded but no SessionId was returned", payload=r3)
+
+            # Registered by value, so they are redacted even when the broker
+            # echoes one back inside prose the shape-matching patterns miss.
+            remember_secret(self.session_id)
+            remember_secret(self.access_token)
 
             self._login_date = dt.date.today()
             log.info("Choice login OK (session established, valid until end of day)")

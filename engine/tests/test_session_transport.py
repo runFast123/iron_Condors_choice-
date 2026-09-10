@@ -152,11 +152,63 @@ def test_non_json_success_is_reported_clearly():
 
 
 def test_credentials_never_appear_in_an_error_message():
+    """The broker echoes the request body back on a 500, key included.
+
+    The old assertion here was `"Bearer" not in msg or secret not in msg`,
+    which is satisfied by the first clause alone -- "Bearer" never appears --
+    so it passed while the key went out verbatim into the logs.
+    """
+    from engine.choice.errors import forget_secrets
+
     secret = "super-secret-key-value"
-    config = ChoiceConfig(vendor_id="V1", api_key=secret, mobile_no="9000000001")
-    s = ChoiceSession(config)
-    s._http = FakeHttp(lambda url, calls: FakeResponse(500, text=f"boom {secret}"))  # type: ignore[attr-defined]
-    with pytest.raises(ChoiceError) as exc:
-        s.request("GET", "api/OpenAPI/UserProfile")
-    # The body is echoed, so the scrubber is what must keep the key out.
-    assert "Bearer" not in str(exc.value) or secret not in str(exc.value)
+    forget_secrets()
+    try:
+        config = ChoiceConfig(vendor_id="V1", api_key=secret, mobile_no="9000000001")
+        s = ChoiceSession(config)
+        s._http = FakeHttp(lambda url, calls: FakeResponse(500, text=f"boom {secret}"))  # type: ignore[attr-defined]
+        with pytest.raises(ChoiceError) as exc:
+            s.request("GET", "api/OpenAPI/UserProfile")
+        assert secret not in str(exc.value)
+        assert "<redacted>" in str(exc.value)
+    finally:
+        forget_secrets()
+
+
+def test_a_bare_credential_in_prose_is_redacted():
+    """A key standing next to its own name is the easy case. The patterns miss
+    one that arrives inside a sentence, and this engine keeps its logs."""
+    from engine.choice.errors import forget_secrets, remember_secret, scrub
+
+    forget_secrets()
+    try:
+        remember_secret("kX92mfQ1zzTvLpAA")
+        assert scrub("upstream said kX92mfQ1zzTvLpAA is unknown") == (
+            "upstream said <redacted> is unknown"
+        )
+    finally:
+        forget_secrets()
+
+
+def test_something_too_short_to_be_a_credential_is_not_registered():
+    """Blanking a common short string would corrupt every message carrying it."""
+    from engine.choice.errors import forget_secrets, remember_secret, scrub
+
+    forget_secrets()
+    try:
+        remember_secret("abc")
+        assert scrub("abc happened") == "abc happened"
+    finally:
+        forget_secrets()
+
+
+def test_a_logged_in_session_registers_its_own_key():
+    """Registration has to happen without a login, or an engine that only ever
+    rehydrates a stored session never protects its key at all."""
+    from engine.choice.errors import forget_secrets, scrub
+
+    forget_secrets()
+    try:
+        ChoiceSession(ChoiceConfig(vendor_id="V1", api_key="a-very-long-api-key-x"))
+        assert scrub("boom a-very-long-api-key-x") == "boom <redacted>"
+    finally:
+        forget_secrets()

@@ -24,6 +24,7 @@ import contextlib
 import datetime as dt
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -65,6 +66,11 @@ def _log_to_file() -> None:
     the only evidence left was the run's own event list. Rotating, because an
     engine left running for a month should not fill the disk.
     """
+    if "pytest" in sys.modules and not os.environ.get("ENGINE_LOG"):
+        # The suite imports this module, and its fixtures include deliberately
+        # secret-shaped strings. Those do not belong in the log an operator
+        # reads to find out what the engine really did.
+        return
     path = Path(os.environ.get("ENGINE_LOG", "engine/state/logs/api.log"))
     root = logging.getLogger()
     if any(getattr(h, "_engine_file_log", False) for h in root.handlers):

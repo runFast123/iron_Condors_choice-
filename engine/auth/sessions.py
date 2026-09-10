@@ -33,7 +33,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from engine.choice.errors import ChoiceAuthError, ChoiceError
+from engine.choice.errors import ChoiceAuthError, ChoiceError, remember_secret
 from engine.auth.persistence import SessionVault, is_expired, token_fingerprint
 from engine.choice.session import ChoiceSession
 from engine.config import IST, ChoiceConfig
@@ -429,6 +429,9 @@ class SessionRegistry:
 
         choice = ChoiceSession(config=ChoiceConfig(vendor_id=row["vendor_id"]))
         choice.session_id = payload["session_id"]
+        # Assigned straight from the vault rather than through login, so
+        # register it here or it would not be redacted from logs.
+        remember_secret(choice.session_id)
         choice.bcast_ip = payload.get("bcast_ip")
         choice.bcast_port = payload.get("bcast_port")
         # The API key was never stored, so this session cannot re-login on its
