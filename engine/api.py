@@ -20,11 +20,15 @@ Security posture:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import logging
 import os
 import threading
+import time
 import uuid
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -52,6 +56,35 @@ from engine.strategy.condor import StrategyConfig
 
 log = logging.getLogger(__name__)
 
+
+def _log_to_file() -> None:
+    """Keep the engine's own log on disk.
+
+    It only ever went to stdout, which the Windows supervisor discards -- so
+    when a forward run went quiet mid-session there was no record of why, and
+    the only evidence left was the run's own event list. Rotating, because an
+    engine left running for a month should not fill the disk.
+    """
+    path = Path(os.environ.get("ENGINE_LOG", "engine/state/logs/api.log"))
+    root = logging.getLogger()
+    if any(getattr(h, "_engine_file_log", False) for h in root.handlers):
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
+    except OSError:
+        # A read-only or missing directory must not stop the engine booting.
+        log.warning("Could not open %s for logging; continuing to stdout only", path)
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler._engine_file_log = True                  # type: ignore[attr-defined]
+    root.addHandler(handler)
+    if root.level == logging.NOTSET or root.level > logging.INFO:
+        root.setLevel(logging.INFO)
+
+
+_log_to_file()
+
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ENGINE_ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
@@ -71,7 +104,20 @@ registry.bind_storage(store, engine_config.shared_secret or None)
 market_calendar.learned |= store.holidays()
 market_calendar.on_learn = store.add_holiday
 
-app = FastAPI(title="Iron Condor Ladder engine", version="1.0.0", docs_url=None, redoc_url=None)
+@contextlib.asynccontextmanager
+async def _lifespan(_: FastAPI):
+    registry.on_session_restored = _resume_forward
+    # Immediately, not only after the first interval: a restart mid-session is
+    # exactly when a run sits in the database with no worker behind it.
+    threading.Thread(target=_watchdog_pass, name="forward-watchdog-boot", daemon=True).start()
+    _start_watchdog()
+    yield
+
+
+app = FastAPI(
+    title="Iron Condor Ladder engine", version="1.0.0",
+    docs_url=None, redoc_url=None, lifespan=_lifespan,
+)
 
 if ALLOWED_ORIGINS:
     app.add_middleware(
@@ -290,15 +336,37 @@ def _resume_rank(row: dict) -> tuple[int, str, str]:
     return (1 if has_open else 0, str(state.get("last_tick") or ""), row["started_at"])
 
 
-def _resume_forward(session: UserSession) -> bool:
-    """Pick a forward run back up after an engine restart.
+_revive_locks: dict[str, threading.RLock] = {}
+_revive_locks_guard = threading.Lock()
 
-    A run cannot be resumed until someone supplies the Choice credentials it
-    needs for quotes -- those are deliberately never persisted -- so the point
-    of resumption is login, not startup. Until then the run sits in the
+
+def _user_revive_lock(user_id: str) -> threading.RLock:
+    """One lock per user, guarding everything that can attach a runner.
+
+    Resumption now has three entry points -- a login, a session rebuilt from a
+    cookie, and the watchdog -- and they run on different threads. Two of them
+    racing would each restore the same saved run and start a worker on it: two
+    ladders driving one run id, both writing the whole state, last writer wins.
+    """
+    with _revive_locks_guard:
+        return _revive_locks.setdefault(user_id, threading.RLock())
+
+
+def _resume_forward(session: UserSession) -> bool:
+    """Pick a forward run back up and start driving it again.
+
+    A run needs Choice credentials to quote, and those are never persisted in a
+    form any process can use without the session vault -- so resumption happens
+    when a session exists, whether that came from a login, a remembered cookie,
+    or the watchdog reviving one from storage. Until then the run sits in the
     database marked running, which is the truth: it has positions open and a
     ladder mid-flight, it simply has nobody to ask for prices.
     """
+    with _user_revive_lock(session.user_id):
+        return _resume_forward_locked(session)
+
+
+def _resume_forward_locked(session: UserSession) -> bool:
     if session.runner is not None:
         return False
     try:
@@ -375,13 +443,95 @@ def _resume_forward(session: UserSession) -> bool:
 
 
 def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds: float) -> None:
+    """Drive `runner` on a worker thread, and remember which thread that is.
+
+    The handle is what lets the watchdog tell a run that is ticking from one
+    that merely says it is. Without it a dead worker was indistinguishable from
+    a quiet market, which is how a ladder sat frozen through a 100-point
+    decline with every surface reporting it live.
+    """
+    existing = getattr(runner, "tick_thread", None)
+    if existing is not None and existing.is_alive():
+        return
+    poll = max(5.0, float(poll_seconds))
     thread = threading.Thread(
         target=runner.run,
-        kwargs={"poll_seconds": max(5.0, float(poll_seconds))},
+        kwargs={"poll_seconds": poll},
         name=f"forward-{session.user_id}",
         daemon=True,
     )
+    runner.tick_thread = thread
+    runner.poll_seconds = poll
     thread.start()
+
+
+WATCHDOG_SECONDS = float(os.environ.get("ENGINE_WATCHDOG_SECONDS", "60") or 60)
+
+
+def _revive_run(session: UserSession) -> bool:
+    """Make sure this user's saved run is actually being driven.
+
+    Three states have to be told apart, and conflating them is what let a
+    ladder sit frozen through a 100-point decline:
+
+    * no runner in memory -- resume it from the database;
+    * a runner whose worker died or was suspended -- start a new worker on the
+      same object, keeping the ladder, the fills and the open positions;
+    * a runner that is ticking -- leave it alone.
+    """
+    with _user_revive_lock(session.user_id):
+        runner = session.runner
+        if runner is None:
+            return _resume_forward_locked(session)
+        if runner.stopped_reason or runner.is_ticking:
+            return False
+        runner.unsuspend()
+        runner.emit("warn", "Forward run had stopped ticking; restarting its worker")
+        log.warning(
+            "Restarting a dead tick worker for user %s (run %s)",
+            session.user_id, runner.session_id,
+        )
+        _start_tick_thread(runner, session, runner.poll_seconds)
+        return True
+
+
+def _watchdog_pass() -> None:
+    """One sweep: every run the database calls running must really be ticking.
+
+    Runs marked running are the source of truth, not the in-memory session
+    table, because the whole failure mode is memory and database disagreeing.
+    Credentials come from storage, so a run keeps laddering through a restart
+    or a closed browser without waiting for anyone to sign in.
+    """
+    try:
+        rows = store.running_forwards()
+    except Exception:                               # noqa: BLE001
+        log.exception("Watchdog could not read saved forward runs")
+        return
+    for user_id in {row["user_id"] for row in rows}:
+        try:
+            session = registry.revive_for_user(user_id)
+            if session is None:
+                # No stored credentials: the run stays marked running, which is
+                # true. It has positions open and simply nobody to quote it.
+                continue
+            _revive_run(session)
+        except Exception:                           # noqa: BLE001
+            log.exception("Watchdog failed for user %s", user_id)
+
+
+def _start_watchdog() -> None:
+    if WATCHDOG_SECONDS <= 0:
+        log.info("Forward-run watchdog disabled")
+        return
+
+    def loop() -> None:
+        while True:
+            time.sleep(WATCHDOG_SECONDS)
+            _watchdog_pass()
+
+    threading.Thread(target=loop, name="forward-watchdog", daemon=True).start()
+    log.info("Forward-run watchdog every %.0fs", WATCHDOG_SECONDS)
 
 
 @app.post("/auth/logout", dependencies=[Depends(check_engine_key)])

@@ -103,7 +103,28 @@ class UserSession:
     profile: dict[str, Any] = field(default_factory=dict)
     # Populated lazily: loading a scrip master per user is expensive.
     market: Any = None
-    runner: Any = None
+    # Forward runners are owned by the *user*, not by this token.
+    #
+    # They used to hang off the session, so anything that replaced a session --
+    # a re-login, a second tab, a remembered cookie reconnecting -- took the
+    # live tick thread down with it. A run that had been laddering all day went
+    # quiet mid-session and nobody was told. Keyed by user, a new session for
+    # the same person simply picks up the run already in flight.
+    #
+    # The registry passes its own dict in, so every session for one user shares
+    # exactly one runner and handover costs nothing.
+    _runners: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    @property
+    def runner(self) -> Any:
+        return self._runners.get(self.user_id)
+
+    @runner.setter
+    def runner(self, value: Any) -> None:
+        if value is None:
+            self._runners.pop(self.user_id, None)
+        else:
+            self._runners[self.user_id] = value
 
     @property
     def expired(self) -> bool:
@@ -166,6 +187,9 @@ class SessionRegistry:
     def __init__(self, max_sessions: int = MAX_SESSIONS) -> None:
         self._sessions: dict[str, UserSession] = {}
         self._by_user: dict[str, str] = {}
+        # user_id -> live ForwardRunner. Outlives any one session; see
+        # UserSession.runner for why it is not held per token.
+        self._runners: dict[str, Any] = {}
         self._lock = threading.RLock()
         self._throttle = LoginThrottle()
         self.max_sessions = max_sessions
@@ -174,6 +198,11 @@ class SessionRegistry:
         # tests and for an engine started without a shared secret.
         self._db: Any = None
         self._vault: SessionVault | None = None
+        # Called when a session is rebuilt from storage rather than logged in.
+        # The API sets it to the forward-run resumer: a browser reconnecting on
+        # a remembered cookie never reaches the login path, so without this a
+        # suspended run stayed suspended until the user signed in by hand.
+        self.on_session_restored: Any = None
 
     def bind_storage(self, db: Any, secret: str | None) -> None:
         """Let sessions survive a restart.
@@ -246,6 +275,7 @@ class SessionRegistry:
             expires_at=end_of_day(now),
             last_seen=now,
             profile=profile,
+            _runners=self._runners,
         )
 
         with self._lock:
@@ -254,12 +284,12 @@ class SessionRegistry:
             # so a leaked token cannot outlive a re-login.
             previous = self._by_user.get(user_id)
             if previous:
-                # Must go through _drop_locked: popping the session leaves its
-                # forward runner ticking on a thread nobody owns, and the next
-                # login resumes the same run from the database -- two ladders
-                # driving one run id, both writing the whole state, last writer
-                # wins. A second browser tab was enough to trigger it.
-                self._drop_locked(previous)
+                # A handover, not an ending: the run belongs to the user, so
+                # the new session inherits the tick thread already in flight.
+                # It must still go through _drop_locked, which removes the old
+                # token from durable storage -- otherwise a leaked token would
+                # outlive the re-login that was meant to invalidate it.
+                self._drop_locked(previous, handover=True)
             if len(self._sessions) >= self.max_sessions:
                 oldest = min(self._sessions.values(), key=lambda s: s.last_seen)
                 self._drop_locked(oldest.token)
@@ -330,7 +360,61 @@ class SessionRegistry:
             return None
         if row is None:
             return None
+        session = self._install_from_row(row, token)
+        if session is not None:
+            log.info("Restored session for %s after a restart", session.user_id)
+            self._announce_restored(session)
+        return session
 
+    def revive_for_user(self, user_id: str) -> UserSession | None:
+        """Rebuild a user's session without their browser token.
+
+        A forward run belongs to the user, so reviving one after a restart must
+        not wait for someone to open the dashboard. The stored row holds the
+        Choice session id, which is the only thing the run needs to keep
+        quoting; the token it was issued under is irrelevant to that.
+
+        The session gets a fresh internal token that is never handed out and
+        never persisted -- the durable row already exists under the browser's
+        own token, and issuing a second credential for it would widen the blast
+        radius of a leak for no benefit.
+        """
+        if self._db is None or self._vault is None:
+            return None
+        with self._lock:
+            existing = self._by_user.get(user_id)
+            if existing and existing in self._sessions:
+                return self._sessions[existing]
+        try:
+            row = self._db.auth_session_for_user(user_id)
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not read a stored session for %s", user_id)
+            return None
+        if row is None:
+            return None
+        session = self._install_from_row(row, secrets.token_urlsafe(32))
+        if session is not None:
+            log.info("Revived a session for %s to keep its forward run ticking", user_id)
+        return session
+
+    def _announce_restored(self, session: UserSession) -> None:
+        """Run the restore hook outside the registry lock.
+
+        Resuming a forward run loads a scrip master and talks to the broker.
+        Doing that under the lock would stall every other user's request for as
+        long as it takes, and the resumer calls back into the registry.
+        """
+        hook = self.on_session_restored
+        if hook is None:
+            return
+        try:
+            hook(session)
+        except Exception:                           # noqa: BLE001
+            log.exception("Session restore hook failed for %s", session.user_id)
+
+    def _install_from_row(self, row: dict[str, Any], token: str) -> UserSession | None:
+        """Turn a stored auth row into a live session under `token`."""
+        assert self._db is not None and self._vault is not None
         now = dt.datetime.now(tz=IST)
         if is_expired(row["expires_at"], now):
             self._db.drop_auth_session(token_hash=row["token_hash"])
@@ -361,16 +445,15 @@ class SessionRegistry:
             expires_at=_parse_iso(row["expires_at"]) or end_of_day(now),
             last_seen=now,
             profile=payload.get("profile") or {},
+            _runners=self._runners,
         )
 
         with self._lock:
             previous = self._by_user.get(session.user_id)
             if previous and previous != token:
-                self._drop_locked(previous)
+                self._drop_locked(previous, handover=True)
             self._sessions[token] = session
             self._by_user[session.user_id] = token
-
-        log.info("Restored session for %s after a restart", session.user_id)
         return session
 
     def require(self, token: str | None) -> UserSession:
@@ -406,24 +489,44 @@ class SessionRegistry:
 
     # ------------------------------------------------------------- internals
 
-    def _drop_locked(self, token: str) -> None:
+    def _drop_locked(self, token: str, *, handover: bool = False) -> None:
+        """Remove one session. Suspend its run only if nothing succeeds it.
+
+        `handover` says a replacement session for the same user is being
+        installed right now, so the run must keep ticking. That is the common
+        case -- a re-login, a second tab, a remembered cookie reconnecting --
+        and treating it as an ending is what silently killed a live ladder
+        mid-session.
+        """
         if self._db is not None:
             try:
                 self._db.drop_auth_session(token_hash=token_fingerprint(token))
             except Exception:                       # noqa: BLE001
                 log.exception("Could not remove a stored session")
         session = self._sessions.pop(token, None)
-        if session is not None:
-            runner = getattr(session, "runner", None)
-            if runner is not None:
-                # Suspend, do not stop. Ending a session means the engine can
-                # no longer fetch quotes for this user; it does not mean the
-                # user decided to close a ladder that still holds positions.
-                # Marking it stopped made the run unresumable, and the only
-                # way back was editing the database by hand.
-                runner.suspend("session ended")
-            if self._by_user.get(session.user_id) == token:
-                self._by_user.pop(session.user_id, None)
+        if session is None:
+            return
+        if self._by_user.get(session.user_id) == token:
+            self._by_user.pop(session.user_id, None)
+
+        runner = self._runners.get(session.user_id)
+        if runner is None:
+            return
+        # Any other session for this user keeps the run alive on its own.
+        still_signed_in = handover or any(
+            s.user_id == session.user_id for s in self._sessions.values()
+        )
+        if still_signed_in:
+            log.info(
+                "Session for %s replaced; its forward run carries over untouched",
+                session.user_id,
+            )
+            return
+        # Suspend, do not stop. Losing the last session means the engine can no
+        # longer fetch quotes for this user; it does not mean the user decided
+        # to close a ladder that still holds positions. Marking it stopped made
+        # the run unresumable, and the only way back was editing the database.
+        runner.suspend("session ended")
 
     def _sweep_locked(self) -> None:
         for token in [t for t, s in self._sessions.items() if s.expired]:

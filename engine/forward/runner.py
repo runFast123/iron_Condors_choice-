@@ -209,6 +209,10 @@ class ForwardRunner:
         # should pick it back up. Conflating the two marked runs permanently
         # stopped for the sin of the browser being closed.
         self._suspended = False
+        # The worker driving `run`, and how fast. Set by whoever starts the
+        # thread; the watchdog reads them to tell a live run from a dead one.
+        self.tick_thread: threading.Thread | None = None
+        self.poll_seconds = 15.0
         # Whether the most recent spot came from a candle rather than the book.
         self.spot_is_stale = False
         self.legs_on_real_depth = 0
@@ -228,9 +232,29 @@ class ForwardRunner:
         self._suspended = True
         self.emit("info", f"Run suspended ({reason}); it resumes at the next login")
 
+    def unsuspend(self) -> None:
+        """Clear the halt so a fresh worker can drive this run again.
+
+        Only clears the flag. Starting the thread is the caller's job, because
+        only the caller knows the poll interval and owns the session the run
+        will quote through.
+        """
+        self._suspended = False
+
     @property
     def suspended(self) -> bool:
         return self._suspended
+
+    @property
+    def is_ticking(self) -> bool:
+        """Whether a live worker is actually driving this run.
+
+        The distinction that matters: a run can be marked running in every
+        surface -- database, dashboard, snapshot -- while the thread that was
+        supposed to advance its ladder is long gone.
+        """
+        thread = self.tick_thread
+        return bool(thread is not None and thread.is_alive())
 
     def emit(self, severity: str, message: str, **detail: Any) -> None:
         """Append one line to the run log.

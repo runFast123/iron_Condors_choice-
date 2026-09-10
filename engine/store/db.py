@@ -292,6 +292,19 @@ class Store:
         )
         return dict(rows[0]) if rows else None
 
+    def auth_session_for_user(self, user_id: str) -> dict[str, Any] | None:
+        """The freshest stored session for one user, by user rather than token.
+
+        A forward run is keyed by user, so reviving one after a restart means
+        finding that user's credentials without holding the browser token that
+        happens to be sitting in someone's cookie jar.
+        """
+        rows = self._rows(
+            "SELECT * FROM auth_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
+        )
+        return dict(rows[0]) if rows else None
+
     def drop_auth_session(self, *, token_hash: str | None = None, user_id: str | None = None) -> None:
         if token_hash:
             self._write("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
