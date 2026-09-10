@@ -76,5 +76,6 @@ engine/state/
 web/data/live.json
 
 # Vendored binaries. cloudflared is 54 MB and belongs to Cloudflare, not here.
-tools/
+# Anchored: an unanchored "tools/" also swallows engine/tools/, which is source.
+/tools/
 *.exe
