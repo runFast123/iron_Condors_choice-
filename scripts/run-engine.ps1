@@ -99,8 +99,57 @@ if (-not $createdNew) {
 $delay = 2
 $maxDelay = 60
 
+function Clear-OrphanedEngine {
+    <#
+        Kill a previous engine still holding the port.
+
+        Stopping this supervisor does not stop its uvicorn child: PowerShell
+        launches it synchronously, so a force-kill of the script orphans the
+        child, which keeps the port and keeps serving. The next supervisor then
+        cannot bind, exits 3, and loops on a 60s backoff forever -- while the
+        orphan happily serves *old code* to every user.
+
+        That is not hypothetical. It is how this project shipped a two-hour-old
+        build for a whole session, and it happened again the moment the engine
+        was restarted to pick up a change.
+
+        Only processes that are clearly ours are killed: a uvicorn running
+        engine.api. Anything else on the port is someone else's problem and
+        gets reported rather than terminated.
+    #>
+    $owners = @()
+    try {
+        $owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop |
+                  Select-Object -ExpandProperty OwningProcess -Unique
+    }
+    catch {
+        return   # nothing listening
+    }
+
+    # Not $pid: that is a read-only automatic variable in PowerShell.
+    foreach ($ownerPid in $owners) {
+        $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+        if (-not $proc) { continue }
+        if ($proc.CommandLine -match "uvicorn" -and $proc.CommandLine -match "engine\.api") {
+            Write-Log "Port $Port held by an orphaned engine (pid $ownerPid); stopping it"
+            try {
+                Stop-Process -Id $ownerPid -Force -ErrorAction Stop
+                Start-Sleep -Seconds 2
+            }
+            catch {
+                Write-Log "  could not stop pid ${ownerPid}: $($_.Exception.Message)"
+            }
+        }
+        else {
+            Write-Log "WARNING: port $Port is held by pid $ownerPid ($($proc.Name)), which is not ours."
+            Write-Log "         The engine cannot start until that process releases it."
+        }
+    }
+}
+
 while ($true) {
     Import-EngineEnv
+    Clear-OrphanedEngine
     Write-Log "Starting engine on ${BindHost}:${Port}"
     $start = Get-Date
 
