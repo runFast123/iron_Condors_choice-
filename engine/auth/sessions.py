@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from engine.choice.errors import ChoiceAuthError, ChoiceError
+from engine.auth.persistence import SessionVault, is_expired, token_fingerprint
 from engine.choice.session import ChoiceSession
 from engine.config import IST, ChoiceConfig
 
@@ -74,6 +75,14 @@ def mask_mobile(mobile: str) -> str:
     """Show only the last two digits, for display."""
     digits = "".join(ch for ch in str(mobile) if ch.isdigit())
     return f"{'*' * max(0, len(digits) - 2)}{digits[-2:]}" if len(digits) >= 2 else "****"
+
+
+def _parse_iso(value: Any) -> dt.datetime | None:
+    """Parse a stored timestamp, or None if it is unusable."""
+    try:
+        return dt.datetime.fromisoformat(value) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def end_of_day(now: dt.datetime | None = None) -> dt.datetime:
@@ -160,6 +169,33 @@ class SessionRegistry:
         self._lock = threading.RLock()
         self._throttle = LoginThrottle()
         self.max_sessions = max_sessions
+        # Durable backing, attached by the API once the database is open.
+        # Optional so the registry keeps working -- in memory only -- for
+        # tests and for an engine started without a shared secret.
+        self._db: Any = None
+        self._vault: SessionVault | None = None
+
+    def bind_storage(self, db: Any, secret: str | None) -> None:
+        """Let sessions survive a restart.
+
+        Without this the registry behaves exactly as it did before: memory
+        only, and every restart signs everyone out.
+        """
+        vault = SessionVault(secret)
+        if not vault.enabled:
+            log.warning(
+                "No ENGINE_SHARED_SECRET, so sessions are not persisted. "
+                "Every engine restart will sign users out."
+            )
+            return
+        self._db = db
+        self._vault = vault
+        try:
+            dropped = db.purge_expired_auth_sessions(dt.datetime.now(tz=IST).isoformat())
+            if dropped:
+                log.info("Purged %d expired session(s) on startup", dropped)
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not purge expired sessions")
 
     # ------------------------------------------------------------------ auth
 
@@ -230,21 +266,112 @@ class SessionRegistry:
             self._sessions[session.token] = session
             self._by_user[user_id] = session.token
 
+        self._persist(session)
         log.info("User %s logged in (vendor %s)", user_id, vendor_id)
         return session
+
+    def _persist(self, session: UserSession) -> None:
+        """Write the session so a restart can pick it back up.
+
+        Only the Choice session id and the profile go in. The API key is not
+        needed after login -- requests carry `Authorization: SessionId ...` --
+        so it is never written, and a leaked row is useless once the trading
+        day ends or from any IP but the declared one.
+        """
+        if self._db is None or self._vault is None:
+            return
+        sealed = self._vault.seal({
+            "session_id": session.choice.session_id,
+            "bcast_ip": getattr(session.choice, "bcast_ip", None),
+            "bcast_port": getattr(session.choice, "bcast_port", None),
+            "profile": session.profile,
+            "created_at": session.created_at.isoformat(),
+        })
+        if sealed is None:
+            return
+        try:
+            self._db.save_auth_session(
+                token_hash=token_fingerprint(session.token),
+                user_id=session.user_id,
+                vendor_id=session.vendor_id,
+                mobile_masked=session.mobile_masked,
+                payload=sealed,
+                expires_at=session.expires_at.isoformat(),
+            )
+        except Exception:                           # noqa: BLE001
+            # A session that cannot be saved still works for this process.
+            log.exception("Could not persist the session for %s", session.user_id)
 
     def get(self, token: str | None) -> UserSession | None:
         if not token:
             return None
         with self._lock:
             session = self._sessions.get(token)
-            if session is None:
-                return None
-            if session.expired:
-                self._drop_locked(token)
-                return None
-            session.touch()
-            return session
+            if session is not None:
+                if session.expired:
+                    self._drop_locked(token)
+                    return None
+                session.touch()
+                return session
+
+        # Not in memory. It may still be a valid session this process has not
+        # seen -- the usual case being that the engine restarted underneath a
+        # browser that is still holding a perfectly good cookie.
+        return self._rehydrate(token)
+
+    def _rehydrate(self, token: str) -> UserSession | None:
+        """Rebuild a session from durable storage, or None."""
+        if self._db is None or self._vault is None:
+            return None
+        try:
+            row = self._db.auth_session(token_fingerprint(token))
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not read a stored session")
+            return None
+        if row is None:
+            return None
+
+        now = dt.datetime.now(tz=IST)
+        if is_expired(row["expires_at"], now):
+            self._db.drop_auth_session(token_hash=row["token_hash"])
+            return None
+
+        payload = self._vault.open(row["payload"])
+        if payload is None or not payload.get("session_id"):
+            # Unreadable means the shared secret changed, which is how an
+            # operator revokes every session. Honour it.
+            self._db.drop_auth_session(token_hash=row["token_hash"])
+            return None
+
+        choice = ChoiceSession(config=ChoiceConfig(vendor_id=row["vendor_id"]))
+        choice.session_id = payload["session_id"]
+        choice.bcast_ip = payload.get("bcast_ip")
+        choice.bcast_port = payload.get("bcast_port")
+        # The API key was never stored, so this session cannot re-login on its
+        # own. Marking the login date keeps `ensure_session` from trying.
+        choice._login_date = now.date()
+
+        session = UserSession(
+            user_id=row["user_id"],
+            token=token,
+            choice=choice,
+            mobile_masked=row["mobile_masked"],
+            vendor_id=row["vendor_id"],
+            created_at=_parse_iso(payload.get("created_at")) or now,
+            expires_at=_parse_iso(row["expires_at"]) or end_of_day(now),
+            last_seen=now,
+            profile=payload.get("profile") or {},
+        )
+
+        with self._lock:
+            previous = self._by_user.get(session.user_id)
+            if previous and previous != token:
+                self._drop_locked(previous)
+            self._sessions[token] = session
+            self._by_user[session.user_id] = token
+
+        log.info("Restored session for %s after a restart", session.user_id)
+        return session
 
     def require(self, token: str | None) -> UserSession:
         session = self.get(token)
@@ -280,6 +407,11 @@ class SessionRegistry:
     # ------------------------------------------------------------- internals
 
     def _drop_locked(self, token: str) -> None:
+        if self._db is not None:
+            try:
+                self._db.drop_auth_session(token_hash=token_fingerprint(token))
+            except Exception:                       # noqa: BLE001
+                log.exception("Could not remove a stored session")
         session = self._sessions.pop(token, None)
         if session is not None:
             runner = getattr(session, "runner", None)

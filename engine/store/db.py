@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_backtest_user ON backtest_runs (user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash    TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL,
+    vendor_id     TEXT NOT NULL,
+    mobile_masked TEXT NOT NULL,
+    payload       TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    expires_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_auth_user ON auth_sessions(user_id);
+
 CREATE TABLE IF NOT EXISTS iv_calibrations (
     as_of_date   TEXT PRIMARY KEY,
     created_at   TEXT NOT NULL,
@@ -248,6 +260,52 @@ class Store:
             "(SELECT ts FROM forward_ticks WHERE session_id = ? ORDER BY ts DESC LIMIT ?)",
             (session_id, session_id, keep),
         )
+
+    # ------------------------------------------------- signed-in sessions
+
+    def save_auth_session(
+        self,
+        *,
+        token_hash: str,
+        user_id: str,
+        vendor_id: str,
+        mobile_masked: str,
+        payload: str,
+        expires_at: str,
+    ) -> None:
+        """Persist one signed-in session so a restart does not end it.
+
+        One row per user: a second login supersedes the first, exactly as the
+        in-memory registry does, so a leaked token cannot outlive a re-login.
+        """
+        self._write("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+        self._write(
+            "INSERT INTO auth_sessions "
+            "(token_hash, user_id, vendor_id, mobile_masked, payload, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (token_hash, user_id, vendor_id, mobile_masked, payload, _now(), expires_at),
+        )
+
+    def auth_session(self, token_hash: str) -> dict[str, Any] | None:
+        rows = self._rows(
+            "SELECT * FROM auth_sessions WHERE token_hash = ?", (token_hash,)
+        )
+        return dict(rows[0]) if rows else None
+
+    def drop_auth_session(self, *, token_hash: str | None = None, user_id: str | None = None) -> None:
+        if token_hash:
+            self._write("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+        if user_id:
+            self._write("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+
+    def purge_expired_auth_sessions(self, now_iso: str) -> int:
+        """Drop everything past its expiry. Called on startup and on login."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM auth_sessions WHERE expires_at <= ?", (now_iso,)
+            )
+            self._conn.commit()
+            return cur.rowcount or 0
 
     # -------------------------------------------------- IV calibration
 

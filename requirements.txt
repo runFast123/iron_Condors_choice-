@@ -18,3 +18,6 @@ requests==2.34.2
 # pandas pulls these, but pinning them keeps a rebuild reproducible.
 numpy==2.5.1
 python-dateutil==2.9.0.post0
+
+# Fernet, for encrypting the stored session id at rest.
+cryptography==49.0.0

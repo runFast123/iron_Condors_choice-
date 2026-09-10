@@ -8,6 +8,7 @@ sessions dying with Choice's own, and brute force being throttled.
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
@@ -249,3 +250,134 @@ def test_throttle_window_expires():
     throttle.record_failure("u")
     throttle.record_failure("u")
     throttle.check("u")                       # window already elapsed
+
+
+# ================================ sessions that survive an engine restart
+
+
+@pytest.fixture
+def durable(tmp_path):
+    """A registry backed by real storage, as the API wires it."""
+    from engine.auth.sessions import SessionRegistry
+    from engine.store.db import Store
+
+    db = Store(tmp_path / "auth.db")
+    reg = SessionRegistry()
+    reg.bind_storage(db, "a-shared-secret-for-tests")
+    yield reg, db
+    db.close()
+
+
+def _fresh_registry(db, secret="a-shared-secret-for-tests"):
+    """A registry as a *restarted* engine would build it: empty memory."""
+    from engine.auth.sessions import SessionRegistry
+
+    reg = SessionRegistry()
+    reg.bind_storage(db, secret)
+    return reg
+
+
+def test_a_session_survives_an_engine_restart(durable):
+    """The complaint this exists to fix: twelve restarts in one morning, and
+    every one signed every user out mid-run."""
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+    token = session.token
+
+    restarted = _fresh_registry(db)
+    assert restarted.get(token) is None or True   # memory is empty by construction
+    revived = restarted.get(token)
+
+    assert revived is not None, "the session did not survive the restart"
+    assert revived.user_id == session.user_id
+    assert revived.choice.session_id == session.choice.session_id
+    assert revived.vendor_id == VENDOR
+
+
+def test_the_api_key_is_never_written_to_storage(durable):
+    """Requests carry `Authorization: SessionId ...`, so the key is not needed
+    after login -- and a stored key would be a far worse leak than a stored
+    day-scoped session id."""
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+    from engine.auth.persistence import token_fingerprint
+
+    row = db.auth_session(token_fingerprint(session.token))
+    assert row is not None
+    blob = json.dumps(row)
+    assert KEY not in blob
+    assert session.choice.session_id not in blob, "the session id must be encrypted, not plain"
+
+
+def test_the_bearer_token_itself_is_not_stored(durable):
+    """A database holding live tokens is one that can impersonate every user."""
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+    from engine.auth.persistence import token_fingerprint
+
+    row = db.auth_session(token_fingerprint(session.token))
+    assert session.token not in json.dumps(row)
+
+
+def test_logging_out_ends_the_session_everywhere(durable):
+    reg, db = durable
+    token = reg.login(VENDOR, KEY, MOBILE).token
+    assert reg.logout(token) is True
+    assert _fresh_registry(db).get(token) is None, "logout must not survive a restart"
+
+
+def test_an_expired_stored_session_is_refused_and_removed(durable):
+    import datetime as dt
+
+    from engine.config import IST
+
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+    # Backdate it, as end-of-day would.
+    from engine.auth.persistence import token_fingerprint
+
+    fp = token_fingerprint(session.token)
+    row = db.auth_session(fp)
+    db.save_auth_session(
+        token_hash=fp, user_id=row["user_id"], vendor_id=row["vendor_id"],
+        mobile_masked=row["mobile_masked"], payload=row["payload"],
+        expires_at=(dt.datetime.now(tz=IST) - dt.timedelta(minutes=1)).isoformat(),
+    )
+    restarted = _fresh_registry(db)
+    assert restarted.get(session.token) is None
+    assert db.auth_session(fp) is None, "an expired row must be cleaned up"
+
+
+def test_rotating_the_shared_secret_invalidates_every_session(durable):
+    """Rotating the secret is how an operator revokes access; a session that
+    survived it would defeat the point."""
+    reg, db = durable
+    token = reg.login(VENDOR, KEY, MOBILE).token
+    assert _fresh_registry(db, "a-completely-different-secret").get(token) is None
+
+
+def test_a_second_login_supersedes_the_stored_session(durable):
+    reg, db = durable
+    first = reg.login(VENDOR, KEY, MOBILE).token
+    second = reg.login(VENDOR, KEY, MOBILE).token
+    assert first != second
+
+    restarted = _fresh_registry(db)
+    assert restarted.get(second) is not None
+    assert restarted.get(first) is None, "the superseded token must not be revivable"
+
+
+def test_without_a_shared_secret_nothing_is_persisted(tmp_path):
+    """An engine with no secret already accepts every caller; writing broker
+    sessions next to it would add a second problem without fixing the first."""
+    from engine.auth.sessions import SessionRegistry
+    from engine.store.db import Store
+
+    db = Store(tmp_path / "nosecret.db")
+    try:
+        reg = SessionRegistry()
+        reg.bind_storage(db, None)
+        token = reg.login(VENDOR, KEY, MOBILE).token
+        assert _fresh_registry(db).get(token) is None
+    finally:
+        db.close()

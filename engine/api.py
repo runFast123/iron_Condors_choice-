@@ -62,6 +62,10 @@ ALLOWED_ORIGINS = [
 store = Store()
 set_id_salt(store.user_id_salt())
 backtest_store.bind(store)
+# Sessions outlive the process. Without this every restart -- a crash, a
+# reboot, a deploy -- signs every user out mid-run, which on a multi-user
+# platform drops the dashboard to a login page while a ladder is in flight.
+registry.bind_storage(store, engine_config.shared_secret or None)
 # Holidays learned from Choice in earlier sessions, so a restart does not have
 # to rediscover that today is Diwali.
 market_calendar.learned |= store.holidays()
