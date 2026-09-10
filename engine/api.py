@@ -272,6 +272,24 @@ def login(body: LoginRequest, request: Request) -> dict[str, Any]:
     return {"token": session.token, "user": session.public(), "resumed_forward": resumed}
 
 
+def _resume_rank(row: dict) -> tuple[int, str, str]:
+    """How much a saved run deserves to be the one that gets resumed.
+
+    "Newest" is the wrong way to choose. An engine restart can leave a user with
+    two rows marked running: the one that has been trading all day, and an empty
+    one minted seconds later when their browser reconnected and started a run
+    before the first had been picked up. Ranking by started_at hands it to the
+    empty one and destroys the real ladder, open positions and all.
+
+    So a run holding open condors wins outright, then the one that ticked most
+    recently, and only then the newest. Sorted ascending, the winner is last.
+    """
+    state = row.get("state") or {}
+    condors = state.get("condors") or []
+    has_open = any(c.get("status") == "OPEN" for c in condors)
+    return (1 if has_open else 0, str(state.get("last_tick") or ""), row["started_at"])
+
+
 def _resume_forward(session: UserSession) -> bool:
     """Pick a forward run back up after an engine restart.
 
@@ -291,20 +309,22 @@ def _resume_forward(session: UserSession) -> bool:
     if not pending:
         return False
 
-    # Only one run can be driven at a time, so the newest is resumed -- but the
-    # older ones must not be left marked `running` forever. They would be
-    # re-read on every login and would never become resumable, while claiming
-    # to have live positions. Retire them explicitly so the record is honest.
-    record = pending[-1]
-    for stale in pending[:-1]:
+    # Only one run can be driven at a time, so the rest are retired.
+    ordered = sorted(pending, key=_resume_rank)
+    record = ordered[-1]
+    for stale in ordered[:-1]:
+        stale_state = stale.get("state") or {}
+        stale_open = sum(
+            1 for c in (stale_state.get("condors") or []) if c.get("status") == "OPEN"
+        )
         log.warning(
-            "Superseded forward run %s for user %s; retiring it",
-            stale["session_id"], session.user_id,
+            "Superseded forward run %s for user %s (%d open condor(s)); retiring it",
+            stale["session_id"], session.user_id, stale_open,
         )
         try:
             store.mark_stopped(
                 stale["session_id"],
-                "superseded by a newer run; not resumed after the engine restarted",
+                "superseded; another run of this user's was resumed instead",
             )
         except Exception:                           # noqa: BLE001
             log.exception("Could not retire superseded run %s", stale["session_id"])
@@ -517,6 +537,17 @@ def forward_start(
 ) -> dict[str, Any]:
     if session.runner is not None and session.runner.stopped_reason is None:
         return {"ok": True, "already_running": True, "state": session.runner.snapshot()}
+
+    # Adopt a saved run before minting a new one.
+    #
+    # `session.runner` is only the *in-memory* handle. After a restart it is
+    # None until a login resumes the run, so a browser that reconnects and hits
+    # start first would create a second run -- empty, newer, and therefore the
+    # one a later resume picks, destroying the ladder that had been trading all
+    # day. Resuming here closes that window.
+    if _resume_forward(session) and session.runner is not None:
+        return {"ok": True, "already_running": True, "resumed": True,
+                "state": session.runner.snapshot()}
 
     try:
         lot_size = market.master.lot_size_for(NIFTY)

@@ -558,3 +558,58 @@ def test_a_suspended_run_round_trips_with_its_ladder_intact(tmp_path, store):
     assert sorted(revived.ladder.levels()) == fired_before
     assert revived.suspended is False, "a restored run starts live, not suspended"
     assert revived.stopped_reason is None
+
+
+# ============================== choosing which saved run to resume
+
+
+def _row(session_id, started_at, *, open_condors=0, last_tick=None):
+    """A forward_sessions row as running_forwards() hands it back."""
+    condors = [{"status": "OPEN"} for _ in range(open_condors)]
+    return {
+        "session_id": session_id,
+        "user_id": "u1",
+        "started_at": started_at,
+        "state": {"condors": condors, "last_tick": last_tick},
+    }
+
+
+def _winner(rows):
+    from engine.api import _resume_rank
+
+    return sorted(rows, key=_resume_rank)[-1]["session_id"]
+
+
+def test_a_run_holding_positions_beats_an_empty_one_started_later():
+    """The bug this exists for: an engine restart left a user with the run that
+    had traded all day plus an empty one their browser minted seconds later.
+    Choosing by started_at resumed the empty run and destroyed the real ladder,
+    open condor and all."""
+    real = _row("real", "2026-09-10T08:57:34", open_condors=1, last_tick="2026-09-10T15:29:57")
+    empty = _row("empty", "2026-09-10T15:46:22")
+
+    assert _winner([real, empty]) == "real"
+    assert _winner([empty, real]) == "real", "the input order must not decide it"
+
+
+def test_between_two_runs_with_positions_the_one_ticking_most_recently_wins():
+    stale = _row("stale", "2026-09-10T09:00:00", open_condors=1, last_tick="2026-09-10T10:00:00")
+    fresh = _row("fresh", "2026-09-10T08:00:00", open_condors=2, last_tick="2026-09-10T15:20:00")
+
+    assert _winner([stale, fresh]) == "fresh"
+
+
+def test_between_two_empty_runs_the_newest_wins():
+    """With nothing at stake, the user's most recent intent is the best guess."""
+    old = _row("old", "2026-09-10T09:00:00")
+    new = _row("new", "2026-09-10T15:00:00")
+
+    assert _winner([old, new]) == "new"
+
+
+def test_a_run_that_never_ticked_does_not_outrank_one_that_did():
+    """A missing last_tick must not sort above a real timestamp."""
+    never = _row("never", "2026-09-10T16:00:00", open_condors=1)
+    ticked = _row("ticked", "2026-09-10T08:00:00", open_condors=1, last_tick="2026-09-10T15:29:00")
+
+    assert _winner([never, ticked]) == "ticked"
