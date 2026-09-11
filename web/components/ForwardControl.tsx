@@ -20,6 +20,10 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [state, setState] = useState<LiveState | null>(initial);
   const [lots, setLots] = useState(1);
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
+  const [direction, setDirection] = useState<"down" | "up" | "both">("down");
+  const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
+  const [maxDown, setMaxDown] = useState<number | "">(20);
+  const [maxUp, setMaxUp] = useState<number | "">(10);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -132,7 +136,16 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const start = () =>
     post(
       "/api/forward/start",
-      { lots, step: 100, poll_seconds: 10, expiry_cadence: cadence },
+      {
+        lots,
+        step: 100,
+        poll_seconds: 10,
+        expiry_cadence: cadence,
+        direction,
+        anchor_mode: anchorMode,
+        max_down: maxDown !== "" ? Number(maxDown) : undefined,
+        max_up: maxUp !== "" ? Number(maxUp) : undefined,
+      },
       "starting",
     );
   const stop = () => post("/api/forward/stop", undefined, "stopping");
@@ -181,7 +194,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                   value={cadence}
                   onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 130 }}
+                  style={{ marginTop: 5, minWidth: 110 }}
                 >
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
@@ -189,7 +202,43 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Lots per condor
+                Direction (v2)
+                <select
+                  value={direction}
+                  onChange={(e) => {
+                    const nextDir = e.target.value as "down" | "up" | "both";
+                    setDirection(nextDir);
+                    if (nextDir === "both" || nextDir === "up") {
+                      if (anchorMode === "floor") setAnchorMode("nearest");
+                    } else if (nextDir === "down") {
+                      if (anchorMode === "nearest") setAnchorMode("floor");
+                    }
+                  }}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 140 }}
+                >
+                  <option value="down">Down-only (v1)</option>
+                  <option value="both">Two-way / Both (v2)</option>
+                  <option value="up">Up-only (v2)</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Anchor Mode
+                <select
+                  value={anchorMode}
+                  onChange={(e) => setAnchorMode(e.target.value as "floor" | "nearest" | "round")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 110 }}
+                >
+                  <option value="floor">Floor</option>
+                  <option value="nearest">Nearest</option>
+                  <option value="round">Round</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Lots
                 <input
                   type="number"
                   min={1}
@@ -197,15 +246,45 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                   value={lots}
                   onChange={(e) => setLots(Math.max(1, Number(e.target.value)))}
                   className="auth-input"
-                  style={{ marginTop: 5, width: 100 }}
+                  style={{ marginTop: 5, width: 70 }}
                 />
               </label>
+
+              {direction !== "up" && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  Max Down
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxDown}
+                    onChange={(e) => setMaxDown(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, width: 80 }}
+                  />
+                </label>
+              )}
+
+              {direction !== "down" && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  Max Up
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxUp}
+                    onChange={(e) => setMaxUp(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, width: 80 }}
+                  />
+                </label>
+              )}
 
               <button
                 onClick={start}
                 disabled={busy !== null}
                 className="auth-submit"
-                style={{ marginTop: 0, minWidth: 150 }}
+                style={{ marginTop: 0, minWidth: 140 }}
               >
                 {busy === "starting" ? "Starting…" : "Start paper run"}
               </button>
@@ -285,11 +364,31 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
                 }
                 tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
               />
+              {state?.ladder.direction === "both" && (
+                <>
+                  <Metric
+                    label="Down-side P&L"
+                    value={inr(state?.pnl.down_pnl ?? 0, { sign: true })}
+                    tone={(state?.pnl.down_pnl ?? 0) > 0 ? "pos" : (state?.pnl.down_pnl ?? 0) < 0 ? "neg" : undefined}
+                  />
+                  <Metric
+                    label="Up-side P&L"
+                    value={inr(state?.pnl.up_pnl ?? 0, { sign: true })}
+                    tone={(state?.pnl.up_pnl ?? 0) > 0 ? "pos" : (state?.pnl.up_pnl ?? 0) < 0 ? "neg" : undefined}
+                  />
+                </>
+              )}
               <Metric label="Open condors" value={num(state?.pnl.open_condors ?? 0)} />
               <Metric
-                label="Next entry at"
-                value={state?.ladder.next_trigger != null ? num(state.ladder.next_trigger) : "—"}
+                label={state?.ladder.direction === "both" ? "Next down" : "Next entry at"}
+                value={state?.ladder.next_down != null ? num(state.ladder.next_down) : state?.ladder.next_trigger != null ? num(state.ladder.next_trigger) : "—"}
               />
+              {state?.ladder.direction === "both" && (
+                <Metric
+                  label="Next up"
+                  value={state?.ladder.next_up != null ? num(state.ladder.next_up) : "—"}
+                />
+              )}
               <Metric label="Self-hedged" value={pct(state?.netting.offset_ratio ?? 0)} />
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>

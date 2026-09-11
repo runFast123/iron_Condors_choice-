@@ -28,11 +28,18 @@ export default async function Overview() {
   // round-trips where every other page costs one -- the first screen after
   // login was the slowest in the app.
   const [dataset, job] = await Promise.all([getDataset(), latestJob()]);
-  const { metrics: m, equity, netting, condors, params, provenance, campaigns, rolls } = dataset;
+  const { metrics: m, attribution: attr, equity, netting, condors, params, provenance, campaigns, rolls } = dataset;
 
   const hasData = condors.length > 0;
   // A finished run that opened nothing is not the same as never having run.
   const ranButEmpty = !hasData && job?.status === "done";
+
+  const directionLabel =
+    params.direction === "both"
+      ? "Two-way (±100 pts)"
+      : params.direction === "up"
+      ? "Up-only (+100 pts)"
+      : "Down-only (-100 pts)";
 
   return (
     <>
@@ -40,18 +47,24 @@ export default async function Overview() {
         title="Overview"
         subtitle={
           <>
-            A fresh iron condor at every {num(params.step)}-point decline in NIFTY, each one{" "}
+            A fresh iron condor at every {num(params.step)}-point step in NIFTY ({directionLabel.toLowerCase()}), each one{" "}
             <strong>short &plusmn;{num(params.short_offset)}</strong> and{" "}
             <strong>long &plusmn;{num(params.long_offset)}</strong> around its level.{" "}
             {provenance.range[0]} &rarr; {provenance.range[1]}.
           </>
         }
         right={
-          <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
             <Badge tone="brand">
               {params.qty > 0 ? `${params.lots} lot · ${num(params.qty)} qty` : "lot size from scrip master"}
             </Badge>
-            <Badge title="Maximum condors open at once, so a long decline cannot keep opening positions">
+            <Badge tone={params.direction === "both" ? "warn" : "neutral"}>
+              {directionLabel}
+            </Badge>
+            {params.anchor_mode && (
+              <Badge tone="neutral">{params.anchor_mode} anchor</Badge>
+            )}
+            <Badge title="Maximum condors open at once, so a long trend cannot keep opening positions">
               max {params.max_condors} condors
             </Badge>
           </div>
@@ -86,6 +99,7 @@ export default async function Overview() {
         />
 
         {hasData && (
+        <>
         <StatGrid>
           <Stat
             label="Net P&L"
@@ -93,7 +107,24 @@ export default async function Overview() {
             tone={m.net_pnl > 0 ? "pos" : m.net_pnl < 0 ? "neg" : "neutral"}
             delta={`after ${inr(m.total_costs)} costs`}
           />
-          <Stat label="Win rate" value={pct(m.win_rate)} delta={`${m.wins}W / ${m.losses}L of ${m.condors}`} />
+          {attr && (attr.up_condors > 0 || params.direction === "both") ? (
+            <>
+              <Stat
+                label="Down-side P&L"
+                value={inr(attr.down_pnl, { sign: true })}
+                tone={attr.down_pnl > 0 ? "pos" : attr.down_pnl < 0 ? "neg" : "neutral"}
+                delta={`${attr.down_condors} condors · ${inr(attr.down_credit)} credit`}
+              />
+              <Stat
+                label="Up-side P&L"
+                value={inr(attr.up_pnl, { sign: true })}
+                tone={attr.up_pnl > 0 ? "pos" : attr.up_pnl < 0 ? "neg" : "neutral"}
+                delta={`${attr.up_condors} condors · ${inr(attr.up_credit)} credit`}
+              />
+            </>
+          ) : (
+            <Stat label="Win rate" value={pct(m.win_rate)} delta={`${m.wins}W / ${m.losses}L of ${m.condors}`} />
+          )}
           <Stat
             label="Profit factor"
             value={ratio(m.profit_factor)}
@@ -116,6 +147,7 @@ export default async function Overview() {
                   : "single expiry"}
                 hint="ladder re-anchors each expiry" />
         </StatGrid>
+        </>
         )}
 
         {hasData && (
@@ -162,7 +194,7 @@ export default async function Overview() {
 
         <Card
           title="Condors opened"
-          hint={`${condors.length} condors opened. Each row is one 100-point step down.`}
+          hint={`${condors.length} condors opened. Each row is one 100-point step.`}
           pad={0}
         >
           <div className="scroll-x">
@@ -171,6 +203,7 @@ export default async function Overview() {
                 <tr>
                   <th>#</th>
                   <th>Level</th>
+                  <th>Side</th>
                   <th>Opened</th>
                   <th>Expiry</th>
                   <th style={{ textAlign: "right" }}>Credit</th>
@@ -184,6 +217,11 @@ export default async function Overview() {
                   <tr key={c.index}>
                     <td className="tnum" style={{ color: "var(--ink-muted)" }}>{c.index + 1}</td>
                     <td className="tnum" style={{ fontWeight: 600 }}>{num(c.level)}</td>
+                    <td>
+                      <Badge tone={c.side === "up" ? "warn" : c.side === "anchor" ? "brand" : "neutral"}>
+                        {(c.side ?? "down").toUpperCase()}
+                      </Badge>
+                    </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(c.entry_time)}</td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(c.expiry)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(c.credit)}</td>

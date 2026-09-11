@@ -380,3 +380,57 @@ def test_calibration_is_a_no_op_when_either_source_is_silent():
     live = _Session(accepts="segment@token,", rows=[{"Token": 42632, "LTP": 254.0}])
     no_history = _market_with_history(live, _HistoryStub({}))
     assert no_history.calibrate_quote_scale(_contract(42632)) == 1.0
+
+
+def test_forward_runner_snapshot_includes_ladder_v2_attribution():
+    from engine.strategy.condor import StrategyConfig, Condor, FilledLeg, Leg, Side, PriceSource
+    from engine.forward.runner import ForwardRunner
+    import datetime as dt
+    from engine.config import IST
+
+    runner = ForwardRunner.__new__(ForwardRunner)
+    runner._lock = threading.RLock()
+    runner.strategy = StrategyConfig(lots=1, lot_size=65, direction="both")
+    from engine.strategy.ladder import Ladder
+    runner.ladder = Ladder(config=runner.strategy)
+    runner.mode = "paper"
+    runner.stopped_reason = None
+    runner.started_at = dt.datetime.now(tz=IST)
+    runner.last_tick = dt.datetime.now(tz=IST)
+    runner.last_spot = 24_000.0
+    runner.spot_is_stale = False
+    runner.last_spot_ts = None
+    runner.expiry = dt.date(2026, 3, 26)
+    runner.last_error = None
+    runner.market = None
+    runner.legs_on_real_depth = 4
+    runner.legs_on_modelled_spread = 0
+    runner.total_slippage = 0.0
+    runner.last_marks = {}
+    runner.last_mtm = {0: 500.0, 1: -200.0}
+    runner.realised = 0.0
+    runner.fills = []
+    runner.events = []
+
+    # Add 1 down condor and 1 up condor
+    def make_condor(index, level, side):
+        legs = [
+            FilledLeg(Leg("PE", Side.BUY, level - 400, 65), 10.0, PriceSource.CHOICE),
+            FilledLeg(Leg("PE", Side.SELL, level - 200, 65), 50.0, PriceSource.CHOICE),
+            FilledLeg(Leg("CE", Side.SELL, level + 200, 65), 50.0, PriceSource.CHOICE),
+            FilledLeg(Leg("CE", Side.BUY, level + 400, 65), 10.0, PriceSource.CHOICE),
+        ]
+        return Condor(level=level, entry_time=dt.datetime.now(tz=IST), expiry=dt.date(2026, 3, 26),
+                      legs=legs, config=runner.strategy, index=index, side=side)
+
+    runner.condors = [make_condor(0, 23_900, "down"), make_condor(1, 24_100, "up")]
+    snap = runner.snapshot()
+
+    assert "pnl" in snap
+    assert "down_pnl" in snap["pnl"]
+    assert "up_pnl" in snap["pnl"]
+    assert snap["pnl"]["down_pnl"] == 500.0
+    assert snap["pnl"]["up_pnl"] == -200.0
+    assert snap["positions"][0]["side"] == "down"
+    assert snap["positions"][1]["side"] == "up"
+

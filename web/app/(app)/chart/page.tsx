@@ -61,6 +61,7 @@ export default async function ChartPage() {
                 <tr>
                   <th>#</th>
                   <th>Level</th>
+                  <th>Side</th>
                   <th>Fired at</th>
                   <th style={{ textAlign: "right" }}>NIFTY then</th>
                   <th>Trigger</th>
@@ -75,6 +76,11 @@ export default async function ChartPage() {
                   <tr key={`${t.level}-${t.time}`}>
                     <td className="tnum" style={{ color: "var(--ink-muted)" }}>{i + 1}</td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(t.level)}</td>
+                    <td>
+                      <Badge tone={t.side === "up" ? "warn" : t.side === "anchor" ? "brand" : "neutral"}>
+                        {(t.side ?? "down").toUpperCase()}
+                      </Badge>
+                    </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(t.time)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{num(t.spot)}</td>
                     <td>

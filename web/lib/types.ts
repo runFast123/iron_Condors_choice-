@@ -42,9 +42,21 @@ export interface Params {
   fill_gaps: boolean;
   take_profit_pct: number | null;
   stop_loss_mult: number | null;
+  direction?: "down" | "up" | "both";
+  max_down?: number | null;
+  max_up?: number | null;
   anchor_mode: string;
   roll_to_next_expiry?: boolean;
   label: string;
+}
+
+export interface Attribution {
+  down_pnl: number;
+  up_pnl: number;
+  down_condors: number;
+  up_condors: number;
+  down_credit: number;
+  up_credit: number;
 }
 
 export interface Metrics {
@@ -72,6 +84,7 @@ export interface Leg {
 export interface Condor {
   index: number;
   level: number;
+  side?: "anchor" | "down" | "up";
   entry_time: string;
   expiry: string;
   status: "OPEN" | "CLOSED_TARGET" | "CLOSED_STOP" | "EXPIRED";
@@ -112,7 +125,13 @@ export interface Netting {
   offset_ratio: number;
 }
 
-export interface Trigger { level: number; time: string; spot: number; reason: string; }
+export interface Trigger {
+  level: number;
+  time: string;
+  spot: number;
+  reason: string;
+  side?: "anchor" | "down" | "up";
+}
 
 export interface Roll {
   when: string;
@@ -124,6 +143,7 @@ export interface Dataset {
   provenance: Provenance;
   params: Params;
   metrics: Metrics;
+  attribution?: Attribution;
   netting: Netting;
   campaigns?: number;
   rolls?: Roll[];

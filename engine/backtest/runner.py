@@ -327,6 +327,7 @@ class Backtest:
                     config=params.strategy,
                     entry_costs=entry_costs,
                     index=next_index,
+                    side=trigger.side,
                 )
                 next_index += 1
                 condors.append(condor)

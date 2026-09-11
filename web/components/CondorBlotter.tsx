@@ -107,6 +107,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
             <tr>
               <th style={{ width: 28 }}><span className="sr-only">Expand</span></th>
               <th>Condor</th>
+              <th>Side</th>
               <th>Opened</th>
               <th>Expiry</th>
               <th style={{ textAlign: "right" }}>Credit</th>
@@ -145,6 +146,11 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                       {expanded ? "▾" : "▸"}
                     </td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(condor.level)}</td>
+                    <td>
+                      <Badge tone={condor.side === "up" ? "warn" : condor.side === "anchor" ? "brand" : "neutral"}>
+                        {(condor.side ?? "down").toUpperCase()}
+                      </Badge>
+                    </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(condor.entry_time)}</td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(condor.expiry)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(condor.credit)}</td>

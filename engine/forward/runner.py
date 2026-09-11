@@ -339,7 +339,7 @@ class ForwardRunner:
 
     # ---------------------------------------------------------------- open
 
-    def _open_condor(self, level: float, expiry: dt.date) -> Condor | None:
+    def _open_condor(self, level: float, expiry: dt.date, side: str = "down") -> Condor | None:
         legs = build_legs(level, self.strategy)
         quoted = self._quote_legs(legs, expiry)
         if quoted is None:
@@ -396,6 +396,7 @@ class ForwardRunner:
         condor = Condor(
             level=level, entry_time=now, expiry=expiry, legs=filled,
             config=self.strategy, entry_costs=entry_costs, index=len(self.condors),
+            side=side,
         )
         self.condors.append(condor)
         self.emit(
@@ -616,7 +617,7 @@ class ForwardRunner:
             if len([c for c in self.condors if c.is_open]) >= self.strategy.max_condors:
                 self.emit("warn", "Max concurrent condors reached; trigger ignored", level=trigger.level)
                 continue
-            self._open_condor(trigger.level, self.expiry)
+            self._open_condor(trigger.level, self.expiry, side=trigger.side)
 
         mtm = self._mark_all()
         total = self.realised + sum(mtm.values())
@@ -638,6 +639,19 @@ class ForwardRunner:
         marked = {c.index: self.last_mtm[c.index] for c in open_condors if c.index in self.last_mtm}
         unmarked = [c.index for c in open_condors if c.index not in self.last_mtm]
         unrealised = sum(marked.values())
+
+        down_condors = [c for c in self.condors if getattr(c, "side", "down") in ("down", "anchor")]
+        up_condors = [c for c in self.condors if getattr(c, "side", "down") == "up"]
+        down_pnl = sum(
+            self.last_mtm[c.index] if c.is_open and c.index in self.last_mtm
+            else c.realised_pnl() if not c.is_open else 0.0
+            for c in down_condors
+        )
+        up_pnl = sum(
+            self.last_mtm[c.index] if c.is_open and c.index in self.last_mtm
+            else c.realised_pnl() if not c.is_open else 0.0
+            for c in up_condors
+        )
         summary = netting_summary(self.condors, open_only=False)
 
         return {
@@ -701,6 +715,8 @@ class ForwardRunner:
                 "realised": round(self.realised, 2),
                 "unrealised": round(unrealised, 2),
                 "total": round(self.realised + unrealised, 2),
+                "down_pnl": round(down_pnl, 2),
+                "up_pnl": round(up_pnl, 2),
                 # How many open condors the total does NOT include, so a
                 # partial figure is never mistaken for a complete one.
                 "unmarked_condors": len(unmarked),
@@ -710,7 +726,8 @@ class ForwardRunner:
             "netting": summary,
             "positions": [
                 {
-                    "index": c.index, "level": c.level, "expiry": c.expiry.isoformat(),
+                    "index": c.index, "level": c.level, "side": getattr(c, "side", "down"),
+                    "expiry": c.expiry.isoformat(),
                     "entry_time": c.entry_time.isoformat(), "status": c.status.value,
                     "credit": round(c.credit, 2), "max_loss": round(c.max_loss, 2),
                     # None, not 0.0, when this condor has never been marked.
@@ -894,6 +911,7 @@ class ForwardRunner:
         return {
             "index": condor.index,
             "level": condor.level,
+            "side": getattr(condor, "side", "down"),
             "entry_time": condor.entry_time.isoformat(),
             "expiry": condor.expiry.isoformat(),
             "status": condor.status.value,
@@ -1068,4 +1086,5 @@ def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> Condor:
         entry_costs=float(raw.get("entry_costs") or 0.0),
         exit_costs=float(raw.get("exit_costs") or 0.0),
         index=int(raw.get("index") or 0),
+        side=raw.get("side", "down"),
     )

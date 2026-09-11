@@ -33,6 +33,10 @@ export function RunBacktest({
   const [lots, setLots] = useState(1);
   const [resolution, setResolution] = useState("D");
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
+  const [direction, setDirection] = useState<"down" | "up" | "both">("down");
+  const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
+  const [maxDown, setMaxDown] = useState<number | "">(20);
+  const [maxUp, setMaxUp] = useState<number | "">(10);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -95,8 +99,17 @@ export function RunBacktest({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          days, lots, resolution, step: 100, max_condors: 20, roll: true,
+          days,
+          lots,
+          resolution,
+          step: 100,
+          max_condors: 20,
+          roll: true,
           expiry_cadence: cadence,
+          direction,
+          anchor_mode: anchorMode,
+          max_down: maxDown !== "" ? Number(maxDown) : undefined,
+          max_up: maxUp !== "" ? Number(maxUp) : undefined,
         }),
       });
       const body = await res.json();
@@ -176,7 +189,7 @@ export function RunBacktest({
                   value={days}
                   onChange={(e) => setDays(Number(e.target.value))}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 130 }}
+                  style={{ marginTop: 5, minWidth: 120 }}
                 >
                   {RANGES.map((r) => (
                     <option key={r.days} value={r.days}>{r.label}</option>
@@ -190,7 +203,7 @@ export function RunBacktest({
                   value={resolution}
                   onChange={(e) => setResolution(e.target.value)}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 120 }}
+                  style={{ marginTop: 5, minWidth: 100 }}
                 >
                   <option value="D">Daily</option>
                   <option value="60">Hourly</option>
@@ -205,7 +218,7 @@ export function RunBacktest({
                   value={cadence}
                   onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 130 }}
+                  style={{ marginTop: 5, minWidth: 110 }}
                 >
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
@@ -213,7 +226,43 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Lots per condor
+                Direction (v2)
+                <select
+                  value={direction}
+                  onChange={(e) => {
+                    const nextDir = e.target.value as "down" | "up" | "both";
+                    setDirection(nextDir);
+                    if (nextDir === "both" || nextDir === "up") {
+                      if (anchorMode === "floor") setAnchorMode("nearest");
+                    } else if (nextDir === "down") {
+                      if (anchorMode === "nearest") setAnchorMode("floor");
+                    }
+                  }}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 140 }}
+                >
+                  <option value="down">Down-only (v1)</option>
+                  <option value="both">Two-way / Both (v2)</option>
+                  <option value="up">Up-only (v2)</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Anchor Mode
+                <select
+                  value={anchorMode}
+                  onChange={(e) => setAnchorMode(e.target.value as "floor" | "nearest" | "round")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 120 }}
+                >
+                  <option value="floor">Floor</option>
+                  <option value="nearest">Nearest</option>
+                  <option value="round">Round</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Lots
                 <input
                   type="number"
                   min={1}
@@ -221,9 +270,39 @@ export function RunBacktest({
                   value={lots}
                   onChange={(e) => setLots(Math.max(1, Number(e.target.value)))}
                   className="auth-input"
-                  style={{ marginTop: 5, width: 90 }}
+                  style={{ marginTop: 5, width: 70 }}
                 />
               </label>
+
+              {direction !== "up" && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  Max Down
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxDown}
+                    onChange={(e) => setMaxDown(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, width: 80 }}
+                  />
+                </label>
+              )}
+
+              {direction !== "down" && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  Max Up
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={maxUp}
+                    onChange={(e) => setMaxUp(e.target.value === "" ? "" : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, width: 80 }}
+                  />
+                </label>
+              )}
 
               <button onClick={start} disabled={starting} className="auth-submit" style={{ marginTop: 0, minWidth: 140 }}>
                 {starting ? "Starting…" : hasData ? "Run again" : "Run backtest"}

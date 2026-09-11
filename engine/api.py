@@ -173,6 +173,7 @@ class RunBacktestRequest(BaseModel):
     # risk -- NIFTY implied vol tends to fall on the way up.
     max_down: int | None = Field(default=None, ge=0, le=100)
     max_up: int | None = Field(default=None, ge=0, le=100)
+    anchor_mode: str | None = Field(default=None, pattern="^(floor|round|nearest|explicit)$")
 
     # Term structure of the modelled IV surface.
     #
@@ -223,6 +224,7 @@ class StartForwardRequest(BaseModel):
     # risk -- NIFTY implied vol tends to fall on the way up.
     max_down: int | None = Field(default=None, ge=0, le=100)
     max_up: int | None = Field(default=None, ge=0, le=100)
+    anchor_mode: str | None = Field(default=None, pattern="^(floor|round|nearest|explicit)$")
 
     # Without these the forward runner has no exit at all: `exit_signal`
     # returns None when both are unset, so `_close` is unreachable and every
@@ -816,6 +818,7 @@ def forward_start(
             step=body.step, lots=body.lots, lot_size=lot_size,
             max_condors=min(body.max_condors, engine_config.max_condors),
             direction=body.direction,
+            anchor_mode=body.anchor_mode,
             max_down=body.max_down,
             max_up=body.max_up,
             strike_step=strike_step,

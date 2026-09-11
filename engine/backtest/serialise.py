@@ -70,6 +70,7 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             # a stale number is worse than showing none.
             "lots": 1, "lot_size": 0, "qty": 0, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
+            "direction": "down", "max_down": None, "max_up": None,
             "anchor_mode": "floor", "roll_to_next_expiry": True,
             "label": "Awaiting Choice connection",
         },
@@ -82,6 +83,10 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
                 "max_drawdown_pct sharpe sortino calmar cagr max_concurrent avg_days_held "
                 "capital_at_risk real_price_fraction modeled_quotes"
             ).split()
+        },
+        "attribution": {
+            "down_pnl": 0.0, "up_pnl": 0.0, "down_condors": 0, "up_condors": 0,
+            "down_credit": 0.0, "up_credit": 0.0,
         },
         "netting": {
             "strikes_touched": 0, "strikes_fully_offset": 0, "gross_qty": 0,
@@ -101,6 +106,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         {
             "index": c.index,
             "level": c.level,
+            "side": getattr(c, "side", "down"),
             "entry_time": c.entry_time.isoformat(),
             "expiry": c.expiry.isoformat(),
             "status": c.status.value,
@@ -152,6 +158,21 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         for s in grid
     ]
 
+    down_condors = [c for c in result.condors if getattr(c, "side", "down") in ("down", "anchor")]
+    up_condors = [c for c in result.condors if getattr(c, "side", "down") == "up"]
+    down_pnl = sum(c.realised_pnl() for c in down_condors)
+    up_pnl = sum(c.realised_pnl() for c in up_condors)
+    down_credit = sum(c.credit for c in down_condors)
+    up_credit = sum(c.credit for c in up_condors)
+    attribution = {
+        "down_pnl": round(down_pnl, 2),
+        "up_pnl": round(up_pnl, 2),
+        "down_condors": len(down_condors),
+        "up_condors": len(up_condors),
+        "down_credit": round(down_credit, 2),
+        "up_credit": round(up_credit, 2),
+    }
+
     bundle = {
         "provenance": provenance,
         "params": {
@@ -165,11 +186,15 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "fill_gaps": strategy.fill_gaps,
             "take_profit_pct": strategy.take_profit_pct,
             "stop_loss_mult": strategy.stop_loss_mult,
-            "anchor_mode": params.anchor_mode,
+            "direction": strategy.direction,
+            "max_down": strategy.max_down,
+            "max_up": strategy.max_up,
+            "anchor_mode": params.anchor_mode or strategy.effective_anchor_mode,
             "roll_to_next_expiry": params.roll_to_next_expiry,
             "label": params.label,
         },
         "metrics": result.metrics.to_dict(),
+        "attribution": attribution,
         "netting": result.netting,
         "campaigns": result.campaigns,
         "rolls": [
@@ -181,7 +206,13 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         "payoff": payoff,
         "strike_matrix": result.strike_matrix(),
         "triggers": [
-            {"level": t.level, "time": t.time.isoformat(), "spot": round(t.spot, 2), "reason": t.reason}
+            {
+                "level": t.level,
+                "time": t.time.isoformat(),
+                "spot": round(t.spot, 2),
+                "reason": t.reason,
+                "side": getattr(t, "side", "down"),
+            }
             for t in result.triggers
         ],
         "warnings": result.warnings,

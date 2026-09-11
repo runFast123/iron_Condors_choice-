@@ -221,6 +221,7 @@ class BacktestRunner:
         params = BacktestParams(
             strategy=StrategyConfig(
                 direction=str(p.get("direction") or "down"),
+                anchor_mode=p.get("anchor_mode"),
                 max_down=p.get("max_down"),
                 max_up=p.get("max_up"),
                 step=float(p["step"]),
@@ -232,6 +233,7 @@ class BacktestRunner:
                 stop_loss_mult=p.get("stop_loss"),
             ),
             costs=CostModel(),
+            anchor_mode=p.get("anchor_mode"),
             roll_to_next_expiry=bool(p.get("roll", True)),
             label=f"NIFTY ladder {first_day}..{last_day}",
         )

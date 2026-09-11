@@ -222,6 +222,7 @@ class Condor:
     entry_costs: float = 0.0
     exit_costs: float = 0.0
     index: int = 0
+    side: str = "down"  # "anchor" | "down" | "up"
 
     # ------------------------------------------------------------- economics
 

@@ -65,6 +65,7 @@ export interface LivePositionLeg {
 export interface LivePosition {
   index: number;
   level: number;
+  side?: "anchor" | "down" | "up";
   expiry: string;
   entry_time: string;
   status: string;
@@ -109,10 +110,19 @@ export interface LiveState {
     distance: number | null;
     fired: number[];
     step: number;
+    direction?: "down" | "up" | "both";
+    high_level?: number | null;
+    next_down?: number | null;
+    next_up?: number | null;
+    distance_up?: number | null;
+    down_count?: number;
+    up_count?: number;
   };
   pnl: {
     realised: number; unrealised: number; total: number;
     open_condors: number; total_condors: number;
+    down_pnl?: number;
+    up_pnl?: number;
     /** Open condors the total does NOT include, because they have no mark yet. */
     unmarked_condors?: number;
   };
