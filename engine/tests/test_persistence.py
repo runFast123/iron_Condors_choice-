@@ -613,3 +613,112 @@ def test_a_run_that_never_ticked_does_not_outrank_one_that_did():
     ticked = _row("ticked", "2026-09-10T08:00:00", open_condors=1, last_tick="2026-09-10T15:29:00")
 
     assert _winner([never, ticked]) == "ticked"
+
+
+# ============================== when a trade actually happened
+
+
+def _candle_runner(printed):
+    """A runner whose quotes come from candles that printed at `printed`."""
+    from engine.forward.runner import ForwardRunner
+    from engine.tests.test_forward_fills import FakeMarket, FakeMaster, cfg
+
+    market = FakeMarket(master=FakeMaster(), as_of=printed)
+    return ForwardRunner(market=market, strategy=cfg())  # type: ignore[arg-type]
+
+
+def test_a_fill_records_when_the_price_traded_not_when_we_read_it():
+    """The complaint this comes from: the trade log showed the moment the
+    engine noticed, so it disagreed with the chart the user was reading."""
+    printed = dt.datetime(2026, 9, 10, 15, 1, tzinfo=IST)
+    runner = _candle_runner(printed)
+
+    runner._open_condor(23_400, EXPIRY)
+
+    assert len(runner.fills) == 4
+    for fill in runner.fills:
+        assert fill.market_ts == printed.isoformat()
+        assert fill.ts != fill.market_ts, "the engine clock is still recorded separately"
+
+
+def test_a_live_touch_leaves_the_market_time_unset():
+    """Nothing to reconcile when the quote is the current touch, and an
+    invented second timestamp would only invite doubt."""
+    runner = _candle_runner(None)
+
+    runner._open_condor(23_400, EXPIRY)
+
+    assert runner.fills
+    assert all(f.market_ts is None for f in runner.fills)
+
+
+def test_the_market_time_survives_a_resume():
+    """Resuming rebuilds fills from stored dicts, and a field the restore path
+    drops is a field the user stops seeing after any restart."""
+    from engine.forward.runner import ForwardRunner
+
+    printed = dt.datetime(2026, 9, 10, 15, 1, tzinfo=IST)
+    runner = _candle_runner(printed)
+    runner._open_condor(23_400, EXPIRY)
+
+    revived = ForwardRunner.restore(
+        runner.to_state(), market=runner.market, state_path=None,
+    )
+
+    assert [f.market_ts for f in revived.fills] == [printed.isoformat()] * 4
+
+
+def test_a_fill_saved_before_this_existed_still_loads():
+    """Old rows have no market_ts. Refusing them would strand every run that
+    was open when this shipped."""
+    from engine.forward.runner import Fill
+
+    old = {
+        "ts": "2026-09-10T10:54:35+05:30", "condor_index": 0, "condor_level": 23500.0,
+        "expiry": "2026-09-29", "right": "PE", "side": "SELL", "strike": 23300.0,
+        "qty": 65, "price": 117.05, "source": "choice", "mode": "paper",
+        "token": 12345, "action": "OPEN",
+    }
+    assert Fill(**old).market_ts is None
+
+
+def test_the_spot_timestamp_reaches_the_dashboard():
+    """The rung fires off the spot, so when the spot printed is what explains
+    a trigger the user did not expect at that moment."""
+    printed = dt.datetime(2026, 9, 10, 15, 1, tzinfo=IST)
+    runner = _candle_runner(printed)
+    runner.tick()
+
+    assert runner.snapshot()["market"]["as_of"] == printed.isoformat()
+
+
+def test_the_spot_that_fired_the_rung_is_what_dates_the_trade():
+    """Legs are quoted from the live book, so their own prices are current --
+    but the rung fires off the index, which is served from candles. Dating the
+    trade by the leg quote would make every condor look like it traded the
+    instant the engine woke up."""
+    printed = dt.datetime(2026, 9, 11, 9, 15, tzinfo=IST)
+    runner = _candle_runner(None)          # legs quoted live, no quote time
+    runner.last_spot_ts = printed
+
+    runner._open_condor(23_400, EXPIRY)
+
+    assert runner.fills
+    assert all(f.market_ts == printed.isoformat() for f in runner.fills)
+
+
+def test_two_rungs_fired_on_one_tick_both_carry_the_market_time():
+    """The case that prompted this: a gap-down fired 23,400 and 23,300 a third
+    of a second apart on the engine's clock, which is not when the market
+    crossed them."""
+    printed = dt.datetime(2026, 9, 11, 9, 15, tzinfo=IST)
+    runner = _candle_runner(None)
+    runner.last_spot_ts = printed
+
+    runner._open_condor(23_400, EXPIRY)
+    runner._open_condor(23_300, EXPIRY)
+
+    engine_times = {f.ts for f in runner.fills}
+    market_times = {f.market_ts for f in runner.fills}
+    assert len(engine_times) == 2, "the engine clock still separates the two"
+    assert market_times == {printed.isoformat()}, "the market crossed both at one print"

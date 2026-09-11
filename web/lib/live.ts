@@ -36,6 +36,14 @@ export interface LiveFill {
   mode: string;
   token: number | null;
   action: "OPEN" | "CLOSE";
+  /**
+   * When the price actually traded, when that differs from `ts`.
+   *
+   * `ts` is the engine's clock at the moment it recorded the fill. A leg
+   * filled off a candle close traded when that candle closed, which can be
+   * minutes earlier. Null means the two are the same.
+   */
+  market_ts?: string | null;
   /** Fair value at the time, what crossing the spread cost, and whether that
    *  spread came from a real book or had to be modelled. */
   reference: number | null;
@@ -91,6 +99,8 @@ export interface LiveState {
     /** True when spot came from the last traded candle rather than the live
      *  book — MultipleTouchline does not serve index tokens. */
     stale?: boolean;
+    /** When that spot printed, as against when the engine read it. */
+    as_of?: string | null;
   };
   ladder: {
     anchor: number | null;

@@ -52,6 +52,28 @@ _BID_KEYS = ("BestBidPrice", "BidPrice", "Bid", "BuyPrice", "BestBuyPrice", "bid
 _ASK_KEYS = ("BestAskPrice", "AskPrice", "Ask", "SellPrice", "BestSellPrice", "BestOfferPrice", "ask")
 
 
+def _candle_time(row: Any) -> dt.datetime | None:
+    """The IST instant a candle row belongs to, or None if unreadable.
+
+    Tolerant on purpose: a missing or malformed timestamp must degrade to "we
+    do not know when this traded" rather than take the price down with it.
+    """
+    try:
+        value = row["ts"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if value is None:
+        return None
+    try:
+        stamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return None
+    if stamp is pd.NaT or pd.isna(stamp):
+        return None
+    moment = stamp.to_pydatetime()
+    return moment.astimezone(IST) if moment.tzinfo else moment.replace(tzinfo=IST)
+
+
 @dataclass(frozen=True)
 class Quote:
     """One instrument's touch.
@@ -68,6 +90,14 @@ class Quote:
     # True when this price came from the last traded candle rather than the
     # live book. Still a real Choice price, just not the current touch.
     stale: bool = False
+    # When this price actually traded, when that is knowable.
+    #
+    # A live touch is by definition current, so this stays None and the clock
+    # is the honest answer. A candle close traded when the candle closed, which
+    # can be minutes before the engine reads it -- and stamping a fill with the
+    # moment the engine noticed, rather than the moment the market printed,
+    # is what made the trade log disagree with the chart.
+    as_of: dt.datetime | None = None
 
     @property
     def has_depth(self) -> bool:
@@ -314,8 +344,8 @@ class ChoiceMarketData:
         missing = [c for c in items if c.token not in found]
 
         if missing and allow_history_fallback:
-            for token, price in self.last_prices(missing).items():
-                found[token] = Quote(token=token, ltp=price, stale=True)
+            for token, (price, as_of) in self.last_traded(missing).items():
+                found[token] = Quote(token=token, ltp=price, stale=True, as_of=as_of)
 
         if not found:
             raise ChoiceError(
@@ -416,13 +446,24 @@ class ChoiceMarketData:
         return self.quote_scale or DEFAULT_QUOTE_SCALE
 
     def last_prices(self, contracts: Iterable[Contract], *, lookback_days: int = 7) -> dict[int, float]:
-        """Latest traded price per token, from ChartData.
+        """Latest traded price per token, from ChartData."""
+        return {t: price for t, (price, _) in self.last_traded(contracts, lookback_days=lookback_days).items()}
+
+    def last_traded(
+        self, contracts: Iterable[Contract], *, lookback_days: int = 7
+    ) -> dict[int, tuple[float, dt.datetime | None]]:
+        """Latest traded price per token, and when it traded.
 
         Used when the live book is unavailable. A week of lookback covers a
         long weekend plus a holiday, so a Monday morning before the open still
         resolves to Friday's close rather than nothing.
+
+        The candle's own timestamp comes back with the price. It used to be
+        read and thrown away, which left the caller no way to tell a price that
+        printed a second ago from one that printed on Friday -- both arrived
+        looking equally current.
         """
-        out: dict[int, float] = {}
+        out: dict[int, tuple[float, dt.datetime | None]] = {}
         if self.history is None:
             return out
         end = dt.datetime.now(tz=IST)
@@ -444,11 +485,12 @@ class ChoiceMarketData:
             if frame is None or frame.empty:
                 continue
             try:
-                price = float(frame.iloc[-1]["close"])
+                last = frame.iloc[-1]
+                price = float(last["close"])
             except (KeyError, IndexError, TypeError, ValueError):
                 continue
             if price > 0:
-                out[contract.token] = price
+                out[contract.token] = (price, _candle_time(last))
         return out
 
     def touchline(self, contracts: Iterable[Contract]) -> dict[int, float]:

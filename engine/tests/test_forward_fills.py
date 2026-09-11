@@ -37,13 +37,16 @@ def contract(token: int, strike: float, right: str) -> Contract:
 class FakeMarket:
     """Serves quotes; raises if `fails` is set, to exercise the error path."""
 
-    def __init__(self, prices=None, master=None, depth=None, fails=False):
+    def __init__(self, prices=None, master=None, depth=None, fails=False, as_of=None):
         self.session = None
         self.prices = prices or {}
         self.depth = depth or {}
         self.master = master
         self.fails = fails
         self.calls = 0
+        # When these prices printed. Set it to serve candle-derived quotes,
+        # which is what the index actually gets.
+        self.as_of = as_of
 
     def quotes(self, contracts):
         self.calls += 1
@@ -55,7 +58,10 @@ class FakeMarket:
             if ltp is None:
                 continue
             bid, ask = self.depth.get(c.token, (None, None))
-            out[c.token] = Quote(token=c.token, ltp=ltp, bid=bid, ask=ask)
+            out[c.token] = Quote(
+                token=c.token, ltp=ltp, bid=bid, ask=ask,
+                stale=self.as_of is not None, as_of=self.as_of,
+            )
         return out
 
     def touchline(self, contracts):

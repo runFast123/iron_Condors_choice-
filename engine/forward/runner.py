@@ -121,6 +121,17 @@ class Fill:
     mode: str
     token: int | None = None
     action: str = "OPEN"       # OPEN | CLOSE
+    # When the market data behind this trade actually printed.
+    #
+    # `ts` is the engine's clock -- when it processed the tick. That is not
+    # when the market did the thing that caused the trade. The index is served
+    # from candles rather than the live book, so a rung fires off a spot that
+    # printed earlier, and one tick can fire two rungs a third of a second
+    # apart that the market crossed minutes or a session apart. Showing only
+    # the engine clock is what made the trade log disagree with the chart.
+    #
+    # None when the two are the same, so nothing is invented.
+    market_ts: str | None = None
     # What fair value was, what crossing the spread cost, and whether that
     # spread came from a real book or was modelled in its absence.
     reference: float | None = None
@@ -213,8 +224,10 @@ class ForwardRunner:
         # thread; the watchdog reads them to tell a live run from a dead one.
         self.tick_thread: threading.Thread | None = None
         self.poll_seconds = 15.0
-        # Whether the most recent spot came from a candle rather than the book.
+        # Whether the most recent spot came from a candle rather than the book,
+        # and when that candle printed.
         self.spot_is_stale = False
+        self.last_spot_ts: dt.datetime | None = None
         self.legs_on_real_depth = 0
         self.legs_on_modelled_spread = 0
         self.total_slippage = 0.0
@@ -361,6 +374,10 @@ class ForwardRunner:
                 )
             )
             entry_costs += self.costs.leg_cost(leg.side, fill.price, leg.qty)
+            # The spot first: it is the rung's trigger, and the reason this
+            # trade exists at all. The leg's own quote time is the fallback,
+            # for when the option itself came from a candle.
+            quote_as_of = self.last_spot_ts or quoted[leg][0].as_of
             self.fills.append(
                 Fill(
                     ts=now.isoformat(), condor_index=len(self.condors), condor_level=level,
@@ -369,6 +386,7 @@ class ForwardRunner:
                     mode=self.mode, token=contract.token, action="OPEN",
                     reference=round(fill.reference, 2), slippage=round(fill.slippage, 2),
                     spread_modelled=fill.spread_modelled,
+                    market_ts=quote_as_of.isoformat() if quote_as_of else None,
                 )
             )
 
@@ -484,6 +502,7 @@ class ForwardRunner:
 
         for fl in condor.legs:
             fill = exits[fl.leg]
+            exit_as_of = self.last_spot_ts or quotes[fl.leg].as_of
             opposite = Side.BUY if fl.leg.side is Side.SELL else Side.SELL
             self._record_fill_quality(fill)
             fl.exit_price = fill.price
@@ -497,6 +516,9 @@ class ForwardRunner:
                     mode=self.mode, token=fl.token, action="CLOSE",
                     reference=round(fill.reference, 2), slippage=round(fill.slippage, 2),
                     spread_modelled=fill.spread_modelled,
+                    market_ts=(
+                        exit_as_of.isoformat() if exit_as_of else None
+                    ),
                 )
             )
         status = CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
@@ -546,6 +568,10 @@ class ForwardRunner:
 
         now = dt.datetime.now(tz=IST)
         self.last_spot, self.last_tick = spot, now
+        # When that spot actually printed, which is not when we read it. The
+        # index is served from candles, not the live book, so the level that
+        # fires a rung can have traded a minute or more before this tick.
+        self.last_spot_ts = quote.as_of if quote else None
         if self.store is not None and self.session_id:
             try:
                 self.store.record_tick(self.session_id, now.isoformat(), spot)
@@ -645,6 +671,8 @@ class ForwardRunner:
                 "spot": self.last_spot,
                 "ts": self.last_tick.isoformat() if self.last_tick else None,
                 "stale": self.spot_is_stale,
+                # When the spot printed, as against when we read it.
+                "as_of": self.last_spot_ts.isoformat() if self.last_spot_ts else None,
             },
             "ladder": {
                 "anchor": self.ladder.anchor,

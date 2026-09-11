@@ -49,7 +49,7 @@ export default async function ForwardLogPage() {
         <Card
           title="Trade history"
           pad={0}
-          hint="One row per condor. Click one to see its legs: what each filled at, and CMP, where that contract trades now as of the last tick, coloured by whether the move since the fill helped or hurt that side. A closed condor holds eight fills, four going in and four coming out. Only legs of open condors are still quoted, so closed ones show --."
+          hint="One row per condor. Click one to see its legs: when each traded, what it filled at, and CMP, where that contract trades now as of the last tick, coloured by whether the move since the fill helped or hurt that side. Times are the market's, not the engine's: the index is served from candles, so a rung fires off a price that printed earlier. Where the two differ a grey offset shows the delay, and the tooltip gives both. A closed condor holds eight fills, four going in and four coming out. Only legs of open condors are still quoted, so closed ones show --."
         >
           {positions.length === 0 ? (
             <Empty>

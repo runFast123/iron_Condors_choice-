@@ -31,6 +31,38 @@ function pnlColour(value: number | null): string {
   return value > 0 ? "var(--pos)" : value < 0 ? "var(--neg)" : "var(--ink)";
 }
 
+/**
+ * When the market did the thing that caused this trade, not when the engine
+ * got round to it.
+ *
+ * Two different instants, and showing only the engine's is what made the log
+ * disagree with the chart. The index is served from candles rather than the
+ * live book, so a rung fires off a spot that printed earlier — and one tick
+ * can open two condors a third of a second apart that the market crossed a
+ * session apart. The engine's clock is kept for the audit trail, in the
+ * tooltip, since that is what the run log and the broker's own records show.
+ */
+function tradedAt(fill: LiveFill): { shown: string; recorded: string | null } {
+  if (!fill.market_ts || fill.market_ts === fill.ts) {
+    return { shown: fill.ts, recorded: null };
+  }
+  return { shown: fill.market_ts, recorded: fill.ts };
+}
+
+/** How long after the market printed the engine acted, in seconds. */
+function lagSeconds(fill: LiveFill): number | null {
+  if (!fill.market_ts) return null;
+  const gap = (Date.parse(fill.ts) - Date.parse(fill.market_ts)) / 1000;
+  return Number.isFinite(gap) && gap > 0 ? gap : null;
+}
+
+/** "42s" / "7m" / "2h" — a lag worth reading at a glance, not to the second. */
+function lagLabel(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
+
 export function LiveCondorBlotter({
   positions,
   fills,
@@ -63,8 +95,19 @@ export function LiveCondorBlotter({
       bucket.sort((a, b) => a.ts.localeCompare(b.ts));
     }
     return positions
-      .map((p) => ({ condor: p, legs: byCondor.get(p.index) ?? [] }))
-      .sort((a, b) => b.condor.entry_time.localeCompare(a.condor.entry_time));
+      .map((p) => {
+        const legs = byCondor.get(p.index) ?? [];
+        // The condor opened when its legs traded, not when the engine wrote
+        // the record. Taken from the first entry leg so the header time and
+        // the leg times below it cannot disagree.
+        const firstOpen = legs.find((f) => f.action === "OPEN");
+        return {
+          condor: p,
+          legs,
+          openedAt: (firstOpen && firstOpen.market_ts) || p.entry_time,
+        };
+      })
+      .sort((a, b) => b.openedAt.localeCompare(a.openedAt));
   }, [positions, fills]);
 
   const counts = useMemo(() => {
@@ -182,7 +225,7 @@ export function LiveCondorBlotter({
             </tr>
           </thead>
           <tbody>
-            {groups.map(({ condor, legs }) => {
+            {groups.map(({ condor, legs, openedAt }) => {
               const expanded = open.has(condor.index);
               const isOpen = condor.status === "OPEN";
               const outcome = OUTCOME[condor.status] ?? OUTCOME.OPEN;
@@ -211,7 +254,16 @@ export function LiveCondorBlotter({
                       {expanded ? "▾" : "▸"}
                     </td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(condor.level)}</td>
-                    <td style={{ color: "var(--ink-2)" }}>{dateTime(condor.entry_time)}</td>
+                    <td
+                      style={{ color: "var(--ink-2)" }}
+                      title={
+                        openedAt === condor.entry_time
+                          ? "When this condor opened."
+                          : `Market reached this rung at ${dateTime(openedAt)}; the engine opened the condor at ${dateTime(condor.entry_time)}`
+                      }
+                    >
+                      {dateTime(openedAt)}
+                    </td>
                     <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
                       {legs.length === 0 ? "--" : closes > 0 ? `${legs.length} (in + out)` : num(legs.length)}
                     </td>
@@ -264,9 +316,26 @@ export function LiveCondorBlotter({
                                 </tr>
                               </thead>
                               <tbody>
-                                {legs.map((f, i) => (
+                                {legs.map((f, i) => {
+                                  const when = tradedAt(f);
+                                  const lag = lagSeconds(f);
+                                  return (
                                   <tr key={i}>
-                                    <td style={{ color: "var(--ink-2)" }}>{dateTime(f.ts)}</td>
+                                    <td
+                                      style={{ color: "var(--ink-2)" }}
+                                      title={
+                                        when.recorded
+                                          ? `Market printed this at ${dateTime(when.shown)}; the engine filled it at ${dateTime(when.recorded)}`
+                                          : "The market data behind this fill was current, so this is both when it traded and when it was recorded."
+                                      }
+                                    >
+                                      {dateTime(when.shown)}
+                                      {lag != null && lag >= 1 && (
+                                        <span style={{ color: "var(--ink-muted)", fontSize: 10.5, marginLeft: 5 }}>
+                                          +{lagLabel(lag)}
+                                        </span>
+                                      )}
+                                    </td>
                                     <td>
                                       <Badge tone={f.action === "OPEN" ? "brand" : "neutral"}>{f.action}</Badge>
                                     </td>
@@ -297,7 +366,8 @@ export function LiveCondorBlotter({
                                       <Badge tone={f.mode === "live" ? "neg" : "neutral"}>{f.mode}</Badge>
                                     </td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           )}
