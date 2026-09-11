@@ -684,6 +684,18 @@ class ForwardRunner:
                 "distance": self.ladder.distance_to_next(self.last_spot) if self.last_spot else None,
                 "fired": self.ladder.levels(),
                 "step": self.strategy.step,
+                # Additive. `next_trigger` and `distance` keep meaning the down
+                # rung, so every surface reading them is unaffected; a two-way
+                # ladder needs both sides and one field cannot carry them.
+                "direction": self.strategy.direction,
+                "high_level": self.ladder.high_level,
+                "next_down": self.ladder.next_down_level,
+                "next_up": self.ladder.next_up_level,
+                "distance_up": (
+                    self.ladder.distance_to_next_up(self.last_spot) if self.last_spot else None
+                ),
+                "down_count": self.ladder.down_count,
+                "up_count": self.ladder.up_count,
             },
             "pnl": {
                 "realised": round(self.realised, 2),
@@ -930,11 +942,7 @@ class ForwardRunner:
             "legs_on_modelled_spread": self.legs_on_modelled_spread,
             "total_slippage": self.total_slippage,
             "strategy": asdict(self.strategy),
-            "ladder": {
-                "anchor": self.ladder.anchor,
-                "last_level": self.ladder.last_level,
-                "fired_levels": sorted(self.ladder.fired_levels),
-            },
+            "ladder": self.ladder.dump_state(),
             # The last marks. Without these a resumed run reports every open
             # condor at zero until the next tick -- and outside market hours
             # there is no next tick, so a position with real P&L sits at "+0"
@@ -1004,10 +1012,7 @@ class ForwardRunner:
         runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)
         runner.total_slippage = float(state.get("total_slippage") or 0.0)
 
-        ladder_state = state.get("ladder") or {}
-        runner.ladder.anchor = ladder_state.get("anchor")
-        runner.ladder.last_level = ladder_state.get("last_level")
-        runner.ladder.fired_levels = set(ladder_state.get("fired_levels") or [])
+        runner.ladder.load_state(state.get("ladder") or {})
 
         runner.condors = [
             _restore_condor(raw, strategy) for raw in state.get("condors") or []

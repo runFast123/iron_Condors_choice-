@@ -220,6 +220,9 @@ class BacktestRunner:
 
         params = BacktestParams(
             strategy=StrategyConfig(
+                direction=str(p.get("direction") or "down"),
+                max_down=p.get("max_down"),
+                max_up=p.get("max_up"),
                 step=float(p["step"]),
                 lots=int(p["lots"]),
                 lot_size=lot_size,

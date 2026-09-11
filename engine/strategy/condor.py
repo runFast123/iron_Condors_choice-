@@ -15,9 +15,22 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Sequence
+from typing import Iterable, Literal, Sequence
 
 CALL, PUT = "CE", "PE"
+
+Direction = Literal["down", "up", "both"]
+
+# How the opening level is chosen.
+#
+# `round` and `nearest` are not the same thing and both are kept. `round` uses
+# Python's round(), which is banker's rounding: 23,450 goes down to 23,400 but
+# 23,550 goes up to 23,600, so a spot exactly half a step above a level anchors
+# differently depending on where it sits on the grid. That is odd but harmless
+# for a down-only ladder and is pinned by an existing test. `nearest` is plain
+# half-up and is the sane default for a two-way ladder.
+AnchorMode = Literal["floor", "round", "nearest", "explicit"]
+ANCHOR_MODES = ("floor", "round", "nearest", "explicit")
 
 
 class Side(str, Enum):
@@ -57,8 +70,25 @@ class StrategyConfig:
     # default is never used on a live path.
     lot_size: int = 65
     strike_step: float = 50.0      # listed strike grid, for rounding
-    max_condors: int = 20
-    fill_gaps: bool = True         # a gap-down fires every level it skipped
+    max_condors: int = 20          # the total cap, either side of the anchor
+    fill_gaps: bool = True         # a gap fires every level it skipped
+
+    # Which way the ladder ladders.
+    #
+    # "down" is the original strategy and stays the default, so every existing
+    # run and every stored config reproduces exactly what it did before. In
+    # "up" or "both" a rally opens condors the same way a decline does.
+    direction: Direction = "down"
+    # None means "whatever suits the direction" -- see effective_anchor_mode.
+    # Stored here rather than on the Ladder because this dataclass is the part
+    # that survives a restart; the forward runner was hard-wired to "floor"
+    # simply because nothing persisted the choice.
+    anchor_mode: AnchorMode | None = None
+    # Per-side caps, on top of max_condors. None means only the total binds.
+    # There is deliberately no `max_total`: max_condors already is the total,
+    # and two names for one cap is where the next "which one wins" bug lives.
+    max_down: int | None = None
+    max_up: int | None = None
 
     # Exits. Hold-to-expiry is the default; either overlay may be disabled.
     take_profit_pct: float | None = None   # e.g. 0.50 -> close at 50% of credit
@@ -71,6 +101,27 @@ class StrategyConfig:
             raise ValueError("long_offset must exceed short_offset (the wing needs width)")
         if self.lots < 1:
             raise ValueError("lots must be at least 1")
+        if self.direction not in ("down", "up", "both"):
+            raise ValueError(f"direction must be down, up or both (got {self.direction!r})")
+        if self.anchor_mode is not None and self.anchor_mode not in ANCHOR_MODES:
+            raise ValueError(f"anchor_mode must be one of {ANCHOR_MODES} (got {self.anchor_mode!r})")
+        for name in ("max_down", "max_up"):
+            cap = getattr(self, name)
+            if cap is not None and cap < 0:
+                raise ValueError(f"{name} cannot be negative")
+
+    @property
+    def effective_anchor_mode(self) -> AnchorMode:
+        """Where to put the anchor, given the direction.
+
+        `floor` for a down-only ladder, which is what it has always used and
+        what keeps its results identical. For a two-way ladder floor is
+        lopsided: the spot sits 0-99 points above the anchor, so the first up
+        rung is ~50 points away on average while the first down rung is ~150.
+        """
+        if self.anchor_mode is not None:
+            return self.anchor_mode
+        return "floor" if self.direction == "down" else "nearest"
 
     @property
     def wing_width(self) -> float:

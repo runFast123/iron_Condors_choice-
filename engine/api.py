@@ -162,9 +162,18 @@ class RunBacktestRequest(BaseModel):
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
     roll: bool = True
-    # Weekly or monthly contracts. Read by the job runner all along, but never
-    # sent by anything, so every run silently used weeklies.
-    expiry_cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
+    # Weekly or monthly contracts.
+    expiry_cadence: str = Field(default="monthly", pattern="^(weekly|monthly)$")
+    # Which way the ladder ladders. Down-only is the strategy as it has always
+    # run and stays the default: the up side ships off until a backtest
+    # justifies turning it on.
+    direction: str = Field(default="down", pattern="^(down|up|both)$")
+    # Per-side caps. None means only max_condors binds. The rally side starts
+    # smaller because its credits are usually thinner for the same 200-point
+    # risk -- NIFTY implied vol tends to fall on the way up.
+    max_down: int | None = Field(default=None, ge=0, le=100)
+    max_up: int | None = Field(default=None, ge=0, le=100)
+
     # Term structure of the modelled IV surface.
     #
     # 0.0 is a FLAT term structure: every tenor is priced off the 30-day India
@@ -200,7 +209,21 @@ class StartForwardRequest(BaseModel):
     max_condors: int = Field(default=20, ge=1, le=100)
     # Must match whatever the backtest used, or the forward run is testing a
     # different strategy from the one that justified it.
-    expiry_cadence: str = Field(default="weekly", pattern="^(weekly|monthly)$")
+    #
+    # Monthly by default. Runs saved before this was persisted still resume on
+    # weeklies, which is what they actually traded -- changing that under them
+    # would silently make a resumed run a different strategy.
+    expiry_cadence: str = Field(default="monthly", pattern="^(weekly|monthly)$")
+    # Which way the ladder ladders. Down-only is the strategy as it has always
+    # run and stays the default: the up side ships off until a backtest
+    # justifies turning it on.
+    direction: str = Field(default="down", pattern="^(down|up|both)$")
+    # Per-side caps. None means only max_condors binds. The rally side starts
+    # smaller because its credits are usually thinner for the same 200-point
+    # risk -- NIFTY implied vol tends to fall on the way up.
+    max_down: int | None = Field(default=None, ge=0, le=100)
+    max_up: int | None = Field(default=None, ge=0, le=100)
+
     # Without these the forward runner has no exit at all: `exit_signal`
     # returns None when both are unset, so `_close` is unreachable and every
     # condor is held to expiry regardless of what was backtested. A ladder
@@ -792,6 +815,9 @@ def forward_start(
         strategy=StrategyConfig(
             step=body.step, lots=body.lots, lot_size=lot_size,
             max_condors=min(body.max_condors, engine_config.max_condors),
+            direction=body.direction,
+            max_down=body.max_down,
+            max_up=body.max_up,
             strike_step=strike_step,
             take_profit_pct=body.take_profit,
             stop_loss_mult=body.stop_loss,

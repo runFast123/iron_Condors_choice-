@@ -52,7 +52,10 @@ ExpiryResolver = Callable[[dt.date], dt.date]
 class BacktestParams:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     costs: CostModel = field(default_factory=CostModel)
-    anchor_mode: AnchorMode = "floor"
+    # None defers to the strategy config, which picks per direction: floor for
+    # a down-only ladder (identical results to before), nearest for two-way.
+    # Set it to compare anchor modes on the same path.
+    anchor_mode: AnchorMode | None = None
     explicit_anchor: float | None = None
     # NOTE: no `underlying` field. The engine is NIFTY-only today, and a
     # config option that silently does nothing is worse than none at all.
