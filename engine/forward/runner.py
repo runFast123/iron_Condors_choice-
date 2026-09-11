@@ -52,7 +52,7 @@ from engine.strategy.condor import (
     net_positions,
     netting_summary,
 )
-from engine.store.db import Store
+from engine.store.db import LADDER, Store
 from engine.strategy.ladder import Ladder
 
 log = logging.getLogger(__name__)
@@ -154,6 +154,7 @@ class ForwardRunner:
         store: "Store | None" = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        strategy_id: str = LADDER,
     ) -> None:
         self.market = market
         self.strategy = strategy
@@ -171,6 +172,9 @@ class ForwardRunner:
         self.store = store
         self.session_id = session_id
         self.user_id = user_id
+        # Which strategy this run belongs to. Not the same thing as
+        # `self.strategy`, which is the geometry -- steps, offsets, lot size.
+        self.strategy_id = strategy_id
         self.max_events = max_events
 
         self.ladder = Ladder(config=strategy)
@@ -748,6 +752,7 @@ class ForwardRunner:
                     started_at=self.started_at.isoformat(),
                     stopped_reason=self.stopped_reason,
                     state=self.to_state(),
+                    strategy_id=self.strategy_id,
                 )
             except Exception:                       # noqa: BLE001
                 log.exception("Could not persist forward state")
@@ -911,6 +916,10 @@ class ForwardRunner:
         return {
             "version": self.STATE_VERSION,
             "mode": self.mode,
+            "strategy_id": self.strategy_id,
+            # Persisted because a resumed run that silently changed cadence is
+            # a different strategy from the one the user started.
+            "expiry_cadence": self.expiry_cadence,
             "started_at": self.started_at.isoformat(),
             "last_tick": self.last_tick.isoformat() if self.last_tick else None,
             "last_spot": self.last_spot,
@@ -949,6 +958,7 @@ class ForwardRunner:
         store: "Store | None" = None,
         session_id: str | None = None,
         user_id: str | None = None,
+        strategy_id: str | None = None,
     ) -> "ForwardRunner":
         """Rebuild a runner from :meth:`to_state`.
 
@@ -966,6 +976,10 @@ class ForwardRunner:
             market=market, strategy=strategy, costs=costs,
             state_path=state_path, fill_model=fill_model,
             store=store, session_id=session_id, user_id=user_id,
+            # The database column wins over the blob: it is the one a query
+            # can filter on, so it is the one the rest of the engine believes.
+            strategy_id=strategy_id or state.get("strategy_id") or LADDER,
+            expiry_cadence=state.get("expiry_cadence") or "weekly",
         )
         runner.started_at = _parse_dt(state.get("started_at")) or runner.started_at
         runner.last_tick = _parse_dt(state.get("last_tick"))

@@ -103,7 +103,7 @@ class UserSession:
     profile: dict[str, Any] = field(default_factory=dict)
     # Populated lazily: loading a scrip master per user is expensive.
     market: Any = None
-    # Forward runners are owned by the *user*, not by this token.
+    # Forward runners are owned by the *user and strategy*, not by this token.
     #
     # They used to hang off the session, so anything that replaced a session --
     # a re-login, a second tab, a remembered cookie reconnecting -- took the
@@ -111,20 +111,36 @@ class UserSession:
     # quiet mid-session and nobody was told. Keyed by user, a new session for
     # the same person simply picks up the run already in flight.
     #
+    # The strategy half of the key is what lets one person run the ladder and
+    # the hybrid condor at once without either being able to see, stop or
+    # retire the other.
+    #
     # The registry passes its own dict in, so every session for one user shares
-    # exactly one runner and handover costs nothing.
-    _runners: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+    # exactly one runner per strategy and handover costs nothing.
+    _runners: dict[tuple[str, str], Any] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
-    @property
-    def runner(self) -> Any:
-        return self._runners.get(self.user_id)
+    def runner_for(self, strategy_id: str) -> Any:
+        """This user's live run of one strategy, or None."""
+        return self._runners.get((self.user_id, strategy_id))
 
-    @runner.setter
-    def runner(self, value: Any) -> None:
+    def set_runner(self, strategy_id: str, value: Any) -> None:
         if value is None:
-            self._runners.pop(self.user_id, None)
+            self._runners.pop((self.user_id, strategy_id), None)
         else:
-            self._runners[self.user_id] = value
+            self._runners[(self.user_id, strategy_id)] = value
+
+    def runners(self) -> dict[str, Any]:
+        """Every live run this user has, by strategy. Never another user's.
+
+        There is deliberately no plain `.runner` property. An alias meaning
+        "the ladder" would leave every existing call site compiling, passing
+        its tests, and silently operating on one strategy forever -- including
+        the stop button, which would report success while the other strategy
+        kept trading.
+        """
+        return {sid: r for (uid, sid), r in self._runners.items() if uid == self.user_id}
 
     @property
     def expired(self) -> bool:
@@ -144,7 +160,8 @@ class UserSession:
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "has_market_data": self.market is not None,
-            "forward_running": self.runner is not None,
+            "forward_running": bool(self.runners()),
+            "forward_strategies": sorted(self.runners()),
         }
 
 
@@ -188,8 +205,8 @@ class SessionRegistry:
         self._sessions: dict[str, UserSession] = {}
         self._by_user: dict[str, str] = {}
         # user_id -> live ForwardRunner. Outlives any one session; see
-        # UserSession.runner for why it is not held per token.
-        self._runners: dict[str, Any] = {}
+        # UserSession.runners for why it is not held per token.
+        self._runners: dict[tuple[str, str], Any] = {}
         self._lock = threading.RLock()
         self._throttle = LoginThrottle()
         self.max_sessions = max_sessions
@@ -512,24 +529,25 @@ class SessionRegistry:
         if self._by_user.get(session.user_id) == token:
             self._by_user.pop(session.user_id, None)
 
-        runner = self._runners.get(session.user_id)
-        if runner is None:
+        runners = [r for (uid, _sid), r in self._runners.items() if uid == session.user_id]
+        if not runners:
             return
-        # Any other session for this user keeps the run alive on its own.
+        # Any other session for this user keeps the runs alive on its own.
         still_signed_in = handover or any(
             s.user_id == session.user_id for s in self._sessions.values()
         )
         if still_signed_in:
             log.info(
-                "Session for %s replaced; its forward run carries over untouched",
-                session.user_id,
+                "Session for %s replaced; its %d forward run(s) carry over untouched",
+                session.user_id, len(runners),
             )
             return
         # Suspend, do not stop. Losing the last session means the engine can no
         # longer fetch quotes for this user; it does not mean the user decided
         # to close a ladder that still holds positions. Marking it stopped made
         # the run unresumable, and the only way back was editing the database.
-        runner.suspend("session ended")
+        for runner in runners:
+            runner.suspend("session ended")
 
     def _sweep_locked(self) -> None:
         for token in [t for t, s in self._sessions.items() if s.expired]:

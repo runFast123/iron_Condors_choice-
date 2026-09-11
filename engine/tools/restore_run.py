@@ -26,7 +26,7 @@ import os
 import pathlib
 import sys
 
-from engine.store.db import Store
+from engine.store.db import LADDER, STRATEGIES, Store
 
 
 def _load_env_file() -> None:
@@ -75,6 +75,7 @@ def _describe(row: dict) -> str:
     lines = [
         f"  session   : {row['session_id']}",
         f"  user      : {row['user_id']}",
+        f"  strategy  : {row['strategy_id'] or LADDER}",
         f"  status    : {row['status']}"
         + (f"  ({row['stopped_reason']})" if row.get("stopped_reason") else ""),
         f"  started   : {row['started_at'][:19]}",
@@ -114,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--user", help="restore the newest resumable run for this user id")
     parser.add_argument("--yes", action="store_true", help="do not ask")
     parser.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        help="narrow a --vendor/--user search to one strategy",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="restore even a run the user stopped deliberately",
@@ -151,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 for r in rows
                 if r["user_id"] == user_id
                 and r["status"] != "running"
+                and (args.strategy is None or (r["strategy_id"] or LADDER) == args.strategy)
                 and (args.force or _is_resumable(r.get("stopped_reason")))
             ]
             matches = matches[-1:]
@@ -174,14 +181,22 @@ def main(argv: list[str] | None = None) -> int:
             print("Pass --force if that is genuinely what you want.")
             return 1
 
+        # Same user *and* same strategy. Without the second half, restoring an
+        # old ladder run would retire this user's live run of another strategy
+        # -- a different book with its own open positions, which has nothing to
+        # do with the one being restored.
+        target_strategy = target["strategy_id"] or LADDER
         live = [
-            r for r in rows if r["user_id"] == target["user_id"] and r["status"] == "running"
+            r for r in rows
+            if r["user_id"] == target["user_id"]
+            and r["status"] == "running"
+            and (r["strategy_id"] or LADDER) == target_strategy
         ]
 
         print("About to restore:\n")
         print(_describe(target))
         if live:
-            print("\nThis user already has a run marked running:\n")
+            print("\nThis user already has a run of that strategy marked running:\n")
             for row in live:
                 print(_describe(row))
             print("\nOnly one run is ever resumed, so that one will be retired.")
@@ -209,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             started_at=target["started_at"],
             stopped_reason=None,
             state=state,
+            strategy_id=target_strategy,
         )
         print(f"  restored {target['session_id'][:12]}")
         print()

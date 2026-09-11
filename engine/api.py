@@ -24,7 +24,6 @@ import contextlib
 import datetime as dt
 import logging
 import os
-import sys
 import threading
 import time
 import uuid
@@ -51,7 +50,7 @@ from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.pricing.calibrate import calibrate
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
-from engine.store.db import Store
+from engine.store.db import LADDER, STRATEGIES, Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
 
@@ -66,11 +65,6 @@ def _log_to_file() -> None:
     the only evidence left was the run's own event list. Rotating, because an
     engine left running for a month should not fill the disk.
     """
-    if "pytest" in sys.modules and not os.environ.get("ENGINE_LOG"):
-        # The suite imports this module, and its fixtures include deliberately
-        # secret-shaped strings. Those do not belong in the log an operator
-        # reads to find out what the engine really did.
-        return
     path = Path(os.environ.get("ENGINE_LOG", "engine/state/logs/api.log"))
     root = logging.getLogger()
     if any(getattr(h, "_engine_file_log", False) for h in root.handlers):
@@ -88,8 +82,6 @@ def _log_to_file() -> None:
     if root.level == logging.NOTSET or root.level > logging.INFO:
         root.setLevel(logging.INFO)
 
-
-_log_to_file()
 
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ENGINE_ALLOWED_ORIGINS", "").split(",") if o.strip()
@@ -112,6 +104,22 @@ market_calendar.on_learn = store.add_holiday
 
 @contextlib.asynccontextmanager
 async def _lifespan(_: FastAPI):
+    # Only a running server writes the operational log.
+    #
+    # This used to install at import, which meant the test suite and any
+    # one-off script that imports this module appended to the file an operator
+    # reads during an incident -- including, from a script with no credentials
+    # in its environment, "No ENGINE_SHARED_SECRET, sessions are not
+    # persisted". That line is true of the script and alarming about the
+    # engine, and I lost time to it myself.
+    _log_to_file()
+    # Said here rather than only at import, so the fact is in the file the
+    # warning used to be in, and is about this process rather than some other.
+    log.info(
+        "Sessions are %s",
+        "durable" if engine_config.shared_secret
+        else "in memory only (no ENGINE_SHARED_SECRET): a restart signs users out",
+    )
     registry.on_session_restored = _resume_forward
     # Immediately, not only after the first interval: a restart mid-session is
     # exactly when a run sits in the database with no worker behind it.
@@ -170,7 +178,22 @@ class RunBacktestRequest(BaseModel):
     term_exponent: float = Field(default=0.0, ge=-1.0, le=1.0)
 
 
+# Which strategy a request is about. A defaulted query parameter rather than a
+# path segment on purpose: the engine and the Vercel dashboard deploy
+# independently, and /forward/stop is posted today with no body and no
+# arguments by two live users. A default keeps that working through the
+# rollout; a path change would break it the moment the engine shipped first.
+def strategy_param(strategy: str = LADDER) -> str:
+    if strategy not in STRATEGIES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unknown strategy {strategy!r}. Known: {', '.join(STRATEGIES)}.",
+        )
+    return strategy
+
+
 class StartForwardRequest(BaseModel):
+    strategy: str = Field(default=LADDER, pattern=f"^({'|'.join(STRATEGIES)})$")
     lots: int = Field(default=1, ge=1, le=100)
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
@@ -294,7 +317,8 @@ def status_endpoint(authorization: str | None = Header(default=None)) -> dict[st
         "vendor_id": session.vendor_id if session else None,
         "expires_at": session.expires_at.isoformat() if session else None,
         "has_market_data": bool(session and session.market is not None),
-        "forward_running": bool(session and session.runner is not None),
+        "forward_running": bool(session and session.runners()),
+        "forward_strategies": sorted(session.runners()) if session else [],
         "engine_egress_ip": egress_ip.get()["ip"],
         "active_sessions": registry.count,
     }
@@ -372,19 +396,40 @@ def _resume_forward(session: UserSession) -> bool:
         return _resume_forward_locked(session)
 
 
-def _resume_forward_locked(session: UserSession) -> bool:
-    if session.runner is not None:
-        return False
+def _resume_forward_locked(session: UserSession, *, only: str | None = None) -> bool:
+    """Resume one saved run per strategy, never one per user.
+
+    The grouping is the whole point. This used to rank every running row a user
+    had against each other and retire all but the winner -- which, the moment a
+    user runs two strategies, silently destroys a live book with open positions
+    because it belongs to the other one. Runs only ever compete with their own
+    kind.
+    """
     try:
         pending = [r for r in store.running_forwards() if r["user_id"] == session.user_id]
     except Exception:                               # noqa: BLE001
         log.exception("Could not read saved forward runs")
         return False
-    if not pending:
-        return False
 
-    # Only one run can be driven at a time, so the rest are retired.
-    ordered = sorted(pending, key=_resume_rank)
+    by_strategy: dict[str, list[dict]] = {}
+    for row in pending:
+        strategy_id = row.get("strategy_id") or LADDER
+        if only is not None and strategy_id != only:
+            continue
+        by_strategy.setdefault(strategy_id, []).append(row)
+
+    resumed = False
+    for strategy_id, rows in by_strategy.items():
+        if session.runner_for(strategy_id) is not None:
+            continue                                # already has a driver
+        resumed |= _resume_one(session, strategy_id, rows)
+    return resumed
+
+
+def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> bool:
+    # Only one run of a strategy can be driven at a time, so its siblings --
+    # and only its siblings -- are retired.
+    ordered = sorted(rows, key=_resume_rank)
     record = ordered[-1]
     for stale in ordered[:-1]:
         stale_state = stale.get("state") or {}
@@ -392,8 +437,8 @@ def _resume_forward_locked(session: UserSession) -> bool:
             1 for c in (stale_state.get("condors") or []) if c.get("status") == "OPEN"
         )
         log.warning(
-            "Superseded forward run %s for user %s (%d open condor(s)); retiring it",
-            stale["session_id"], session.user_id, stale_open,
+            "Superseded %s run %s for user %s (%d open condor(s)); retiring it",
+            strategy_id, stale["session_id"], session.user_id, stale_open,
         )
         try:
             store.mark_stopped(
@@ -416,8 +461,9 @@ def _resume_forward_locked(session: UserSession) -> bool:
     try:
         runner = ForwardRunner.restore(
             record["state"], market=market, costs=CostModel(),
-            state_path=_state_path(session), store=store,
+            state_path=_state_path(session, strategy_id), store=store,
             session_id=record["session_id"], user_id=session.user_id,
+            strategy_id=strategy_id,
         )
     except UnsupportedStateVersion:
         # Only an explicitly unsupported version is retired. `ValueError` was
@@ -437,14 +483,16 @@ def _resume_forward_locked(session: UserSession) -> bool:
     # Any run that was live before is stale by definition, so re-open it rather
     # than leaving a stopped reason from the shutdown hanging around.
     runner.stopped_reason = None
-    session.runner = runner
+    session.set_runner(strategy_id, runner)
     runner.emit(
         "info", "Forward run resumed after an engine restart",
         condors=len([c for c in runner.condors if c.is_open]),
         fired=len(runner.ladder.fired_levels),
     )
     _start_tick_thread(runner, session, poll_seconds=15.0)
-    log.info("Resumed forward run %s for user %s", record["session_id"], session.user_id)
+    log.info(
+        "Resumed %s run %s for user %s", strategy_id, record["session_id"], session.user_id
+    )
     return True
 
 
@@ -463,7 +511,7 @@ def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds
     thread = threading.Thread(
         target=runner.run,
         kwargs={"poll_seconds": poll},
-        name=f"forward-{session.user_id}",
+        name=f"forward-{session.user_id}-{runner.strategy_id}",
         daemon=True,
     )
     runner.tick_thread = thread
@@ -474,8 +522,8 @@ def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds
 WATCHDOG_SECONDS = float(os.environ.get("ENGINE_WATCHDOG_SECONDS", "60") or 60)
 
 
-def _revive_run(session: UserSession) -> bool:
-    """Make sure this user's saved run is actually being driven.
+def _revive_run(session: UserSession, strategy_id: str = LADDER) -> bool:
+    """Make sure one strategy's saved run is actually being driven.
 
     Three states have to be told apart, and conflating them is what let a
     ladder sit frozen through a 100-point decline:
@@ -486,16 +534,16 @@ def _revive_run(session: UserSession) -> bool:
     * a runner that is ticking -- leave it alone.
     """
     with _user_revive_lock(session.user_id):
-        runner = session.runner
+        runner = session.runner_for(strategy_id)
         if runner is None:
-            return _resume_forward_locked(session)
+            return _resume_forward_locked(session, only=strategy_id)
         if runner.stopped_reason or runner.is_ticking:
             return False
         runner.unsuspend()
         runner.emit("warn", "Forward run had stopped ticking; restarting its worker")
         log.warning(
-            "Restarting a dead tick worker for user %s (run %s)",
-            session.user_id, runner.session_id,
+            "Restarting a dead %s worker for user %s (run %s)",
+            strategy_id, session.user_id, runner.session_id,
         )
         _start_tick_thread(runner, session, runner.poll_seconds)
         return True
@@ -514,16 +562,26 @@ def _watchdog_pass() -> None:
     except Exception:                               # noqa: BLE001
         log.exception("Watchdog could not read saved forward runs")
         return
-    for user_id in {row["user_id"] for row in rows}:
+    wanted: dict[str, set[str]] = {}
+    for row in rows:
+        wanted.setdefault(row["user_id"], set()).add(row.get("strategy_id") or LADDER)
+
+    for user_id, strategies in wanted.items():
         try:
             session = registry.revive_for_user(user_id)
             if session is None:
                 # No stored credentials: the run stays marked running, which is
                 # true. It has positions open and simply nobody to quote it.
                 continue
-            _revive_run(session)
         except Exception:                           # noqa: BLE001
-            log.exception("Watchdog failed for user %s", user_id)
+            log.exception("Watchdog could not revive a session for %s", user_id)
+            continue
+        for strategy_id in sorted(strategies):
+            try:
+                _revive_run(session, strategy_id)
+            except Exception:                       # noqa: BLE001
+                # One strategy failing must not cost the user the other one.
+                log.exception("Watchdog failed for %s/%s", user_id, strategy_id)
 
 
 def _start_watchdog() -> None:
@@ -691,19 +749,23 @@ def forward_start(
     session: UserSession = Depends(current_user),
     market: ChoiceMarketData = Depends(user_market),
 ) -> dict[str, Any]:
-    if session.runner is not None and session.runner.stopped_reason is None:
-        return {"ok": True, "already_running": True, "state": session.runner.snapshot()}
+    strategy_id = body.strategy
+    live = session.runner_for(strategy_id)
+    if live is not None and live.stopped_reason is None:
+        return {"ok": True, "already_running": True, "state": live.snapshot()}
 
     # Adopt a saved run before minting a new one.
     #
-    # `session.runner` is only the *in-memory* handle. After a restart it is
-    # None until a login resumes the run, so a browser that reconnects and hits
-    # start first would create a second run -- empty, newer, and therefore the
-    # one a later resume picks, destroying the ladder that had been trading all
-    # day. Resuming here closes that window.
-    if _resume_forward(session) and session.runner is not None:
-        return {"ok": True, "already_running": True, "resumed": True,
-                "state": session.runner.snapshot()}
+    # The in-memory handle is only that. After a restart it is None until a
+    # login resumes the run, so a browser that reconnects and hits start first
+    # would create a second run -- empty, newer, and therefore the one a later
+    # resume picks, destroying the ladder that had been trading all day.
+    # Resuming here closes that window.
+    if _resume_forward(session):
+        adopted = session.runner_for(strategy_id)
+        if adopted is not None:
+            return {"ok": True, "already_running": True, "resumed": True,
+                    "state": adopted.snapshot()}
 
     try:
         lot_size = market.master.lot_size_for(NIFTY)
@@ -736,13 +798,15 @@ def forward_start(
         ),
         costs=CostModel(),
         expiry_cadence=body.expiry_cadence,
-        # Per-user state file: one user's run must never overwrite another's.
-        state_path=_state_path(session),
+        # Per user and per strategy: neither another user's run nor this
+        # user's other strategy may overwrite this one's snapshot.
+        state_path=_state_path(session, strategy_id),
         store=store,
         session_id=uuid.uuid4().hex,
         user_id=session.user_id,
+        strategy_id=strategy_id,
     )
-    session.runner = runner
+    session.set_runner(strategy_id, runner)
 
     # First tick inline so the caller gets a populated state immediately, then
     # keep ticking on a worker thread. Without the background loop the ladder
@@ -766,14 +830,17 @@ def forward_start(
 
 
 @app.post("/forward/tick", dependencies=[Depends(check_engine_key)])
-def forward_tick(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+def forward_tick(
+    session: UserSession = Depends(current_user),
+    strategy_id: str = Depends(strategy_param),
+) -> dict[str, Any]:
     """Force one polling cycle. Refused once the run has stopped.
 
     Without this guard the kill switch was advisory: a run that had tripped its
     daily loss limit reported itself stopped and then opened fresh condors on
     the next manual tick.
     """
-    runner = _require_runner(session)
+    runner = _require_runner(session, strategy_id)
     if runner.stopped_reason:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -785,15 +852,31 @@ def forward_tick(session: UserSession = Depends(current_user)) -> dict[str, Any]
 
 
 @app.get("/forward/state", dependencies=[Depends(check_engine_key)])
-def forward_state(session: UserSession = Depends(current_user)) -> dict[str, Any]:
-    if session.runner is None:
-        return {"running": False, "state": None}
-    return {"running": session.runner.stopped_reason is None, "state": session.runner.snapshot()}
+def forward_state(
+    session: UserSession = Depends(current_user),
+    strategy_id: str = Depends(strategy_param),
+) -> dict[str, Any]:
+    """One strategy's run, plus a roll-call of every strategy this user has.
+
+    `running` and `state` keep their exact meaning for the strategy asked for,
+    so a dashboard that sends no strategy sees precisely what it saw before.
+    `strategies` is additive, for a UI that wants to show both at once.
+    """
+    runner = session.runner_for(strategy_id)
+    return {
+        "running": runner is not None and runner.stopped_reason is None,
+        "state": runner.snapshot() if runner is not None else None,
+        "strategies": {
+            sid: {"running": r.stopped_reason is None} for sid, r in session.runners().items()
+        },
+    }
 
 
 @app.get("/forward/ticks", dependencies=[Depends(check_engine_key)])
 def forward_ticks(
-    limit: int = 900, session: UserSession = Depends(current_user)
+    limit: int = 900,
+    session: UserSession = Depends(current_user),
+    strategy_id: str = Depends(strategy_param),
 ) -> dict[str, Any]:
     """The live chart's history.
 
@@ -801,7 +884,7 @@ def forward_ticks(
     second device -- picks up the whole session instead of redrawing from an
     empty series.
     """
-    runner = session.runner
+    runner = session.runner_for(strategy_id)
     if runner is None or not runner.session_id:
         return {"ticks": []}
     return {"ticks": store.ticks(runner.session_id, limit=max(1, min(limit, 5_000)))}
@@ -813,29 +896,44 @@ def forward_history(session: UserSession = Depends(current_user)) -> dict[str, A
 
 
 @app.post("/forward/stop", dependencies=[Depends(check_engine_key)])
-def forward_stop(session: UserSession = Depends(current_user)) -> dict[str, Any]:
-    runner = _require_runner(session)
+def forward_stop(
+    session: UserSession = Depends(current_user),
+    strategy_id: str = Depends(strategy_param),
+) -> dict[str, Any]:
+    """Stop one strategy's run. Never anyone else's, never the other one."""
+    runner = _require_runner(session, strategy_id)
     runner.stopped_reason = "stopped by user"
     runner.emit("warn", "Forward run stopped by user")
     runner.save()
     if runner.session_id:
         store.mark_stopped(runner.session_id, "stopped by user")
     state = runner.snapshot()
-    session.runner = None
+    session.set_runner(strategy_id, None)
     return {"ok": True, "state": state}
 
 
-def _require_runner(session: UserSession) -> ForwardRunner:
-    if session.runner is None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "No forward run started for this session.")
-    return session.runner
+def _require_runner(session: UserSession, strategy_id: str = LADDER) -> ForwardRunner:
+    runner = session.runner_for(strategy_id)
+    if runner is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"No {strategy_id} forward run started for this session.",
+        )
+    return runner
 
 
-def _state_path(session: UserSession):
+def _state_path(session: UserSession, strategy_id: str = LADDER):
+    """Where a run's convenience snapshot is written.
+
+    Named per strategy: one path per user meant a second strategy would
+    overwrite the first's file on every tick. The database is the source of
+    truth either way, so this only ever cost an operator a confusing file --
+    but a confusing file during an incident is exactly when it matters.
+    """
     from pathlib import Path
 
     base = Path(os.environ.get("ENGINE_STATE_DIR", "engine/state"))
-    return base / f"live-{session.user_id}.json"
+    return base / f"live-{session.user_id}-{strategy_id}.json"
 
 
 @app.exception_handler(ChoiceError)
