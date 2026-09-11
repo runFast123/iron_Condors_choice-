@@ -6,12 +6,11 @@ run cannot silently diverge from the backtest that justified it. The only
 difference is where prices come from: live Choice quotes instead of a bar
 iterator.
 
-Two modes:
-
-* ``paper``  — fills are simulated at the live Choice LTP. Nothing is sent to
-  the exchange. This is the default and needs no order permissions.
-* ``live``   — real orders. Requires an explicit ``arm()`` call, and is capped
-  by a max-rung limit and a daily-loss kill switch.
+Paper only. Fills are simulated against the live Choice book and nothing is
+sent to the exchange -- there is no order-placement path in this codebase, so
+there is no arming step and no mode to switch into. A daily-loss kill switch
+and a max-rung cap still apply, because a runaway paper run wastes a day of
+testing.
 
 Everything the runner does is appended to a structured event log, and every
 fill lands in the trade history, so the dashboard can show exactly what
@@ -832,6 +831,47 @@ class ForwardRunner:
 
     STATE_VERSION = 1
 
+    @classmethod
+    def _readable_state(cls, state: dict[str, Any]) -> dict[str, Any]:
+        """Bring a saved run up to the shape this engine reads, or refuse it.
+
+        The test is "newer than we can read", not "not exactly ours". Exact
+        equality meant that bumping the version retired every open run on the
+        next login -- positions, ladder and all -- because `_resume_forward`
+        treats UnsupportedStateVersion as a run worth abandoning. A format we
+        wrote ourselves an hour ago is not unreadable; it just needs upgrading.
+
+        Upgrades are applied in order and never mutate the caller's dict, so a
+        failure part-way leaves the stored state exactly as it was.
+        """
+        version = state.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise UnsupportedStateVersion(
+                f"Forward state has no usable version (got {version!r})"
+            )
+        if version > cls.STATE_VERSION:
+            raise UnsupportedStateVersion(
+                f"Forward state version {version} was written by a newer engine; "
+                f"this one reads up to {cls.STATE_VERSION}"
+            )
+        if version == cls.STATE_VERSION:
+            return state
+
+        upgraded = dict(state)
+        while upgraded["version"] < cls.STATE_VERSION:
+            step = cls._UPGRADES.get(upgraded["version"])
+            if step is None:                        # pragma: no cover - guarded by a test
+                raise UnsupportedStateVersion(
+                    f"No upgrade path from forward state version {upgraded['version']}"
+                )
+            upgraded = step(upgraded)
+        return upgraded
+
+    # version -> how to turn it into the next one. Keyed by the version being
+    # left behind, so the chain is readable from any starting point.
+    _UPGRADES: dict[int, Any] = {}
+
+
     @staticmethod
     def _condor_state(condor: Condor) -> dict[str, Any]:
         return {
@@ -917,12 +957,7 @@ class ForwardRunner:
         so every open condor is reconstructed with its original fills, and the
         fired-level set is restored so nothing opens twice.
         """
-        version = state.get("version")
-        if version != cls.STATE_VERSION:
-            raise UnsupportedStateVersion(
-                f"Unsupported forward state version {version!r}; this engine writes "
-                f"{cls.STATE_VERSION!r}"
-            )
+        state = cls._readable_state(state)
 
         known = {f.name for f in dataclass_fields(StrategyConfig)}
         strategy = StrategyConfig(**{k: v for k, v in state["strategy"].items() if k in known})

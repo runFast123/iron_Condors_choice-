@@ -103,14 +103,14 @@ class ChoiceConfig:
 class EngineConfig:
     database_url: str = field(default_factory=lambda: os.environ.get("DATABASE_URL", ""))
     shared_secret: str = field(default_factory=lambda: os.environ.get("ENGINE_SHARED_SECRET", ""))
-    mode: str = field(default_factory=lambda: os.environ.get("ENGINE_MODE", "paper").lower())
+    # No `mode` field. ENGINE_MODE=live used to sit here and do nothing at
+    # all -- there is no order-placement path for it to switch on -- and a
+    # setting that looks like a live-trading switch but is not is worse
+    # than no setting.
     max_condors: int = field(default_factory=lambda: _i("ENGINE_MAX_CONDORS", 20))
     daily_loss_limit: float = field(default_factory=lambda: _f("ENGINE_DAILY_LOSS_LIMIT", 25_000.0))
     log_level: str = field(default_factory=lambda: os.environ.get("ENGINE_LOG_LEVEL", "INFO").upper())
 
-    @property
-    def is_live(self) -> bool:
-        return self.mode == "live"
 
 
 choice_config = ChoiceConfig()

@@ -415,8 +415,13 @@ def test_forward_history_does_not_drag_every_state_blob_off_disk(store):
                        started_at="2026-09-09T09:15:00+05:30", stopped_reason=None)
     rows = store.forward_history("u1")
     assert rows and "state_json" not in rows[0]
-    assert set(rows[0]) == {"session_id", "status", "started_at", "updated_at",
+    # Named columns only, and every one of them a scalar. Pinned as "what is
+    # absent" rather than an exact list: adding a scalar is fine, and a frozen
+    # list would fail for the one change this test does not care about.
+    assert set(rows[0]) >= {"session_id", "status", "started_at", "updated_at",
                             "stopped_reason"}
+    assert all(not isinstance(v, (dict, list)) for v in rows[0].values())
+    assert max(len(str(v)) for v in rows[0].values()) < 200
 
 
 # ================================= marks survive a resume, and unknown != zero

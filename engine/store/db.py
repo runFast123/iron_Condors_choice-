@@ -37,10 +37,19 @@ TICKS_KEPT = 5_000
 
 DEFAULT_PATH = Path(os.environ.get("ENGINE_DB", "engine/state/engine.db"))
 
+# Which strategy a run belongs to. Called `strategy_id`, not `strategy`, because
+# `strategy` already means a StrategyConfig throughout the engine -- the runner
+# takes one as a constructor argument and stores one under that key. Two
+# meanings for one word, in the same dict, is how a wrong value gets written.
+LADDER = "ladder"
+HIC = "hic"
+STRATEGIES = (LADDER, HIC)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS forward_sessions (
     session_id     TEXT PRIMARY KEY,
     user_id        TEXT NOT NULL,
+    strategy_id    TEXT NOT NULL DEFAULT 'ladder',
     status         TEXT NOT NULL,          -- running | stopped
     started_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL,
@@ -64,7 +73,8 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
     params_json  TEXT NOT NULL,
     dataset_json TEXT,
     error        TEXT,
-    result_version INTEGER NOT NULL DEFAULT 0
+    result_version INTEGER NOT NULL DEFAULT 0,
+    strategy_id  TEXT NOT NULL DEFAULT 'ladder'
 );
 CREATE INDEX IF NOT EXISTS ix_backtest_user ON backtest_runs (user_id, created_at DESC);
 
@@ -131,12 +141,36 @@ class Store:
         CREATE TABLE IF NOT EXISTS leaves an existing table alone, so a new
         column has to be added explicitly or every read of it fails.
         """
-        existing = {r["name"] for r in self._conn.execute("PRAGMA table_info(backtest_runs)")}
-        if "result_version" not in existing:
-            self._conn.execute(
-                "ALTER TABLE backtest_runs ADD COLUMN result_version INTEGER NOT NULL DEFAULT 0"
-            )
-            log.info("Added result_version to backtest_runs")
+        self._add_column("backtest_runs", "result_version", "INTEGER NOT NULL DEFAULT 0")
+        # The DEFAULT is the whole migration. Every run that exists today is a
+        # ladder run, so tagging them rewrites no row and needs no downtime --
+        # which matters, because some of them are live and holding positions.
+        self._add_column("forward_sessions", "strategy_id", f"TEXT NOT NULL DEFAULT '{LADDER}'")
+        self._add_column("backtest_runs", "strategy_id", f"TEXT NOT NULL DEFAULT '{LADDER}'")
+        # Created here and not in SCHEMA, and this is not a style choice:
+        # executescript runs before this method, and on a database that
+        # already has the table, CREATE TABLE IF NOT EXISTS does nothing -- so
+        # an index naming strategy_id would be asked to index a column that
+        # does not exist yet, and raise inside __init__ with the engine
+        # half-started.
+        #
+        # Deliberately not UNIQUE on (user_id, strategy_id) WHERE running
+        # either. That is the obvious way to enforce one run per strategy, and
+        # it refuses to build on a database that already holds a duplicate --
+        # again inside __init__. The invariant is enforced in the resume path
+        # instead, where it can log what it did rather than take the process
+        # down with positions open.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_forward_user_strategy "
+            "ON forward_sessions (user_id, strategy_id, status)"
+        )
+
+    def _add_column(self, table: str, column: str, ddl: str) -> None:
+        existing = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column in existing:
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        log.info("Added %s to %s", column, table)
 
     def close(self) -> None:
         with self._lock:
@@ -162,32 +196,43 @@ class Store:
         started_at: str,
         stopped_reason: str | None,
         state: dict[str, Any],
+        strategy_id: str = LADDER,
     ) -> None:
+        # strategy_id is deliberately absent from the DO UPDATE list below: a
+        # run belongs to one strategy for its whole life, so an update path
+        # that could re-tag it is a way to move positions between books by
+        # accident.
         self._write(
             """
             INSERT INTO forward_sessions
-                (session_id, user_id, status, started_at, updated_at, stopped_reason, state_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (session_id, user_id, strategy_id, status, started_at, updated_at,
+                 stopped_reason, state_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 status=excluded.status,
                 updated_at=excluded.updated_at,
                 stopped_reason=excluded.stopped_reason,
                 state_json=excluded.state_json
             """,
-            (session_id, user_id, status, started_at, _now(), stopped_reason,
+            (session_id, user_id, strategy_id, status, started_at, _now(), stopped_reason,
              json.dumps(state, separators=(",", ":"))),
         )
 
-    def running_forwards(self) -> list[dict[str, Any]]:
+    def running_forwards(self, strategy_id: str | None = None) -> list[dict[str, Any]]:
         """Every run that was live when the engine last stopped.
 
         These are what a restart has to pick back up. A run is not "finished"
         just because the process that was driving it went away.
+
+        Returns every strategy's runs by default, each tagged, because the
+        watchdog has to sweep all of them; pass `strategy_id` to narrow.
         """
+        sql = "SELECT * FROM forward_sessions WHERE status = 'running'"
+        params: tuple = ()
+        if strategy_id is not None:
+            sql, params = sql + " AND strategy_id = ?", (strategy_id,)
         out = []
-        for row in self._rows(
-            "SELECT * FROM forward_sessions WHERE status = 'running' ORDER BY started_at"
-        ):
+        for row in self._rows(sql + " ORDER BY started_at", params):
             try:
                 state = json.loads(row["state_json"])
             except json.JSONDecodeError:
@@ -196,6 +241,7 @@ class Store:
             out.append({
                 "session_id": row["session_id"],
                 "user_id": row["user_id"],
+                "strategy_id": row["strategy_id"] or LADDER,
                 "started_at": row["started_at"],
                 "state": state,
             })
@@ -205,13 +251,16 @@ class Store:
         return [
             {
                 "session_id": r["session_id"], "status": r["status"],
+                "strategy_id": r["strategy_id"] or LADDER,
                 "started_at": r["started_at"], "updated_at": r["updated_at"],
                 "stopped_reason": r["stopped_reason"],
             }
             for r in self._rows(
                 # Projected, not SELECT *: state_json is tens of kilobytes per
-                # row and none of it is used here.
-                "SELECT session_id, status, started_at, updated_at, stopped_reason "
+                # row and none of it is used here. Every column the caller
+                # reads has to be named here, or it comes back missing without
+                # anything saying so.
+                "SELECT session_id, strategy_id, status, started_at, updated_at, stopped_reason "
                 "FROM forward_sessions WHERE user_id = ? "
                 "ORDER BY started_at DESC LIMIT ?",
                 (user_id, limit),
@@ -378,13 +427,14 @@ class Store:
         error: str | None = None,
         created_at: str | None = None,
         result_version: int = 0,
+        strategy_id: str = LADDER,
     ) -> None:
         self._write(
             """
             INSERT INTO backtest_runs
                 (run_id, user_id, created_at, status, params_json, dataset_json, error,
-                 result_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 result_version, strategy_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id) DO UPDATE SET
                 status=excluded.status,
                 dataset_json=excluded.dataset_json,
@@ -394,10 +444,12 @@ class Store:
             (run_id, user_id, created_at or _now(), status,
              json.dumps(params, separators=(",", ":")),
              json.dumps(dataset, separators=(",", ":")) if dataset is not None else None,
-             error, result_version),
+             error, result_version, strategy_id),
         )
 
-    def latest_backtest(self, user_id: str, *, min_version: int = 0) -> dict[str, Any] | None:
+    def latest_backtest(
+        self, user_id: str, *, min_version: int = 0, strategy_id: str = LADDER
+    ) -> dict[str, Any] | None:
         """The newest finished run this engine still considers valid.
 
         ``min_version`` exists because a correctness fix does not just change
@@ -406,9 +458,9 @@ class Store:
         nothing: it looks current and is wrong.
         """
         rows = self._rows(
-            "SELECT * FROM backtest_runs WHERE user_id = ? AND status = 'done' "
-            "AND result_version >= ? ORDER BY created_at DESC LIMIT 1",
-            (user_id, min_version),
+            "SELECT * FROM backtest_runs WHERE user_id = ? AND strategy_id = ? "
+            "AND status = 'done' AND result_version >= ? ORDER BY created_at DESC LIMIT 1",
+            (user_id, strategy_id, min_version),
         )
         if not rows:
             return None
@@ -420,21 +472,32 @@ class Store:
             return None
         return {"run_id": row["run_id"], "created_at": row["created_at"], "dataset": dataset}
 
-    def backtest_history(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def backtest_history(
+        self, user_id: str, limit: int = 20, *, strategy_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = ("SELECT run_id, created_at, status, params_json, error, strategy_id "
+               "FROM backtest_runs WHERE user_id = ?")
+        params: tuple = (user_id,)
+        if strategy_id is not None:
+            sql, params = sql + " AND strategy_id = ?", (user_id, strategy_id)
         return [
             {
                 "run_id": r["run_id"], "created_at": r["created_at"], "status": r["status"],
                 "params": json.loads(r["params_json"]), "error": r["error"],
+                "strategy_id": r["strategy_id"] or LADDER,
             }
-            for r in self._rows(
-                "SELECT run_id, created_at, status, params_json, error FROM backtest_runs "
-                "WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
-                (user_id, limit),
-            )
+            for r in self._rows(sql + " ORDER BY created_at DESC LIMIT ?", (*params, limit))
         ]
 
-    def clear_backtests(self, user_id: str) -> None:
-        self._write("DELETE FROM backtest_runs WHERE user_id = ?", (user_id,))
+    def clear_backtests(self, user_id: str, *, strategy_id: str | None = None) -> None:
+        """Drop this user's saved runs -- one strategy's, or all of them."""
+        if strategy_id is None:
+            self._write("DELETE FROM backtest_runs WHERE user_id = ?", (user_id,))
+        else:
+            self._write(
+                "DELETE FROM backtest_runs WHERE user_id = ? AND strategy_id = ?",
+                (user_id, strategy_id),
+            )
 
     # ---------------------------------------------------------------- meta
 
