@@ -62,7 +62,12 @@ export interface LivePosition {
   status: string;
   credit: number;
   max_loss: number;
+  /**
+   * Live mark while open, realised once closed, and null when an open condor
+   * has never been marked -- which is not the same as zero.
+   */
   pnl: number | null;
+  is_open: boolean;
   exit_reason: string | null;
   legs: LivePositionLeg[];
 }

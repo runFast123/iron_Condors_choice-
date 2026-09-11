@@ -131,6 +131,53 @@ def main() -> int:
             "tooltip visible",
         )
 
+        # -------------------------------------------- trade history by condor
+        #
+        # The whole point of grouping is that the legs are hidden until asked
+        # for, so "it rendered" proves nothing. Expanding must actually reveal
+        # rows that were not there before.
+        page.goto(f"{base}/forward/log/", wait_until="networkidle")
+        page.wait_for_timeout(600)
+        history = page.locator("table").first
+        condor_rows = history.locator("tbody tr[role=button]")
+        if condor_rows.count() == 0:
+            record(
+                "trade history: grouped by condor",
+                True,
+                "skipped - no forward run with fills on this deployment",
+            )
+        else:
+            before = history.locator("tbody tr").count()
+            first = condor_rows.first
+            record(
+                "trade history: condor rows start collapsed",
+                first.get_attribute("aria-expanded") == "false",
+                f"{condor_rows.count()} condors",
+            )
+            first.click()
+            page.wait_for_timeout(300)
+            after = history.locator("tbody tr").count()
+            record(
+                "trade history: clicking a condor reveals its legs",
+                after > before and first.get_attribute("aria-expanded") == "true",
+                f"{before} -> {after} rows",
+            )
+            # The legs are fills, so each carries a side badge. Checked
+            # structurally rather than by text, which wraps unpredictably.
+            legs = history.locator("tbody tr").nth(1).locator("table tbody tr")
+            record(
+                "trade history: expanded rows are leg fills",
+                legs.count() >= 4,
+                f"{legs.count()} leg rows",
+            )
+            first.click()
+            page.wait_for_timeout(300)
+            record(
+                "trade history: clicking again collapses it",
+                history.locator("tbody tr").count() == before,
+                f"back to {history.locator('tbody tr').count()} rows",
+            )
+
         # ------------------------------------------------ lightweight-charts
         page.goto(f"{base}/chart/", wait_until="networkidle")
         page.wait_for_timeout(1500)
