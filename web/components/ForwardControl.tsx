@@ -29,10 +29,16 @@ export function ForwardControl({
   /** Which run the page was rendered for, from its query string. */
   runKey?: string;
 }) {
-  const [state, setState] = useState<LiveState | null>(initial);
+  const [rawState, setRawState] = useState<LiveState | null>(initial);
   // Which run this panel is showing, and every run the user has. A forward
   // test keeps ticking in the engine whether or not it is the one on screen.
   const [runKey, setRunKey] = useState<string>(initialRunKey ?? DEFAULT_RUN);
+  // Which run the state in hand actually belongs to. Switching tabs changes
+  // `runKey` immediately but the fetch takes a moment, and until it landed the
+  // panel rendered the *previous* run's P&L, positions and ladder under the
+  // new run's name -- the one thing per-run isolation is supposed to prevent.
+  const [stateRun, setStateRun] = useState<string>(initialRunKey ?? DEFAULT_RUN);
+  const state = stateRun === runKey ? rawState : null;
   const [runs, setRuns] = useState<ForwardRunSummary[]>([]);
   const [maxRuns, setMaxRuns] = useState(5);
   const [runName, setRunName] = useState("");
@@ -81,10 +87,18 @@ export function ForwardControl({
       }
       const body = await res.json();
       if (res.ok && body.state) {
-        setState(body.state as LiveState);
+        setRawState(body.state as LiveState);
+        setStateRun(runKey);
         recordTick(body.state as LiveState);
         setError(null);
-      } else if (!res.ok) {
+      } else if (res.ok) {
+        // A successful response carrying no state means the engine no longer
+        // has this run. Keeping the last one on screen left a stopped or
+        // retired run looking live, ticking P&L and all, with nothing said.
+        setRawState(null);
+        setStateRun(runKey);
+        setError(`The engine has no run called "${runKey}" any more.`);
+      } else {
         setError(body.error ?? `Lost contact with the engine (${res.status}).`);
       }
     } catch (err) {
@@ -191,7 +205,10 @@ export function ForwardControl({
       if (!res.ok) setError(payload.error ?? `Request failed (${res.status}).`);
       else {
         if (payload.run_key) selectRun(payload.run_key as string);
-        if (payload.state) setState(payload.state as LiveState);
+        if (payload.state) {
+          setRawState(payload.state as LiveState);
+          setStateRun((payload.run_key as string) ?? runKey);
+        }
         void refreshRuns();
       }
     } catch (err) {
@@ -744,7 +761,18 @@ export function ForwardControl({
               <Metric label="Open condors" value={num(state?.pnl.open_condors ?? 0)} />
               <Metric
                 label={state?.ladder.direction === "both" ? "Next down" : "Next entry at"}
-                value={state?.ladder.next_down != null ? num(state.ladder.next_down) : state?.ladder.next_trigger != null ? num(state.ladder.next_trigger) : "—"}
+                // The fallback to `next_trigger` is for an engine old enough
+                // not to send `next_down` -- which is also too old to run a
+                // two-way ladder. On a two-way run `next_trigger` reports the
+                // *up* rung once the down side is capped, so the tile labelled
+                // "Next down" showed a level above the market.
+                value={
+                  state?.ladder.next_down != null
+                    ? num(state.ladder.next_down)
+                    : state?.ladder.direction !== "both" && state?.ladder.next_trigger != null
+                      ? num(state.ladder.next_trigger)
+                      : "—"
+                }
               />
               {state?.ladder.direction === "both" && (
                 <Metric

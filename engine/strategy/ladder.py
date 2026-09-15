@@ -167,10 +167,21 @@ class Ladder:
         return down if down is not None else self.next_up_level
 
     def distance_to_next(self, spot: float) -> float | None:
-        """How far the spot is above the next down rung. Unchanged."""
-        nxt = self.next_down_level if self.config.direction != "up" else None
-        if nxt is None:
-            nxt = self.next_trigger_level
+        """How far the spot is above the next down rung.
+
+        None when there is no down rung. It used to fall back to
+        `next_trigger_level`, which on a two-way ladder that has reached
+        `max_down` is the rung *above* the spot -- so the figure came back
+        negative under a label reading "down", and the tile beside it showed
+        a level higher than the market.
+
+        An up-only ladder is the one case where "next" unambiguously means up,
+        and there the fallback still holds.
+        """
+        if self.config.direction == "up":
+            nxt = self.next_up_level
+            return None if nxt is None else nxt - spot
+        nxt = self.next_down_level
         return None if nxt is None else spot - nxt
 
     def distance_to_next_up(self, spot: float) -> float | None:

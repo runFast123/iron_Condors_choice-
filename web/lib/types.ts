@@ -62,7 +62,12 @@ export interface Attribution {
 export interface Metrics {
   net_pnl: number; gross_pnl: number; total_costs: number; total_credit: number;
   condors: number; wins: number; losses: number; win_rate: number;
-  profit_factor: number; expectancy: number; avg_win: number; avg_loss: number;
+  /**
+   * Gross wins over gross losses, or null when that is not a ratio: every
+   * closed trade won (nothing to divide by), or nothing has closed at all.
+   * The engine emits infinity for the first, which becomes null on the wire.
+   */
+  profit_factor: number | null; expectancy: number; avg_win: number; avg_loss: number;
   best: number; worst: number;
   max_drawdown: number; max_drawdown_pct: number;
   /** Null when the run was too short, or too flat, to compute them.

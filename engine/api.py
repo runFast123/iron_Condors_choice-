@@ -936,6 +936,21 @@ def _strategy_config(
     )
 
 
+def _rungs_requested(config: StrategyConfig) -> int | None:
+    """How many rungs the per-side caps allow, anchor included.
+
+    None when a side is unbounded: only `max_condors` limits it then, so there
+    is nothing for the two to disagree about.
+    """
+    sides = {
+        "down": (config.max_down,),
+        "up": (config.max_up,),
+    }.get(config.direction, (config.max_down, config.max_up))
+    if any(s is None for s in sides):
+        return None
+    return sum(sides) + 1               # the anchor counts as neither side
+
+
 @app.post("/forward/start", dependencies=[Depends(check_engine_key)])
 def forward_start(
     body: StartForwardRequest,
@@ -1010,6 +1025,23 @@ def forward_start(
         daily_loss_limit=body.daily_loss_limit,
     )
     session.set_runner(run_key, runner)
+
+    # The per-side caps can ask for more rungs than the total cap allows, and
+    # the ladder simply stops firing once it reaches the total -- silently, at
+    # whichever rung happens to get there first. HIC's defaults do exactly
+    # that: a one-step band with ten spreads a side wants 23 rungs against an
+    # engine ceiling of 20, so the three furthest from the anchor -- the ones
+    # a big move depends on -- never open, and nothing anywhere said so.
+    wanted = _rungs_requested(runner.strategy)
+    if wanted is not None and wanted > runner.strategy.max_condors:
+        runner.emit(
+            "warn",
+            f"This configuration asks for {wanted} rungs but the run is capped "
+            f"at {runner.strategy.max_condors}. The "
+            f"{wanted - runner.strategy.max_condors} furthest from the anchor "
+            f"will not open. Lower the per-side limits, or raise the cap.",
+            requested=wanted, cap=runner.strategy.max_condors,
+        )
 
     # First tick inline so the caller gets a populated state immediately, then
     # keep ticking on a worker thread. Without the background loop the ladder

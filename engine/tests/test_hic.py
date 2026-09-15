@@ -371,3 +371,39 @@ def test_the_spread_caps_bound_each_side_separately():
     assert config.max_down_levels == 4      # the band's one rung, plus three
     assert config.max_up_levels == 3
     assert config.core_units == 3
+
+
+# ============================== the caps have to agree
+
+
+def test_hic_defaults_ask_for_more_rungs_than_the_engine_allows():
+    """The two caps are set independently and the ladder obeys the tighter one
+    without saying which, so a run silently loses the rungs furthest from the
+    anchor -- the ones a large move depends on."""
+    from dataclasses import replace
+
+    from engine.api import _rungs_requested
+
+    config = HicConfig(
+        lots=1, lot_size=65, direction="both", max_condors=20,
+        full_band_steps=1, max_put_spreads=10, max_call_spreads=10,
+    )
+    config = replace(config, max_down=config.max_down_levels, max_up=config.max_up_levels)
+
+    assert _rungs_requested(config) == 23
+    assert config.max_condors == 20, "so three rungs are dropped, and it is now said"
+
+
+def test_an_unbounded_side_has_nothing_to_disagree_about():
+    from engine.api import _rungs_requested
+    from engine.strategy.condor import StrategyConfig
+
+    assert _rungs_requested(StrategyConfig(lots=1, lot_size=65)) is None
+
+
+def test_a_one_sided_ladder_counts_only_the_side_it_trades():
+    from engine.api import _rungs_requested
+    from engine.strategy.condor import StrategyConfig
+
+    down = StrategyConfig(lots=1, lot_size=65, direction="down", max_down=5, max_up=99)
+    assert _rungs_requested(down) == 6

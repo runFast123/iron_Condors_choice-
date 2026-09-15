@@ -1,9 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
+import { Suspense } from "react";
 
-type Item = { href: string; label: string; icon: string };
+type Item = {
+  href: string;
+  label: string;
+  icon: string;
+  /**
+   * Whether this page is scoped to one forward run.
+   *
+   * These links used to drop the `run` query parameter, so someone watching
+   * their second forward test in the Live Monitor clicked "Log & History" and
+   * landed on whichever run the engine answered with by default -- reading
+   * another test's fills and P&L under the heading they had just been on.
+   */
+  run?: boolean;
+};
 
 /**
  * Two working modes, kept visually separate: research on history, and running
@@ -23,8 +37,8 @@ const SECTIONS: { title: string; items: Item[] }[] = [
   {
     title: "Forward Test",
     items: [
-      { href: "/forward", label: "Live Monitor", icon: "M12 2v4m0 12v4M2 12h4m12 0h4M7.8 7.8l2.8 2.8m2.8 2.8 2.8 2.8m0-8.4-2.8 2.8m-2.8 2.8-2.8 2.8" },
-      { href: "/forward/log", label: "Log & History", icon: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" },
+      { href: "/forward", label: "Live Monitor", run: true, icon: "M12 2v4m0 12v4M2 12h4m12 0h4M7.8 7.8l2.8 2.8m2.8 2.8 2.8 2.8m0-8.4-2.8 2.8m-2.8 2.8-2.8 2.8" },
+      { href: "/forward/log", label: "Log & History", run: true, icon: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" },
     ],
   },
   {
@@ -37,9 +51,25 @@ const SECTIONS: { title: string; items: Item[] }[] = [
 ];
 
 export function Nav() {
+  // `useSearchParams` suspends, and this sits in the layout above every page.
+  // Without the boundary it would opt the whole shell out of static rendering.
+  return (
+    <Suspense fallback={<NavLinks run={null} />}>
+      <NavWithRun />
+    </Suspense>
+  );
+}
+
+function NavWithRun() {
+  return <NavLinks run={useSearchParams().get("run")} />;
+}
+
+function NavLinks({ run }: { run: string | null }) {
   const path = usePathname();
   const normalise = (p: string) => (p !== "/" && p.endsWith("/") ? p.slice(0, -1) : p);
   const here = normalise(path);
+  const linkTo = (item: Item) =>
+    item.run && run ? `${item.href}?run=${encodeURIComponent(run)}` : item.href;
 
   return (
     <nav className="nav">
@@ -49,7 +79,7 @@ export function Nav() {
           {section.items.map((item) => (
             <Link
               key={item.href}
-              href={item.href}
+              href={linkTo(item)}
               aria-current={here === item.href ? "page" : undefined}
               className="nav-link"
             >

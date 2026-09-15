@@ -84,9 +84,26 @@ export default async function Overview() {
           <div className="card" style={{ padding: "13px 15px", borderColor: "var(--warn)" }}>
             <strong style={{ fontSize: 13 }}>The run finished, but opened no condors.</strong>
             <p style={{ margin: "6px 0 0", fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.65, maxWidth: "76ch" }}>
-              The ladder is down-only: it opens a condor at each {num(params.step)}-point{" "}
-              <em>decline</em>, so a window in which NIFTY never fell a full step produces
-              nothing. This is a real result, not a failure. Try a longer range, or a smaller
+              {params.direction === "both" ? (
+                <>
+                  The ladder opens a condor at each {num(params.step)}-point move{" "}
+                  <em>in either direction</em>, so a window in which NIFTY never
+                  travelled a full step from its anchor produces nothing.
+                </>
+              ) : params.direction === "up" ? (
+                <>
+                  This ladder is up-only: it opens a condor at each {num(params.step)}-point{" "}
+                  <em>rise</em>, so a window in which NIFTY never rose a full step produces
+                  nothing.
+                </>
+              ) : (
+                <>
+                  This ladder is down-only: it opens a condor at each {num(params.step)}-point{" "}
+                  <em>decline</em>, so a window in which NIFTY never fell a full step produces
+                  nothing.
+                </>
+              )}{" "}
+              This is a real result, not a failure. Try a longer range, or a smaller
               step, to give the ladder something to trigger on.
             </p>
           </div>
@@ -127,9 +144,27 @@ export default async function Overview() {
           )}
           <Stat
             label="Profit factor"
-            value={ratio(m.profit_factor)}
-            tone={m.profit_factor >= 1 ? "pos" : "neg"}
-            delta={m.profit_factor >= 1 ? "gross win / gross loss" : "losing more than winning"}
+            value={
+              // Null is not zero. The engine sends infinity when every closed
+              // trade won -- there is no gross loss to divide by -- and that
+              // arrives as null, on which `>= 1` is false: a flawless run was
+              // painted red and told it was "losing more than winning".
+              m.profit_factor == null && m.wins > 0 && m.losses === 0
+                ? "∞"
+                : ratio(m.profit_factor)
+            }
+            tone={
+              m.profit_factor == null
+                ? m.wins > 0 && m.losses === 0 ? "pos" : undefined
+                : m.profit_factor >= 1 ? "pos" : "neg"
+            }
+            delta={
+              m.profit_factor == null
+                ? m.wins > 0 && m.losses === 0
+                  ? "no losing trade to divide by"
+                  : "nothing closed yet"
+                : m.profit_factor >= 1 ? "gross win / gross loss" : "losing more than winning"
+            }
           />
           <Stat
             label="Max drawdown"
@@ -193,8 +228,13 @@ export default async function Overview() {
                 tone={m.cagr == null ? "neutral" : m.cagr > 0 ? "pos" : "neg"}
                 hint={m.cagr == null ? "needs a quarter of data" : undefined}
               />
-              <Stat label="Best condor" value={inr(m.best, { sign: true })} tone="pos" />
-              <Stat label="Worst condor" value={inr(m.worst, { sign: true })} tone="neg" />
+              {/* From the value, not from the label. A run where everything
+                  lost has a "best" that is still a loss, and painting it green
+                  said the opposite of what the number did. */}
+              <Stat label="Best condor" value={inr(m.best, { sign: true })}
+                    tone={m.best > 0 ? "pos" : m.best < 0 ? "neg" : undefined} />
+              <Stat label="Worst condor" value={inr(m.worst, { sign: true })}
+                    tone={m.worst > 0 ? "pos" : m.worst < 0 ? "neg" : undefined} />
               <Stat label="Total credit" value={inr(m.total_credit)} hint="premium collected" />
             </StatGrid>
           </Card>
@@ -234,7 +274,10 @@ export default async function Overview() {
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(c.expiry)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(c.credit)}</td>
                     <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
-                      {inr(c.max_loss)}
+                      {/* Negative, like every other Max loss column in the app.
+                          This one showed 9,750 where the Trades, Payoff and
+                          Live pages showed -9,750 for the same field. */}
+                      {inr(-c.max_loss)}
                     </td>
                     <td
                       className="tnum"

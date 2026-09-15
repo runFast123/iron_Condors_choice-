@@ -25,7 +25,11 @@ export default async function ForwardLogPage({
   const { run } = await searchParams;
   const runs = await getForwardRuns();
   const active = resolveRun(run, runs);
-  const { state } = await getLiveState(active);
+  // The error, not just the state. It used to be dropped, so an unreachable
+  // engine fell through to the defaults below and the page read "Realised P&L
+  // +Rs 0 / Log entries 0 / Condors closed 0" -- a confident set of zeros
+  // indistinguishable from a run that had genuinely done nothing.
+  const { state, engineError } = await getLiveState(active);
   const session = state?.session ?? null;
   const events = state?.events ?? [];
   const fills = state?.fills ?? [];
@@ -51,12 +55,21 @@ export default async function ForwardLogPage({
       <div style={{ display: "grid", gap: 16 }}>
         <RunScope runs={runs} active={active} basePath="/forward/log" />
 
+        {engineError && (
+          <div className="card" style={{ padding: "11px 14px", borderColor: "var(--warn)", fontSize: 12.5 }}>
+            <strong>Engine unreachable, so nothing below is this run&rsquo;s history.</strong>{" "}
+            <span style={{ color: "var(--ink-muted)" }}>{engineError}</span>
+          </div>
+        )}
+
         <StatGrid>
-          <Stat label="Log entries" value={num(events.length)} />
-          <Stat label="Fills" value={num(fills.length)} hint={`${opens} open / ${closes} close`} />
-          <Stat label="Condors closed" value={num(closed.length)} />
-          <Stat label="Realised P&L" value={inr(pnl.realised, { sign: true })}
-                tone={pnl.realised > 0 ? "pos" : pnl.realised < 0 ? "neg" : "neutral"} />
+          <Stat label="Log entries" value={engineError ? "--" : num(events.length)} />
+          <Stat label="Fills" value={engineError ? "--" : num(fills.length)}
+                hint={engineError ? "not fetched" : `${opens} open / ${closes} close`} />
+          <Stat label="Condors closed" value={engineError ? "--" : num(closed.length)} />
+          <Stat label="Realised P&L"
+                value={engineError ? "--" : inr(pnl.realised, { sign: true })}
+                tone={engineError || pnl.realised === 0 ? "neutral" : pnl.realised > 0 ? "pos" : "neg"} />
           <Stat label="Last tick" value={session?.last_tick ? dateTime(session.last_tick) : "--"} />
         </StatGrid>
 
@@ -67,7 +80,9 @@ export default async function ForwardLogPage({
         >
           {positions.length === 0 ? (
             <Empty>
-              No fills yet. Trade history appears here once the {active} run opens its first condor.
+              {engineError
+                ? "The engine could not be reached, so this run's trade history could not be fetched. Nothing here means nothing was read — not that nothing was traded."
+                : `No fills yet. Trade history appears here once the ${active} run opens its first condor.`}
             </Empty>
           ) : (
             <LiveCondorBlotter

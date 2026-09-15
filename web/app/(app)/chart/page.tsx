@@ -4,9 +4,31 @@ import { getDataset } from "@/lib/data";
 import { num, shortDate } from "@/lib/format";
 import { AwaitingConnection, Badge, Card, PageHeader, Stat, StatGrid } from "@/components/ui";
 import { PriceChart } from "@/components/charts/PriceChart";
+import { UnitKindBadge } from "@/components/UnitKindBadge";
+import type { Condor } from "@/lib/types";
+
+/**
+ * The strikes a trigger actually opened, by right and side.
+ *
+ * Derived from the position's own legs, not from the level and the condor
+ * offsets. A HIC spread has two legs, at strikes the offsets do not describe,
+ * so the arithmetic printed four plausible-looking numbers for a structure
+ * that held none of them -- and a trigger that opened nothing at all, because
+ * a cap refused it or its legs could not be priced, printed the same four.
+ */
+function strikesOf(unit: Condor | undefined): Record<string, number | null> {
+  const out: Record<string, number | null> = {
+    "SELL-PE": null, "BUY-PE": null, "SELL-CE": null, "BUY-CE": null,
+  };
+  for (const leg of unit?.legs ?? []) out[`${leg.side}-${leg.right}`] = leg.strike;
+  return out;
+}
 
 export default async function ChartPage() {
-  const { equity, triggers, params, provenance } = await getDataset();
+  const { equity, triggers, params, provenance, condors } = await getDataset();
+  // A level can be traded again in a later expiry campaign, so the entry time
+  // is part of the key -- the position and the trigger share it exactly.
+  const openedAt = new Map(condors.map((c) => [`${c.level}|${c.entry_time}`, c]));
   const awaiting = (provenance.awaiting_connection ?? false);
   const spots = equity.map((p) => p.spot).filter((s): s is number => s != null);
   const hasData = spots.length > 0;
@@ -65,6 +87,7 @@ export default async function ChartPage() {
                   <th>Fired at</th>
                   <th style={{ textAlign: "right" }}>NIFTY then</th>
                   <th>Trigger</th>
+                  <th>Opened</th>
                   <th>Short PE</th>
                   <th>Long PE</th>
                   <th>Short CE</th>
@@ -72,7 +95,12 @@ export default async function ChartPage() {
                 </tr>
               </thead>
               <tbody>
-                {triggers.map((t, i) => (
+                {triggers.map((t, i) => {
+                  const unit = openedAt.get(`${t.level}|${t.time}`);
+                  const strike = strikesOf(unit);
+                  const cell = (key: string) =>
+                    strike[key] == null ? "—" : num(strike[key] as number);
+                  return (
                   <tr key={`${t.level}-${t.time}`}>
                     <td className="tnum" style={{ color: "var(--ink-muted)" }}>{i + 1}</td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(t.level)}</td>
@@ -88,12 +116,20 @@ export default async function ChartPage() {
                         {t.reason}
                       </Badge>
                     </td>
-                    <td className="tnum" style={{ color: "var(--c2)" }}>{num(t.level - params.short_offset)}</td>
-                    <td className="tnum" style={{ color: "var(--c1)" }}>{num(t.level - params.long_offset)}</td>
-                    <td className="tnum" style={{ color: "var(--c2)" }}>{num(t.level + params.short_offset)}</td>
-                    <td className="tnum" style={{ color: "var(--c1)" }}>{num(t.level + params.long_offset)}</td>
+                    <td>
+                      {unit ? (
+                        <UnitKindBadge kind={unit.kind} k={unit.k} />
+                      ) : (
+                        <span style={{ color: "var(--ink-muted)", fontSize: 11.5 }}>nothing</span>
+                      )}
+                    </td>
+                    <td className="tnum" style={{ color: "var(--c2)" }}>{cell("SELL-PE")}</td>
+                    <td className="tnum" style={{ color: "var(--c1)" }}>{cell("BUY-PE")}</td>
+                    <td className="tnum" style={{ color: "var(--c2)" }}>{cell("SELL-CE")}</td>
+                    <td className="tnum" style={{ color: "var(--c1)" }}>{cell("BUY-CE")}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

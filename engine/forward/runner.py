@@ -927,7 +927,11 @@ class ForwardRunner:
             else c.realised_pnl() if not c.is_open else 0.0
             for c in up_condors
         )
-        summary = netting_summary(self.condors, open_only=False)
+        # The live book, the same set the `net_positions` table below lists.
+        # It used to describe the whole campaign, closed rungs included, so a
+        # half-closed run reported a self-hedge ratio over twenty strikes above
+        # a table showing ten -- a percentage for positions no longer held.
+        summary = netting_summary(self.condors, open_only=True)
 
         return {
             "session": {
