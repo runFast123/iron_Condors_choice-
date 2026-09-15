@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { LiveState } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime } from "@/lib/format";
@@ -241,6 +241,60 @@ export function ForwardControl({
       window.history.replaceState(null, "", url.toString());
     }
   }, []);
+
+  /**
+   * Caveats that apply to the figures on screen right now.
+   *
+   * Built as data rather than written inline so they can be grouped, counted
+   * and ordered. Warnings first: a partial P&L is a different kind of fact
+   * from a fill-quality statistic, and burying the first among the second is
+   * how a number gets trusted more than it deserves.
+   */
+  const notes: { key: string; tone: "warn" | "info"; body: ReactNode }[] = [];
+  if (unmarked > 0) {
+    const allUnmarked = unmarked === (state?.pnl.open_condors ?? 0);
+    notes.push({
+      key: "unmarked",
+      tone: "warn",
+      body: (
+        <>
+          {unmarked} open {unmarked === 1 ? "condor has" : "condors have"} no live mark yet, so
+          {allUnmarked ? " no" : " the"} unrealised P&amp;L
+          {allUnmarked ? " can be shown" : " above is partial"}. Marks are computed on each tick;
+          the run resumes marking when the market reopens.
+        </>
+      ),
+    });
+  }
+  if (state?.market.stale) {
+    notes.push({
+      key: "stale-spot",
+      tone: "warn",
+      body: (
+        <>
+          Choice&rsquo;s live-quote endpoint does not serve index tokens, so NIFTY is being read
+          from the most recent traded candle. A real price, one bar behind the touch.
+        </>
+      ),
+    });
+  }
+  if (
+    state?.fill_quality &&
+    state.fill_quality.legs_on_real_depth + state.fill_quality.legs_on_modelled_spread > 0
+  ) {
+    notes.push({
+      key: "fill-quality",
+      tone: "info",
+      body: (
+        <>
+          <strong style={{ color: "var(--ink)" }}>Fill quality:</strong>{" "}
+          {pct(state.fill_quality.real_depth_fraction)} of legs filled against a real order book;
+          the rest were charged a modelled spread. Total slippage paid{" "}
+          {inr(state.fill_quality.total_slippage)} per share across all legs.
+        </>
+      ),
+    });
+  }
 
   const liveRuns = runs.filter((r) => r.running);
   const atCap = liveRuns.length >= maxRuns;
@@ -600,32 +654,6 @@ export function ForwardControl({
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>
 
-            {unmarked > 0 && (
-              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 10px", lineHeight: 1.6 }}>
-                {unmarked} open {unmarked === 1 ? "condor has" : "condors have"} no live mark yet, so
-                {unmarked === (state?.pnl.open_condors ?? 0) ? " no" : " the"} unrealised P&amp;L
-                {unmarked === (state?.pnl.open_condors ?? 0) ? " can be shown" : " above is partial"}.
-                Marks are computed on each tick; the run resumes marking when the market reopens.
-              </p>
-            )}
-
-            {state?.market.stale && (
-              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 10px", lineHeight: 1.6 }}>
-                Choice&rsquo;s live-quote endpoint does not serve index tokens, so NIFTY is being read
-                from the most recent traded candle. A real price, one bar behind the touch.
-              </p>
-            )}
-
-            {state?.fill_quality && state.fill_quality.legs_on_real_depth +
-              state.fill_quality.legs_on_modelled_spread > 0 && (
-              <p style={{ fontSize: 11.5, color: "var(--ink-muted)", margin: "-4px 0 14px", lineHeight: 1.6 }}>
-                <strong style={{ color: "var(--ink-2)" }}>Fill quality:</strong>{" "}
-                {pct(state.fill_quality.real_depth_fraction)} of legs filled against a real order
-                book; the rest were charged a modelled spread. Total slippage paid{" "}
-                {inr(state.fill_quality.total_slippage)} per share across all legs.
-              </p>
-            )}
-
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {/* Arrow, not a bare reference: onClick hands the handler a
                   MouseEvent, which would arrive as the run name. */}
@@ -637,6 +665,51 @@ export function ForwardControl({
                 Refresh now
               </button>
             </div>
+
+            {/* Caveats on the numbers above, in one place.
+                These were three loose paragraphs between the metrics and the
+                buttons -- easy to read as page furniture and skip, which is
+                the opposite of what a caveat is for. Gathered into a bordered
+                panel, each on its own row, so it is clear they qualify the
+                figures rather than describe the product. */}
+            {notes.length > 0 && (
+              <div
+                style={{
+                  marginTop: 14, border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", background: "var(--surface-3)",
+                  overflow: "hidden",
+                }}
+              >
+                <p
+                  style={{
+                    margin: 0, padding: "7px 12px", fontSize: 11,
+                    fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase",
+                    color: "var(--ink-muted)", borderBottom: "1px solid var(--border)",
+                  }}
+                >
+                  About these numbers
+                </p>
+                {notes.map((note) => (
+                  <p
+                    key={note.key}
+                    style={{
+                      margin: 0, padding: "9px 12px", fontSize: 11.5, lineHeight: 1.6,
+                      color: "var(--ink-2)", display: "flex", gap: 9,
+                      borderTop: "1px solid var(--border)",
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        flex: "0 0 3px", borderRadius: 2, alignSelf: "stretch",
+                        background: note.tone === "warn" ? "var(--warn)" : "var(--border-strong)",
+                      }}
+                    />
+                    <span>{note.body}</span>
+                  </p>
+                ))}
+              </div>
+            )}
 
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ink-2)", marginBottom: 7 }}>

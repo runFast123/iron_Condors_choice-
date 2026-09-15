@@ -5,7 +5,7 @@ import { getForwardRuns, getLiveState } from "@/lib/live";
 import { num } from "@/lib/format";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { ForwardControl } from "@/components/ForwardControl";
-import { RunScope, resolveRun } from "@/components/RunScope";
+import { resolveRun } from "@/components/RunScope";
 
 export default async function ForwardPage({
   searchParams,
@@ -36,8 +36,10 @@ export default async function ForwardPage({
           </div>
         )}
 
-        <RunScope runs={runs} active={active} basePath="/forward" />
-
+        {/* No RunScope strip here. The control below carries its own run
+            tabs, with each run's P&L and a button to start another, so a
+            second switcher directly above it was the same choice twice. The
+            log page still uses RunScope, having nothing else to switch with. */}
         <ForwardControl initial={state} runKey={active} />
 
         {ladder && ladder.fired.length > 0 && (
