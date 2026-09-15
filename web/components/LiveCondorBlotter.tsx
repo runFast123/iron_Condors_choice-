@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState } from "react";
 import type { LiveFill, LivePosition, LiveState } from "@/lib/live";
 import { dateTime, inr, num } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { UnitKindBadge } from "@/components/UnitKindBadge";
 
 /**
  * The forward run's fills, grouped by condor, with the legs one click away.
@@ -216,7 +217,8 @@ export function LiveCondorBlotter({
           <thead>
             <tr>
               <th style={{ width: 28 }}><span className="sr-only">Expand</span></th>
-              <th>Condor</th>
+              <th>Unit</th>
+              <th>Level</th>
               <th>Side</th>
               <th>Opened</th>
               <th style={{ textAlign: "right" }}>Legs</th>
@@ -254,6 +256,7 @@ export function LiveCondorBlotter({
                     <td style={{ color: "var(--ink-muted)", textAlign: "center" }} aria-hidden="true">
                       {expanded ? "▾" : "▸"}
                     </td>
+                    <td><UnitKindBadge kind={condor.kind} k={condor.k} /></td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(condor.level)}</td>
                     <td>
                       <Badge tone={condor.side === "up" ? "warn" : condor.side === "anchor" ? "brand" : "neutral"}>
@@ -299,7 +302,7 @@ export function LiveCondorBlotter({
 
                   {expanded && (
                     <tr>
-                      <td colSpan={7} style={{ padding: 0, background: "var(--surface-3)" }}>
+                      <td colSpan={9} style={{ padding: 0, background: "var(--surface-3)" }}>
                         <div style={{ padding: "10px 14px 14px 40px" }}>
                           {legs.length === 0 ? (
                             <p style={{ margin: 0, fontSize: 12, color: "var(--ink-muted)" }}>

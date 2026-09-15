@@ -81,7 +81,19 @@ export interface Leg {
   source: PriceSource;
 }
 
+/** What shape a position is. Drives the badge, not the arithmetic. */
+export type UnitKind =
+  | "condor"
+  | "put_debit_spread"
+  | "call_debit_spread"
+  | "put_credit_spread"
+  | "call_credit_spread";
+
 export interface Condor {
+  /** Absent on datasets written before HIC, where everything was a condor. */
+  kind?: UnitKind;
+  /** Steps from the anchor. Null for a ladder rung, which has no band. */
+  k?: number | null;
   index: number;
   level: number;
   side?: "anchor" | "down" | "up";
@@ -95,7 +107,14 @@ export interface Condor {
   exit_costs: number;
   max_profit: number;
   max_loss: number;
-  breakevens: [number, number];
+  /**
+   * Where the structure breaks even at expiry.
+   *
+   * A list, not a pair. A condor has two; a vertical spread has one, and none
+   * at all when its payoff never crosses zero. The fixed tuple this replaced
+   * indexed [1] on a spread and rendered NaN.
+   */
+  breakevens: number[];
   pnl: number;
   modeled: boolean;
   legs: Leg[];

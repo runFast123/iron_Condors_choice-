@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState } from "react";
 import type { Condor } from "@/lib/types";
 import { inr, num, shortDate } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { UnitKindBadge } from "@/components/UnitKindBadge";
 
 /**
  * Trades grouped by condor, with the legs one click away.
@@ -106,7 +107,8 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
           <thead>
             <tr>
               <th style={{ width: 28 }}><span className="sr-only">Expand</span></th>
-              <th>Condor</th>
+              <th>Unit</th>
+              <th>Level</th>
               <th>Side</th>
               <th>Opened</th>
               <th>Expiry</th>
@@ -145,6 +147,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                     <td style={{ color: "var(--ink-muted)", textAlign: "center" }} aria-hidden="true">
                       {expanded ? "▾" : "▸"}
                     </td>
+                    <td><UnitKindBadge kind={condor.kind} k={condor.k} /></td>
                     <td className="tnum" style={{ fontWeight: 700 }}>{num(condor.level)}</td>
                     <td>
                       <Badge tone={condor.side === "up" ? "warn" : condor.side === "anchor" ? "brand" : "neutral"}>
@@ -170,7 +173,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
 
                   {expanded && (
                     <tr>
-                      <td colSpan={8} style={{ padding: 0, background: "var(--surface-3)" }}>
+                      <td colSpan={10} style={{ padding: 0, background: "var(--surface-3)" }}>
                         <div style={{ padding: "10px 14px 14px 40px" }}>
                           <table style={{ width: "100%" }}>
                             <thead>

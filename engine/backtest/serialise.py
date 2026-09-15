@@ -107,6 +107,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "index": c.index,
             "level": c.level,
             "side": getattr(c, "side", "down"),
+            "kind": c.kind.value,
+            "k": c.k,
             "entry_time": c.entry_time.isoformat(),
             "expiry": c.expiry.isoformat(),
             "status": c.status.value,

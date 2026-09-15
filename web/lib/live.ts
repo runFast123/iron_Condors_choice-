@@ -1,4 +1,6 @@
 
+import type { UnitKind } from "./types";
+
 export interface LiveSession {
   /** Paper is the only mode. There is no order-placing path to switch into. */
   mode: "paper";
@@ -65,6 +67,11 @@ export interface LivePositionLeg {
 export interface LivePosition {
   index: number;
   level: number;
+  /** Absent on runs started before HIC, where every unit was a condor. */
+  kind?: UnitKind;
+  k?: number | null;
+  max_profit?: number;
+  breakevens?: number[];
   side?: "anchor" | "down" | "up";
   expiry: string;
   entry_time: string;

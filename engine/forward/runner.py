@@ -819,9 +819,16 @@ class ForwardRunner:
             "positions": [
                 {
                     "index": c.index, "level": c.level, "side": getattr(c, "side", "down"),
+                    # What shape this is, and how far from the anchor. A page
+                    # showing a condor and a spread in one table has no other
+                    # way to tell them apart: both are rows of legs.
+                    "kind": c.kind.value,
+                    "k": c.k,
                     "expiry": c.expiry.isoformat(),
                     "entry_time": c.entry_time.isoformat(), "status": c.status.value,
                     "credit": round(c.credit, 2), "max_loss": round(c.max_loss, 2),
+                    "max_profit": round(c.max_profit, 2),
+                    "breakevens": [round(b, 2) for b in c.breakevens],
                     # None, not 0.0, when this condor has never been marked.
                     "pnl": (
                         round(self.last_mtm[c.index], 2)
