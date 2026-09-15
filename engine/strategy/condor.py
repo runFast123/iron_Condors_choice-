@@ -207,9 +207,40 @@ def build_legs(level: float, config: StrategyConfig) -> list[Leg]:
     ]
 
 
+class UnitKind(str, Enum):
+    """What shape a position is, and therefore how its risk is computed.
+
+    A discriminator rather than a subclass check, because it is what gets
+    persisted and what the dashboard renders a badge from.
+    """
+
+    CONDOR = "condor"
+    PUT_DEBIT_SPREAD = "put_debit_spread"
+    CALL_DEBIT_SPREAD = "call_debit_spread"
+    PUT_CREDIT_SPREAD = "put_credit_spread"
+    CALL_CREDIT_SPREAD = "call_credit_spread"
+
+    @property
+    def is_vertical(self) -> bool:
+        return self is not UnitKind.CONDOR
+
+
 @dataclass
-class Condor:
-    """One rung of the ladder."""
+class PositionUnit:
+    """One multi-leg position, whatever its shape.
+
+    Everything here works off `self.legs` and holds for two legs as well as
+    four: cash in, mark to market, payoff at expiry, what it realised. The
+    parts that depend on the *shape* of the structure -- how wide the risk is,
+    where it breaks even -- belong to the subclass, because there is no honest
+    way to answer them without knowing what was built.
+
+    The split exists because the condor's risk formulas are the credit-spread
+    ones. Applied to a bought vertical they reported four times its true worst
+    case and a negative best case. Rather than put a branch inside maths that
+    is in live use behind a parity gate, the condor keeps its formulas exactly
+    as they were and the other shapes bring their own.
+    """
 
     level: float
     entry_time: dt.datetime
@@ -224,6 +255,12 @@ class Condor:
     index: int = 0
     side: str = "down"  # "anchor" | "down" | "up"
 
+    #: What shape this is. Subclasses pin it; it is persisted and rendered.
+    kind: UnitKind = UnitKind.CONDOR
+    #: Steps from the anchor, where the strategy counts in steps. None for a
+    #: ladder rung, which is identified by its level rather than its distance.
+    k: int | None = None
+
     # ------------------------------------------------------------- economics
 
     @property
@@ -237,63 +274,16 @@ class Condor:
         return self.credit - self.entry_costs
 
     @property
-    def wing_width(self) -> float:
-        """The widest wing, measured from the strikes actually traded.
+    def risk_reference(self) -> float:
+        """The figure take-profit and stop-loss are measured against.
 
-        Not ``config.wing_width``. ``build_legs`` snaps every strike to the
-        listed grid, so the nominal offsets only describe the real structure
-        when both are exact multiples of ``strike_step``. With short 225 and
-        long 400 on a 50-point grid the strikes land 200 apart while the config
-        says 175 -- and every risk figure derived from it understates the loss
-        by 25 points a lot.
+        A credit structure is measured against what it took in. A bought one
+        has no credit to measure against, so it uses what it paid. Abstract
+        rather than hard-coded to `credit`, because the old gate was
+        `credit <= 0: return None` -- which did not disable exits for a debit
+        spread so much as silently pretend it had none.
         """
-        widest = 0.0
-        for right in (PUT, CALL):
-            strikes = sorted(fl.leg.strike for fl in self.legs if fl.leg.right == right)
-            if len(strikes) >= 2:
-                widest = max(widest, strikes[-1] - strikes[0])
-        return widest or self.config.wing_width
-
-    @property
-    def max_profit(self) -> float:
-        """Best case at expiry, net of every cost the structure will incur."""
-        return self.net_credit - self.exit_costs
-
-    @property
-    def max_loss(self) -> float:
-        """Worst case at expiry.
-
-        Only one wing can finish in the money, so the exposure is one wing's
-        width rather than both.
-
-        Exit costs are included once they are known, and they are subtracted
-        from ``max_profit`` for the same reason: a risk figure that understates
-        risk, or a profit figure that overstates it, is the wrong way round.
-        """
-        return self.wing_width * self.config.qty - self.net_credit + self.exit_costs
-
-    @property
-    def breakevens(self) -> tuple[float, float]:
-        """Where the structure breaks even at expiry, costs included.
-
-        Measured from the strikes actually sold and from the *net* credit.
-        Using the nominal level and the gross credit put both points 13-14
-        points too far out on a typical condor -- reporting the position as
-        safer than it is, which is the one direction this must never err.
-        """
-        qty = self.config.qty
-        if not qty:
-            return (self.level, self.level)
-        net_per_share = (self.net_credit - self.exit_costs) / qty
-        short_put = max(
-            (fl.leg.strike for fl in self.legs if fl.leg.right == PUT and fl.leg.side is Side.SELL),
-            default=self.level - self.config.short_offset,
-        )
-        short_call = min(
-            (fl.leg.strike for fl in self.legs if fl.leg.right == CALL and fl.leg.side is Side.SELL),
-            default=self.level + self.config.short_offset,
-        )
-        return (short_put - net_per_share, short_call + net_per_share)
+        return self.credit
 
     @property
     def is_open(self) -> bool:
@@ -340,7 +330,7 @@ class Condor:
         tp, sl = self.config.take_profit_pct, self.config.stop_loss_mult
         if tp is None and sl is None:
             return None
-        if len(prices) < len(self.legs) or self.credit <= 0:
+        if len(prices) < len(self.legs) or self.risk_reference <= 0:
             return None
         pnl = self.mtm(prices)
         if tp is not None and pnl >= tp * self.credit:
@@ -354,6 +344,99 @@ class Condor:
         self.exit_time = when
         self.exit_reason = reason
         self.exit_costs = costs
+
+
+@dataclass
+class Condor(PositionUnit):
+    """One rung of the ladder: four legs, opened for a net credit.
+
+    Everything below is the code that was here before the base class existed,
+    unchanged. That is deliberate. These four members are what the parity gate
+    protects, and the cheapest way to guarantee a refactor did not move them is
+    for the refactor not to touch them.
+    """
+
+    kind: UnitKind = UnitKind.CONDOR
+
+    @property
+    def wing_width(self) -> float:
+        """The widest wing, measured from the strikes actually traded.
+
+        Not ``config.wing_width``. ``build_legs`` snaps every strike to the
+        listed grid, so the nominal offsets only describe the real structure
+        when both are exact multiples of ``strike_step``. With short 225 and
+        long 400 on a 50-point grid the strikes land 200 apart while the config
+        says 175 -- and every risk figure derived from it understates the loss
+        by 25 points a lot.
+        """
+        widest = 0.0
+        for right in (PUT, CALL):
+            strikes = sorted(fl.leg.strike for fl in self.legs if fl.leg.right == right)
+            if len(strikes) >= 2:
+                widest = max(widest, strikes[-1] - strikes[0])
+        return widest or self.config.wing_width
+
+    @property
+    def max_profit(self) -> float:
+        """Best case at expiry, net of every cost the structure will incur."""
+        return self.net_credit - self.exit_costs
+
+    @property
+    def max_loss(self) -> float:
+        """Worst case at expiry.
+
+        Only one wing can finish in the money, so the exposure is one wing's
+        width rather than both.
+
+        Exit costs are included once they are known, and they are subtracted
+        from ``max_profit`` for the same reason: a risk figure that understates
+        risk, or a profit figure that overstates it, is the wrong way round.
+        """
+        return self.wing_width * self.config.qty - self.net_credit + self.exit_costs
+
+    @property
+    def breakevens(self) -> tuple[float, ...]:
+        """Where the structure breaks even at expiry, costs included.
+
+        Measured from the strikes actually sold and from the *net* credit.
+        Using the nominal level and the gross credit put both points 13-14
+        points too far out on a typical condor -- reporting the position as
+        safer than it is, which is the one direction this must never err.
+        """
+        qty = self.config.qty
+        if not qty:
+            return (self.level, self.level)
+        net_per_share = (self.net_credit - self.exit_costs) / qty
+        short_put = max(
+            (fl.leg.strike for fl in self.legs if fl.leg.right == PUT and fl.leg.side is Side.SELL),
+            default=self.level - self.config.short_offset,
+        )
+        short_call = min(
+            (fl.leg.strike for fl in self.legs if fl.leg.right == CALL and fl.leg.side is Side.SELL),
+            default=self.level + self.config.short_offset,
+        )
+        return (short_put - net_per_share, short_call + net_per_share)
+
+    def __post_init__(self) -> None:
+        """Refuse anything that is not an iron condor.
+
+        This is the cheapest guard against the whole class of bug that prompted
+        the split: a two-leg vertical built as a Condor reported four times its
+        true risk and a negative best case, and nothing anywhere said so. A
+        wrong number is expensive to notice; a refused construction is not.
+
+        Order-independent, so a position restored from saved state passes.
+        """
+        if not self.legs:
+            return                      # a bare shell, built by restore paths
+        if len(self.legs) != 4:
+            raise ValueError(f"a condor has four legs, got {len(self.legs)}")
+        for right in (PUT, CALL):
+            sides = [fl.leg.side for fl in self.legs if fl.leg.right == right]
+            if len(sides) != 2 or set(sides) != {Side.BUY, Side.SELL}:
+                raise ValueError(
+                    f"a condor needs one bought and one sold {right}, got {len(sides)} legs"
+                )
 
 
 # ------------------------------------------------------------------- netting
