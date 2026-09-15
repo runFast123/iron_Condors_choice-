@@ -140,8 +140,27 @@ export interface LiveState {
   generated_at: string;
 }
 
-import { engine, engineConfigured } from "./engine";
+import { engine, engineConfigured, type ForwardRunSummary } from "./engine";
 import { getSessionToken } from "./session";
+
+/**
+ * Every forward test the signed-in user is driving.
+ *
+ * Returns an empty list rather than throwing when the engine is unreachable or
+ * nobody is signed in: a page that cannot list runs should still render its
+ * own content, and the state fetch beside it reports the failure once.
+ */
+export async function getForwardRuns(): Promise<ForwardRunSummary[]> {
+  if (!engineConfigured()) return [];
+  const token = await getSessionToken();
+  if (!token) return [];
+  try {
+    const body = await engine.forwardRuns(token);
+    return body.runs ?? [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The signed-in user's own forward run.

@@ -1,13 +1,24 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { getLiveState } from "@/lib/live";
+import { getForwardRuns, getLiveState } from "@/lib/live";
 import { num } from "@/lib/format";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { ForwardControl } from "@/components/ForwardControl";
+import { RunScope, resolveRun } from "@/components/RunScope";
 
-export default async function ForwardPage() {
-  const { state, engineError } = await getLiveState();
+export default async function ForwardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ run?: string }>;
+}) {
+  // The run travels in the query string so a reload, a bookmark or a link to
+  // someone else lands on the same test rather than on whichever one happens
+  // to be first.
+  const { run } = await searchParams;
+  const runs = await getForwardRuns();
+  const active = resolveRun(run, runs);
+  const { state, engineError } = await getLiveState(active);
   const ladder = state?.ladder;
 
   return (
@@ -25,10 +36,15 @@ export default async function ForwardPage() {
           </div>
         )}
 
-        <ForwardControl initial={state} />
+        <RunScope runs={runs} active={active} basePath="/forward" />
+
+        <ForwardControl initial={state} runKey={active} />
 
         {ladder && ladder.fired.length > 0 && (
-          <Card title="Ladder state" hint="Levels already opened this session. Each fires at most once.">
+          <Card
+            title="Ladder state"
+            hint={`Levels opened by the ${active} run. Each fires at most once.`}
+          >
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
               {ladder.fired.map((lv) => (
                 <Badge key={lv} tone="brand">{num(lv)}</Badge>
@@ -52,8 +68,13 @@ export default async function ForwardPage() {
             <li><strong>Knows the calendar.</strong> Weekends and holidays are skipped rather than spent logging "no quotes".</li>
           </ul>
           <p style={{ margin: "12px 0 0", fontSize: 12 }}>
-            <Link href="/forward/log" style={{ color: "var(--brand)", fontWeight: 600 }}>
-              Activity log &amp; trade history &rarr;
+            {/* Carries the run, so the log opens on the same test rather
+                than on whichever one it would pick by itself. */}
+            <Link
+              href={`/forward/log?run=${encodeURIComponent(active)}`}
+              style={{ color: "var(--brand)", fontWeight: 600 }}
+            >
+              Activity log &amp; trade history for {active} &rarr;
             </Link>
           </p>
         </Card>

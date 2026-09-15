@@ -21,11 +21,18 @@ const POLL_MS = 10_000;
  *  had names, which is why it is the default everywhere. */
 const DEFAULT_RUN = "ladder";
 
-export function ForwardControl({ initial }: { initial: LiveState | null }) {
+export function ForwardControl({
+  initial,
+  runKey: initialRunKey,
+}: {
+  initial: LiveState | null;
+  /** Which run the page was rendered for, from its query string. */
+  runKey?: string;
+}) {
   const [state, setState] = useState<LiveState | null>(initial);
   // Which run this panel is showing, and every run the user has. A forward
   // test keeps ticking in the engine whether or not it is the one on screen.
-  const [runKey, setRunKey] = useState<string>(DEFAULT_RUN);
+  const [runKey, setRunKey] = useState<string>(initialRunKey ?? DEFAULT_RUN);
   const [runs, setRuns] = useState<ForwardRunSummary[]>([]);
   const [maxRuns, setMaxRuns] = useState(5);
   const [runName, setRunName] = useState("");
@@ -175,7 +182,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       const payload = await res.json();
       if (!res.ok) setError(payload.error ?? `Request failed (${res.status}).`);
       else {
-        if (payload.run_key) setRunKey(payload.run_key as string);
+        if (payload.run_key) selectRun(payload.run_key as string);
         if (payload.state) setState(payload.state as LiveState);
         void refreshRuns();
       }
@@ -215,9 +222,25 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     // one if there is one.
     if (key === runKey) {
       const next = runs.find((r) => r.run_key !== key && r.running);
-      setRunKey(next ? next.run_key : DEFAULT_RUN);
+      selectRun(next ? next.run_key : DEFAULT_RUN);
     }
   };
+
+  /** Switch the panel, and put the run in the address bar with it.
+   *
+   *  Without this the selection lives only in component state: a reload, a
+   *  bookmark, or the link to the activity log would all quietly go back to
+   *  whichever run the server picked, which is exactly the confusion this is
+   *  meant to remove. replaceState rather than a router push, because moving
+   *  between runs is not history worth a back button. */
+  const selectRun = useCallback((key: string) => {
+    setRunKey(key);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("run", key);
+      window.history.replaceState(null, "", url.toString());
+    }
+  }, []);
 
   const liveRuns = runs.filter((r) => r.running);
   const atCap = liveRuns.length >= maxRuns;
@@ -268,7 +291,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               <button
                 key={r.run_key}
                 type="button"
-                onClick={() => setRunKey(r.run_key)}
+                onClick={() => selectRun(r.run_key)}
                 aria-current={selected ? "true" : undefined}
                 title={
                   r.running

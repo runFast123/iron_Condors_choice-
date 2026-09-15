@@ -37,7 +37,16 @@ class FakeRunner:
         self._suspended = False
 
     def snapshot(self):
-        return {"pnl": {"total": self._total, "open_condors": 1}}
+        # Every field carries the run's name, so a page showing one run's
+        # numbers under another's heading is detectable rather than plausible.
+        return {
+            "pnl": {"total": self._total, "open_condors": 1},
+            "session": {"last_tick": None, "expiry": None},
+            "ladder": {"direction": "down", "fired": [self.run_key]},
+            "positions": [{"index": 0, "level": 23_400, "tag": self.run_key}],
+            "fills": [{"condor_index": 0, "tag": self.run_key}],
+            "events": [{"ts": "2026-09-15T09:15:00", "message": f"opened in {self.run_key}"}],
+        }
 
     def emit(self, severity, message, **detail):
         self.events.append(message)
@@ -376,3 +385,34 @@ def test_stopping_one_run_over_http_leaves_the_others_running(client):
 
 def test_stopping_a_run_that_does_not_exist_is_refused_not_silent(client):
     assert client.post("/forward/stop?run=does-not-exist").status_code == 409
+
+
+def test_one_runs_numbers_never_appear_under_another_runs_name(client):
+    """The confusion this guards against: several tests going at once, all of
+    them condor ladders on NIFTY, whose fills and P&L look identical. A page
+    that fetched the wrong one would be wrong in a way nobody could see."""
+    for key in ("down-only", "two-way", "wide"):
+        state = client.get(f"/forward/state?run={key}").json()["state"]
+
+        assert state["positions"][0]["tag"] == key
+        assert state["fills"][0]["tag"] == key
+        assert state["ladder"]["fired"] == [key]
+        assert key in state["events"][0]["message"]
+
+
+def test_each_runs_pnl_is_its_own(client):
+    totals = {
+        key: client.get(f"/forward/state?run={key}").json()["state"]["pnl"]["total"]
+        for key in ("down-only", "two-way", "wide")
+    }
+    assert totals == {"down-only": 1200.0, "two-way": -450.0, "wide": 0.0}
+
+
+def test_the_listing_agrees_with_what_each_run_reports(client):
+    """A summary row that disagreed with the page it links to would be worse
+    than no summary at all."""
+    listed = {r["run_key"]: r["pnl"]["total"] for r in client.get("/forward/runs").json()["runs"]}
+
+    for key, total in listed.items():
+        detail = client.get(f"/forward/state?run={key}").json()["state"]["pnl"]["total"]
+        assert detail == total, key

@@ -1,4 +1,5 @@
-import { getLiveState } from "@/lib/live";
+import { getForwardRuns, getLiveState } from "@/lib/live";
+import { RunScope, resolveRun } from "@/components/RunScope";
 import { dateTime, inr, num } from "@/lib/format";
 import { Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
 import { LiveCondorBlotter } from "@/components/LiveCondorBlotter";
@@ -12,8 +13,19 @@ const LEVEL_TONE = {
 
 export const dynamic = "force-dynamic";
 
-export default async function ForwardLogPage() {
-  const { state } = await getLiveState();
+export default async function ForwardLogPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ run?: string }>;
+}) {
+  // Every number below -- P&L, fills, events, positions -- belongs to one run.
+  // This page used to fetch whichever run the engine answered with by default,
+  // so someone watching a second test in the monitor would come here and read
+  // the first one's trades without anything saying so.
+  const { run } = await searchParams;
+  const runs = await getForwardRuns();
+  const active = resolveRun(run, runs);
+  const { state } = await getLiveState(active);
   const session = state?.session ?? null;
   const events = state?.events ?? [];
   const fills = state?.fills ?? [];
@@ -28,7 +40,7 @@ export default async function ForwardLogPage() {
     <>
       <PageHeader
         title="Activity Log &amp; Trade History"
-        subtitle="Every tick, trigger, fill and rejection the forward runner recorded, newest first. This is the audit trail — Choice requires API users to retain their own request logs."
+        subtitle={`Every tick, trigger, fill and rejection the ${active} run recorded, newest first. This is the audit trail — Choice requires API users to retain their own request logs.`}
         right={
           <Badge tone={session ? "pos" : "neutral"}>
             {session ? session.mode.toUpperCase() : "NO RUN YET"}
@@ -37,6 +49,8 @@ export default async function ForwardLogPage() {
       />
 
       <div style={{ display: "grid", gap: 16 }}>
+        <RunScope runs={runs} active={active} basePath="/forward/log" />
+
         <StatGrid>
           <Stat label="Log entries" value={num(events.length)} />
           <Stat label="Fills" value={num(fills.length)} hint={`${opens} open / ${closes} close`} />
@@ -47,13 +61,13 @@ export default async function ForwardLogPage() {
         </StatGrid>
 
         <Card
-          title="Trade history"
+          title={`Trade history — ${active}`}
           pad={0}
           hint="One row per condor. Click one to see its legs: when each traded, what it filled at, and CMP, where that contract trades now as of the last tick, coloured by whether the move since the fill helped or hurt that side. Times are the market's, not the engine's: the index is served from candles, so a rung fires off a price that printed earlier. Where the two differ a grey offset shows the delay, and the tooltip gives both. A closed condor holds eight fills, four going in and four coming out. Only legs of open condors are still quoted, so closed ones show --."
         >
           {positions.length === 0 ? (
             <Empty>
-              No fills yet. Trade history appears here once a forward run opens its first condor.
+              No fills yet. Trade history appears here once the {active} run opens its first condor.
             </Empty>
           ) : (
             <LiveCondorBlotter
@@ -66,13 +80,13 @@ export default async function ForwardLogPage() {
         </Card>
 
         <Card
-          title="Run log"
+          title={`Run log — ${active}`}
           pad={0}
-          hint="Structured events from the runner: triggers, fills, rejections, warnings and kill-switch trips."
+          hint="Structured events from this run only: triggers, fills, rejections, warnings and kill-switch trips."
         >
           {events.length === 0 ? (
             <Empty>
-              No log entries. The runner writes here on every tick once a forward test is started.
+              No log entries. The {active} run writes here on every tick once it is started.
             </Empty>
           ) : (
             <div className="scroll-x" style={{ maxHeight: "50vh", overflowY: "auto" }}>
