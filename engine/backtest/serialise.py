@@ -9,6 +9,8 @@ import it.
 from __future__ import annotations
 
 import datetime as dt
+from collections import defaultdict
+from typing import Sequence
 
 from engine.backtest.runner import BacktestResult
 from engine.config import IST
@@ -92,9 +94,56 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             "strikes_touched": 0, "strikes_fully_offset": 0, "gross_qty": 0,
             "net_qty": 0, "offset_qty": 0, "offset_ratio": 0.0,
         },
+        "payoff_campaign": {"expiry": None, "campaigns": 0, "units": 0,
+                     "max_loss": 0.0, "credit": 0.0, "debit": 0.0},
         "condors": [], "equity": [], "payoff": [], "strike_matrix": [],
         "triggers": [], "warnings": [reason], "skipped": [],
     }
+
+
+def _campaign_payoff(
+    condors: Sequence, grid: Sequence[float]
+) -> tuple[list[dict], dict]:
+    """The expiry payoff of one campaign, not of every campaign stacked.
+
+    A rolling backtest re-anchors at each expiry, so its positions belong to
+    several books that were never held at the same time. Summing them puts
+    every book's worst case at every spot at once: two campaigns of three
+    condors reported a trough of -42,900 where no single book could go below
+    -21,450, and six months of weeklies is off by roughly twenty-six times.
+    That is not an error a reader can discount, either -- it grows with how
+    long the backtest ran, so a longer run looks riskier for no other reason.
+
+    So: one campaign, the one that actually carried the most risk, with its
+    expiry reported alongside so the chart can say which book it is drawing.
+    """
+    by_expiry: dict[object, list] = defaultdict(list)
+    for c in condors:
+        by_expiry[c.expiry].append(c)
+
+    if not by_expiry:
+        return [{"spot": round(s, 2), "pnl": 0.0} for s in grid], {
+            "expiry": None, "campaigns": 0, "units": 0,
+            "max_loss": 0.0, "credit": 0.0, "debit": 0.0,
+        }
+
+    curves = {
+        expiry: [sum(c.payoff_at_expiry(s) for c in units) for s in grid]
+        for expiry, units in by_expiry.items()
+    }
+    worst = min(curves, key=lambda e: min(curves[e]))
+    units = by_expiry[worst]
+    return (
+        [{"spot": round(s, 2), "pnl": round(v, 2)} for s, v in zip(grid, curves[worst])],
+        {
+            "expiry": worst.isoformat(),
+            "campaigns": len(by_expiry),
+            "units": len(units),
+            "max_loss": round(sum(u.max_loss for u in units), 2),
+            "credit": round(sum(u.credit for u in units if u.credit > 0), 2),
+            "debit": round(-sum(u.credit for u in units if u.credit < 0), 2),
+        },
+    )
 
 
 def serialise(result: BacktestResult, provenance: dict) -> dict:
@@ -155,10 +204,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
     spots = [p.spot for p in equity if p.spot]
     lo, hi = (min(spots) * 0.94, max(spots) * 1.06) if spots else (23000, 25000)
     grid = [lo + (hi - lo) * i / 200 for i in range(201)]
-    payoff = [
-        {"spot": round(s, 2), "pnl": round(sum(c.payoff_at_expiry(s) for c in result.condors), 2)}
-        for s in grid
-    ]
+    payoff, campaign = _campaign_payoff(result.condors, grid)
 
     down_condors = [c for c in result.condors if getattr(c, "side", "down") in ("down", "anchor")]
     up_condors = [c for c in result.condors if getattr(c, "side", "down") == "up"]
@@ -203,6 +249,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             {"when": w.isoformat(), "from": a.isoformat(), "to": b.isoformat()}
             for w, a, b in result.rolls
         ],
+        "payoff_campaign": campaign,
         "condors": condors,
         "equity": curve,
         "payoff": payoff,

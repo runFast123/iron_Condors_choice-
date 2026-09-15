@@ -172,6 +172,22 @@ export interface Dataset {
   condors: Condor[];
   equity: EquityPoint[];
   payoff: { spot: number; pnl: number }[];
+  /**
+   * Which book the payoff curve describes.
+   *
+   * One campaign, not all of them summed. A rolling backtest re-anchors at
+   * each expiry, so its positions belong to books that were never held at the
+   * same time; stacking them made the trough deeper the longer the run was.
+   * Absent on datasets written before that was fixed.
+   */
+  payoff_campaign?: {
+    expiry: string | null;
+    campaigns: number;
+    units: number;
+    max_loss: number;
+    credit: number;
+    debit: number;
+  };
   strike_matrix: MatrixRow[];
   triggers: Trigger[];
   warnings: string[];
