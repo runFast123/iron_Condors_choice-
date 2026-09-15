@@ -297,3 +297,82 @@ def test_a_run_is_stored_and_read_back_under_its_own_name(tmp_path):
         assert keys == {"down-only", "two-way"}
     finally:
         store.close()
+
+
+# ============================== the routes themselves
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    """A signed-in user with three named runs, reachable over HTTP.
+
+    The unit tests above exercise the resume and backstop logic directly, and
+    missed that the routes were still reading a different query parameter --
+    so every request silently addressed the default run. These close that gap
+    by going through the wiring rather than around it.
+    """
+    from fastapi.testclient import TestClient
+
+    from engine import api
+    from engine.auth.sessions import registry as live_registry
+
+    now = dt.datetime.now(tz=IST)
+    session = UserSession(
+        user_id="u1", token="tok", choice=object(), mobile_masked="**7",
+        vendor_id="V1", created_at=now, expires_at=now + dt.timedelta(hours=6),
+        last_seen=now, _runners=live_registry._runners,
+    )
+    live_registry._sessions["tok"] = session
+    live_registry._by_user["u1"] = "tok"
+    for key, total in (("down-only", 1200.0), ("two-way", -450.0), ("wide", 0.0)):
+        runner = FakeRunner(key, total=total)
+        runner.strategy = type("C", (), {"lots": 1})()
+        runner.started_at = now
+        runner.daily_loss_limit = 25_000.0
+        session.set_runner(key, runner)
+
+    with TestClient(api.app) as c:
+        c.headers.update({"Authorization": "Bearer tok"})
+        yield c
+
+    for key in ("down-only", "two-way", "wide"):
+        session.set_runner(key, None)
+    live_registry._sessions.pop("tok", None)
+    live_registry._by_user.pop("u1", None)
+
+
+def test_the_listing_shows_every_run(client):
+    body = client.get("/forward/runs").json()
+
+    assert {r["run_key"] for r in body["runs"]} == {"down-only", "two-way", "wide"}
+    assert body["max_runs"] >= 1
+    assert body["account_loss_limit"] > 0
+
+
+def test_each_run_is_addressable_by_name(client):
+    for key in ("down-only", "two-way", "wide"):
+        body = client.get(f"/forward/state?run={key}").json()
+        assert body["running"] is True, key
+
+
+def test_an_unknown_name_returns_nothing_rather_than_another_run(client):
+    """The failure mode this prevents is silent: a mistyped or stale name that
+    quietly answers about a different test."""
+    body = client.get("/forward/state?run=does-not-exist").json()
+
+    assert body["state"] is None
+    assert body["running"] is False
+
+
+def test_stopping_one_run_over_http_leaves_the_others_running(client):
+    assert client.post("/forward/stop?run=two-way").json()["ok"] is True
+
+    # A stopped run leaves the live listing entirely -- it is no longer being
+    # driven, and its history lives in the database rather than in memory.
+    after = {r["run_key"]: r["running"] for r in client.get("/forward/runs").json()["runs"]}
+    assert "two-way" not in after
+    assert after == {"down-only": True, "wide": True}
+
+
+def test_stopping_a_run_that_does_not_exist_is_refused_not_silent(client):
+    assert client.post("/forward/stop?run=does-not-exist").status_code == 409

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LiveState } from "@/lib/live";
+import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime } from "@/lib/format";
 import { Badge } from "@/components/ui";
 import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
@@ -16,8 +17,18 @@ import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
  *  the same session payload. */
 const POLL_MS = 10_000;
 
+/** The run a page with no selection is about. Named this since before runs
+ *  had names, which is why it is the default everywhere. */
+const DEFAULT_RUN = "ladder";
+
 export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [state, setState] = useState<LiveState | null>(initial);
+  // Which run this panel is showing, and every run the user has. A forward
+  // test keeps ticking in the engine whether or not it is the one on screen.
+  const [runKey, setRunKey] = useState<string>(DEFAULT_RUN);
+  const [runs, setRuns] = useState<ForwardRunSummary[]>([]);
+  const [maxRuns, setMaxRuns] = useState(5);
+  const [runName, setRunName] = useState("");
   const [lots, setLots] = useState(1);
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
   const [direction, setDirection] = useState<"down" | "up" | "both">("down");
@@ -41,7 +52,9 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
 
   const refresh = useCallback(async () => {
     try {
-      const res = await fetch("/api/forward/state", { cache: "no-store" });
+      const res = await fetch(`/api/forward/state?run=${encodeURIComponent(runKey)}`, {
+        cache: "no-store",
+      });
       if (res.status === 401) {
         window.location.href = "/login?reason=expired";
         return;
@@ -61,6 +74,21 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       setError(`Lost contact with the engine (${(err as Error).message}).`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runKey]);
+
+  /** The roll-call of runs, which is separate from any one run's state. */
+  const refreshRuns = useCallback(async () => {
+    try {
+      const res = await fetch("/api/forward/runs", { cache: "no-store" });
+      if (!res.ok) return;
+      const body = await res.json();
+      if (Array.isArray(body.runs)) {
+        setRuns(body.runs as ForwardRunSummary[]);
+        if (typeof body.max_runs === "number") setMaxRuns(body.max_runs);
+      }
+    } catch {
+      /* the panel still works on the single run it is showing */
+    }
   }, []);
 
   // One point per distinct tick timestamp, capped so a long session cannot
@@ -84,7 +112,9 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     // that has been going for hours.
     (async () => {
       try {
-        const res = await fetch("/api/forward/ticks", { cache: "no-store" });
+        const res = await fetch(`/api/forward/ticks?run=${encodeURIComponent(runKey)}`, {
+          cache: "no-store",
+        });
         const body = await res.json();
         if (cancelled || !res.ok || !Array.isArray(body.ticks)) return;
         const points = (body.ticks as { ts: string; spot: number }[])
@@ -95,12 +125,14 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
         /* the live poll below still builds a series from here on */
       }
     })();
-    if (state) recordTick(state);
+    setTicks([]);
+    void refresh();
+    void refreshRuns();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [runKey]);
 
   // Keyed only on `running`, so a failed poll cannot end the loop, and paused
   // while the tab is hidden -- there is nobody watching a chart they cannot
@@ -110,9 +142,21 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     const id = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       void refresh();
+      void refreshRuns();
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [running, refresh]);
+  }, [running, refresh, refreshRuns]);
+
+  // The list has to keep refreshing even when the run on screen has stopped,
+  // or a user watching a finished run would never see the others move.
+  useEffect(() => {
+    if (running) return;
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void refreshRuns();
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [running, refreshRuns]);
 
   async function post(path: string, body?: unknown, label = "working") {
     setError(null);
@@ -125,7 +169,11 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       });
       const payload = await res.json();
       if (!res.ok) setError(payload.error ?? `Request failed (${res.status}).`);
-      else if (payload.state) setState(payload.state as LiveState);
+      else {
+        if (payload.run_key) setRunKey(payload.run_key as string);
+        if (payload.state) setState(payload.state as LiveState);
+        void refreshRuns();
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -137,6 +185,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     post(
       "/api/forward/start",
       {
+        name: runName.trim() || undefined,
         lots,
         step: 100,
         poll_seconds: 10,
@@ -148,7 +197,19 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       },
       "starting",
     );
-  const stop = () => post("/api/forward/stop", undefined, "stopping");
+  const stop = async (key: string = runKey) => {
+    await post(`/api/forward/stop?run=${encodeURIComponent(key)}`, undefined, "stopping");
+    // A stopped run drops out of the listing, so staying pointed at it would
+    // leave the panel on a run that no longer exists. Move to another live
+    // one if there is one.
+    if (key === runKey) {
+      const next = runs.find((r) => r.run_key !== key && r.running);
+      setRunKey(next ? next.run_key : DEFAULT_RUN);
+    }
+  };
+
+  const liveRuns = runs.filter((r) => r.running);
+  const atCap = liveRuns.length >= maxRuns;
 
   return (
     <section className="card" style={{ overflow: "hidden" }}>
@@ -178,6 +239,72 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
         </div>
       </div>
 
+      {/* Every forward test this user is driving. They keep ticking in the
+          engine regardless of which one is on screen, so this is a view of
+          them rather than a switch that starts and stops anything. */}
+      {runs.length > 1 && (
+        <div
+          style={{
+            display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch",
+            padding: "10px 16px", borderBottom: "1px solid var(--border)",
+            background: "var(--surface-3)",
+          }}
+        >
+          {runs.map((r) => {
+            const selected = r.run_key === runKey;
+            const pnl = r.pnl?.total ?? 0;
+            return (
+              <button
+                key={r.run_key}
+                type="button"
+                onClick={() => setRunKey(r.run_key)}
+                aria-current={selected ? "true" : undefined}
+                title={
+                  r.running
+                    ? `${r.strategy}, ${r.lots} lot(s)${r.direction ? `, ${r.direction}` : ""}`
+                    : (r.stopped_reason ?? "stopped")
+                }
+                style={{
+                  textAlign: "left", cursor: "pointer", borderRadius: "var(--radius)",
+                  padding: "7px 11px", fontSize: 12, lineHeight: 1.35,
+                  border: `1px solid ${selected ? "var(--brand)" : "var(--border)"}`,
+                  background: selected ? "var(--brand-soft)" : "var(--surface)",
+                  color: "var(--ink)",
+                }}
+              >
+                <span style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                  <span style={{ fontWeight: 700 }}>{r.label}</span>
+                  {!r.running ? (
+                    <span style={{ fontSize: 10.5, color: "var(--ink-muted)" }}>stopped</span>
+                  ) : !r.ticking ? (
+                    // Marked running but no worker behind it. The watchdog
+                    // restarts these; saying so beats a silent frozen number.
+                    <span style={{ fontSize: 10.5, color: "var(--warn)" }}>restarting</span>
+                  ) : null}
+                </span>
+                <span
+                  className="tnum"
+                  style={{
+                    display: "block", fontWeight: 700, fontSize: 12.5,
+                    color: pnl > 0 ? "var(--pos)" : pnl < 0 ? "var(--neg)" : "var(--ink-2)",
+                  }}
+                >
+                  {inr(pnl, { sign: true })}
+                  <span
+                    style={{ fontWeight: 500, color: "var(--ink-muted)", marginLeft: 6, fontSize: 11 }}
+                  >
+                    {r.open_condors} open
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+          <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 11.5, color: "var(--ink-muted)" }}>
+            {liveRuns.length} of {maxRuns} running
+          </span>
+        </div>
+      )}
+
       <div style={{ padding: 16 }}>
         {error && (
           <div className="auth-alert auth-alert-error" role="alert" style={{ marginBottom: 14 }}>
@@ -187,7 +314,28 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
 
         {!running ? (
           <>
+            {atCap && (
+              <div className="auth-alert auth-alert-info" style={{ marginBottom: 14 }}>
+                {maxRuns} forward tests are already running. Stop one to start another.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Name
+                <input
+                  className="auth-input"
+                  value={runName}
+                  onChange={(e) => setRunName(e.target.value)}
+                  placeholder="ladder"
+                  maxLength={40}
+                  style={{ marginTop: 4, width: 170 }}
+                />
+                <span
+                  style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400 }}
+                >
+                  Name two runs differently to compare them on the same ticks.
+                </span>
+              </label>
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Expiry
                 <select
@@ -420,8 +568,10 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
             )}
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button onClick={stop} disabled={busy !== null} className="btn-danger">
-                {busy === "stopping" ? "Stopping…" : "Stop run"}
+              {/* Arrow, not a bare reference: onClick hands the handler a
+                  MouseEvent, which would arrive as the run name. */}
+              <button onClick={() => stop()} disabled={busy !== null} className="btn-danger">
+                {busy === "stopping" ? "Stopping…" : `Stop ${runs.length > 1 ? runKey : "run"}`}
               </button>
 
               <button onClick={refresh} className="btn-quiet">

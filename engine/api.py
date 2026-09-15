@@ -194,15 +194,6 @@ class RunBacktestRequest(BaseModel):
 # independently, and /forward/stop is posted today with no body and no
 # arguments by two live users. A default keeps that working through the
 # rollout; a path change would break it the moment the engine shipped first.
-def strategy_param(strategy: str = LADDER) -> str:
-    if strategy not in STRATEGIES:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Unknown strategy {strategy!r}. Known: {', '.join(STRATEGIES)}.",
-        )
-    return strategy
-
-
 # How many forward tests one user may drive at once.
 #
 # Not arbitrary: the Choice rate limit is per user, and every run polls. Five
@@ -956,7 +947,7 @@ def forward_start(
 @app.post("/forward/tick", dependencies=[Depends(check_engine_key)])
 def forward_tick(
     session: UserSession = Depends(current_user),
-    strategy_id: str = Depends(strategy_param),
+    run_key: str = Depends(run_param),
 ) -> dict[str, Any]:
     """Force one polling cycle. Refused once the run has stopped.
 
@@ -964,7 +955,7 @@ def forward_tick(
     daily loss limit reported itself stopped and then opened fresh condors on
     the next manual tick.
     """
-    runner = _require_runner(session, strategy_id)
+    runner = _require_runner(session, run_key)
     if runner.stopped_reason:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -1015,7 +1006,7 @@ def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]
 @app.get("/forward/state", dependencies=[Depends(check_engine_key)])
 def forward_state(
     session: UserSession = Depends(current_user),
-    strategy_id: str = Depends(strategy_param),
+    run_key: str = Depends(run_param),
 ) -> dict[str, Any]:
     """One strategy's run, plus a roll-call of every strategy this user has.
 
@@ -1023,7 +1014,7 @@ def forward_state(
     so a dashboard that sends no strategy sees precisely what it saw before.
     `strategies` is additive, for a UI that wants to show both at once.
     """
-    runner = session.runner_for(strategy_id)
+    runner = session.runner_for(run_key)
     return {
         "running": runner is not None and runner.stopped_reason is None,
         "state": runner.snapshot() if runner is not None else None,
@@ -1039,7 +1030,7 @@ def forward_state(
 def forward_ticks(
     limit: int = 900,
     session: UserSession = Depends(current_user),
-    strategy_id: str = Depends(strategy_param),
+    run_key: str = Depends(run_param),
 ) -> dict[str, Any]:
     """The live chart's history.
 
@@ -1047,7 +1038,7 @@ def forward_ticks(
     second device -- picks up the whole session instead of redrawing from an
     empty series.
     """
-    runner = session.runner_for(strategy_id)
+    runner = session.runner_for(run_key)
     if runner is None or not runner.session_id:
         return {"ticks": []}
     return {"ticks": store.ticks(runner.session_id, limit=max(1, min(limit, 5_000)))}
@@ -1061,26 +1052,26 @@ def forward_history(session: UserSession = Depends(current_user)) -> dict[str, A
 @app.post("/forward/stop", dependencies=[Depends(check_engine_key)])
 def forward_stop(
     session: UserSession = Depends(current_user),
-    strategy_id: str = Depends(strategy_param),
+    run_key: str = Depends(run_param),
 ) -> dict[str, Any]:
     """Stop one strategy's run. Never anyone else's, never the other one."""
-    runner = _require_runner(session, strategy_id)
+    runner = _require_runner(session, run_key)
     runner.stopped_reason = "stopped by user"
     runner.emit("warn", "Forward run stopped by user")
     runner.save()
     if runner.session_id:
         store.mark_stopped(runner.session_id, "stopped by user")
     state = runner.snapshot()
-    session.set_runner(strategy_id, None)
+    session.set_runner(run_key, None)
     return {"ok": True, "state": state}
 
 
-def _require_runner(session: UserSession, strategy_id: str = LADDER) -> ForwardRunner:
-    runner = session.runner_for(strategy_id)
+def _require_runner(session: UserSession, run_key: str = DEFAULT_RUN_KEY) -> ForwardRunner:
+    runner = session.runner_for(run_key)
     if runner is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"No {strategy_id} forward run started for this session.",
+            f"No forward run named {run_key!r} is started for this session.",
         )
     return runner
 

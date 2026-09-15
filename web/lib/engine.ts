@@ -121,6 +121,29 @@ export interface EngineStatus {
   active_sessions: number;
 }
 
+/** One row of the forward-test list. */
+export interface ForwardRunSummary {
+  run_key: string;
+  label: string;
+  strategy: string;
+  running: boolean;
+  stopped_reason: string | null;
+  /** Whether a worker is really driving it, as against merely being recorded. */
+  ticking: boolean;
+  started_at: string;
+  last_tick: string | null;
+  expiry: string | null;
+  direction: string | null;
+  lots: number;
+  daily_loss_limit: number;
+  pnl: { realised: number; unrealised: number; total: number; open_condors: number };
+  open_condors: number;
+}
+
+function runQuery(run?: string): string {
+  return run ? `?run=${encodeURIComponent(run)}` : "";
+}
+
 export const engine = {
   health: () => call<{ ok: boolean; market_open: boolean; sessions: number }>("/health"),
 
@@ -149,15 +172,31 @@ export const engine = {
   backtestRun: (token: string, body: Record<string, unknown>) =>
     call<{ ok: boolean; job: BacktestJob }>("/backtest/run", { method: "POST", token, body }),
 
-  forwardState: (token: string) =>
-    call<{ running: boolean; state: unknown }>("/forward/state", { token }),
+  // `run` names which of the user's forward tests a call is about. Omitted,
+  // the engine defaults to the one called "ladder", which is what a single run
+  // has always been -- so a caller that predates named runs keeps working.
+  forwardState: (token: string, run?: string) =>
+    call<{ running: boolean; state: unknown }>(`/forward/state${runQuery(run)}`, { token }),
+
+  forwardRuns: (token: string) =>
+    call<{ runs: ForwardRunSummary[]; max_runs: number; account_loss_limit: number }>(
+      "/forward/runs",
+      { token },
+    ),
 
   forwardStart: (token: string, body: Record<string, unknown>) =>
-    call<{ ok: boolean; state: unknown }>("/forward/start", { method: "POST", token, body }),
+    call<{ ok: boolean; run_key?: string; state: unknown }>("/forward/start", {
+      method: "POST",
+      token,
+      body,
+    }),
 
-  forwardStop: (token: string) =>
-    call<{ ok: boolean; state: unknown }>("/forward/stop", { method: "POST", token }),
+  forwardStop: (token: string, run?: string) =>
+    call<{ ok: boolean; state: unknown }>(`/forward/stop${runQuery(run)}`, {
+      method: "POST",
+      token,
+    }),
 
-  forwardTicks: (token: string) =>
-    call<{ ticks: { ts: string; spot: number }[] }>("/forward/ticks", { token }),
+  forwardTicks: (token: string, run?: string) =>
+    call<{ ticks: { ts: string; spot: number }[] }>(`/forward/ticks${runQuery(run)}`, { token }),
 };

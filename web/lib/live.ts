@@ -150,7 +150,9 @@ import { getSessionToken } from "./session";
  * to start one rather than as an error. A dead engine is reported separately
  * so the page can say which of the two is wrong.
  */
-export async function getLiveState(): Promise<{ state: LiveState | null; engineError: string | null }> {
+export async function getLiveState(
+  run?: string,
+): Promise<{ state: LiveState | null; engineError: string | null }> {
   if (!engineConfigured()) {
     return { state: null, engineError: "ENGINE_URL is not configured." };
   }
@@ -158,7 +160,7 @@ export async function getLiveState(): Promise<{ state: LiveState | null; engineE
   if (!token) return { state: null, engineError: null };
 
   try {
-    const body = await engine.forwardState(token);
+    const body = await engine.forwardState(token, run);
     return { state: (body.state as LiveState | null) ?? null, engineError: null };
   } catch (err) {
     return { state: null, engineError: (err as Error).message };
