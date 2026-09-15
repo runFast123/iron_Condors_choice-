@@ -1003,6 +1003,8 @@ class ForwardRunner:
         session_id: str | None = None,
         user_id: str | None = None,
         strategy_id: str | None = None,
+        run_key: str | None = None,
+        run_label: str | None = None,
     ) -> "ForwardRunner":
         """Rebuild a runner from :meth:`to_state`.
 
@@ -1023,8 +1025,11 @@ class ForwardRunner:
             # The database column wins over the blob: it is the one a query
             # can filter on, so it is the one the rest of the engine believes.
             strategy_id=strategy_id or state.get("strategy_id") or LADDER,
-            run_key=state.get("run_key"),
-            run_label=state.get("run_label") or "",
+            # The caller's value wins over the blob: it comes from the
+            # database column, which is the one a query can filter on and
+            # therefore the one the rest of the engine believes.
+            run_key=run_key or state.get("run_key"),
+            run_label=run_label if run_label is not None else (state.get("run_label") or ""),
             daily_loss_limit=state.get("daily_loss_limit"),
             expiry_cadence=state.get("expiry_cadence") or "weekly",
         )
