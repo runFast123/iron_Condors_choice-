@@ -315,3 +315,37 @@ def test_a_spread_costing_more_than_it_can_ever_pay_warns():
 
     assert -spread.credit >= width_value
     assert any("maximum payout" in w for w in _warnings(r))
+
+
+def test_a_run_labelled_hic_that_was_never_hic_keeps_trading_what_it_has():
+    """The reverse version-skew, and the one that reaches a live position.
+
+    An engine that knew the name "hic" but had no code to build one recorded
+    the column and traded a ladder, so the saved geometry has none of HIC's
+    settings. Filling them in from defaults on restore would change what a
+    running campaign trades into something nobody chose -- with condors
+    already open at levels the new shape calls spreads.
+    """
+    from engine.strategy.condor import StrategyConfig
+
+    r = ForwardRunner(
+        market=FakeMarket(master=FakeMaster()),  # type: ignore[arg-type]
+        strategy=StrategyConfig(lots=1, lot_size=65, step=100.0, max_condors=20),
+        strategy_id="hic",
+    )
+    r.expiry = EXPIRY
+    r.ladder.anchor = ANCHOR
+    r.ladder.last_level = ANCHOR
+    r._open_condor(ANCHOR, EXPIRY, side="anchor")
+
+    revived = ForwardRunner.restore(
+        r.to_state(), market=r.market, state_path=None, strategy_id="hic", run_key="hic",
+    )
+
+    assert type(revived.strategy) is StrategyConfig, "not promoted out of defaults"
+    assert [e for e in revived.events if e.level == "error"], "and it says so"
+    assert "trading a ladder under that name" in revived.events[-1].message
+
+    # It goes on opening what it has been opening.
+    _open(revived, 23_300)
+    assert isinstance(revived.condors[-1], Condor)

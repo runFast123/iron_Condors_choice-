@@ -146,7 +146,9 @@ class Fill:
 _CONFIG_CLASSES: dict[str, type[StrategyConfig]] = {LADDER: StrategyConfig, HIC: HicConfig}
 
 
-def _strategy_from_state(blob: dict[str, Any], strategy_id: str) -> StrategyConfig:
+def _strategy_from_state(
+    blob: dict[str, Any], strategy_id: str
+) -> tuple[StrategyConfig, str | None]:
     """Rebuild the config of whichever strategy this run trades.
 
     Dispatched on the strategy id rather than always building a
@@ -158,10 +160,32 @@ def _strategy_from_state(blob: dict[str, Any], strategy_id: str) -> StrategyConf
     calls for a two-leg spread -- while every surface still labels the run HIC
     because the database column is untouched. An engine restart silently
     turned HIC into a ladder, at several times the risk per rung.
+
+    The reverse skew is real too, and worse to paper over. A run started by an
+    engine that knew the name "hic" but had no code to build one recorded the
+    column and traded a ladder, so its saved geometry carries none of HIC's
+    settings. Filling those in from defaults here would change what a live run
+    trades, mid-campaign, into something nobody chose -- with condors already
+    open at levels the new shape would have made spreads. It keeps trading
+    what it has been trading, and returns a note saying so.
     """
     cls = _CONFIG_CLASSES.get(strategy_id, StrategyConfig)
-    known = {f.name for f in dataclass_fields(cls)}
-    return cls(**{k: v for k, v in blob.items() if k in known})
+    if cls is StrategyConfig:
+        known = {f.name for f in dataclass_fields(cls)}
+        return StrategyConfig(**{k: v for k, v in blob.items() if k in known}), None
+
+    base = {f.name for f in dataclass_fields(StrategyConfig)}
+    extra = {f.name for f in dataclass_fields(cls)} - base
+    if not (extra & set(blob)):
+        return (
+            StrategyConfig(**{k: v for k, v in blob.items() if k in base}),
+            f"This run is recorded as {strategy_id} but its saved settings are a "
+            f"ladder's, so it was started by an engine that could not build "
+            f"{strategy_id} and has been trading a ladder under that name. It "
+            f"continues as a ladder rather than changing shape mid-campaign. "
+            f"Stop it and start a new one to trade {strategy_id} properly.",
+        )
+    return cls(**{k: v for k, v in blob.items() if k in base | extra}), None
 
 
 class ForwardRunner:
@@ -1296,7 +1320,7 @@ class ForwardRunner:
         # filter on, so it is the one the rest of the engine believes. Resolved
         # before the config, because it decides which config to build.
         resolved_strategy_id = strategy_id or state.get("strategy_id") or LADDER
-        strategy = _strategy_from_state(state["strategy"], resolved_strategy_id)
+        strategy, skew = _strategy_from_state(state["strategy"], resolved_strategy_id)
 
         runner = cls(
             market=market, strategy=strategy, costs=costs,
@@ -1341,6 +1365,11 @@ class ForwardRunner:
         ]
         runner.fills = [Fill(**raw) for raw in state.get("fills") or []]
         runner.events = [Event(**raw) for raw in state.get("events") or []]
+        # After the saved log is loaded, not before: emitting into a list that
+        # is about to be replaced is the same as not emitting at all.
+        if skew is not None:
+            log.error("%s: %s", run_key or resolved_strategy_id, skew)
+            runner.emit("error", skew)
         return runner
 
 
