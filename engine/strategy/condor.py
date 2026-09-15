@@ -286,6 +286,11 @@ class PositionUnit:
         return self.credit
 
     @property
+    def risk_reference_noun(self) -> str:
+        """What `risk_reference` is, for the exit message to name."""
+        return "credit"
+
+    @property
     def is_open(self) -> bool:
         return self.status is CondorStatus.OPEN
 
@@ -330,13 +335,20 @@ class PositionUnit:
         tp, sl = self.config.take_profit_pct, self.config.stop_loss_mult
         if tp is None and sl is None:
             return None
-        if len(prices) < len(self.legs) or self.risk_reference <= 0:
+        # Against `risk_reference`, not `credit`. They are the same number for
+        # a condor, but `credit` is *negative* on a bought spread, which flips
+        # both comparisons: `pnl >= tp * credit` compares against a negative
+        # threshold and is true at a loss, so a debit spread announced a
+        # take-profit on its first mark and closed for whatever it was down.
+        ref = self.risk_reference
+        if len(prices) < len(self.legs) or ref <= 0:
             return None
         pnl = self.mtm(prices)
-        if tp is not None and pnl >= tp * self.credit:
-            return f"take-profit: captured {pnl / self.credit:.0%} of credit"
-        if sl is not None and pnl <= -sl * self.credit:
-            return f"stop-loss: lost {abs(pnl) / self.credit:.1f}x credit"
+        noun = self.risk_reference_noun
+        if tp is not None and pnl >= tp * ref:
+            return f"take-profit: captured {pnl / ref:.0%} of {noun}"
+        if sl is not None and pnl <= -sl * ref:
+            return f"stop-loss: lost {abs(pnl) / ref:.1f}x {noun}"
         return None
 
     def close(self, when: dt.datetime, reason: str, status: CondorStatus, costs: float = 0.0) -> None:

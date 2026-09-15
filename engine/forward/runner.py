@@ -56,7 +56,7 @@ from engine.strategy.condor import (
 )
 from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
 from engine.strategy.vertical import VerticalSpread
-from engine.store.db import LADDER, Store
+from engine.store.db import HIC, LADDER, Store
 from engine.strategy.ladder import Ladder
 
 log = logging.getLogger(__name__)
@@ -140,6 +140,28 @@ class Fill:
     reference: float | None = None
     slippage: float = 0.0
     spread_modelled: bool = False
+
+
+#: The config class each strategy's geometry lives in.
+_CONFIG_CLASSES: dict[str, type[StrategyConfig]] = {LADDER: StrategyConfig, HIC: HicConfig}
+
+
+def _strategy_from_state(blob: dict[str, Any], strategy_id: str) -> StrategyConfig:
+    """Rebuild the config of whichever strategy this run trades.
+
+    Dispatched on the strategy id rather than always building a
+    `StrategyConfig`. `asdict` writes HIC's band and spread settings out
+    faithfully, but filtering them back in against the *base* class's field
+    names drops every one of them, and the rebuilt object is then a plain
+    `StrategyConfig`. `_plan_unit` asks `isinstance(config, HicConfig)`, gets
+    False, and opens a four-leg condor at the next level -- where the strategy
+    calls for a two-leg spread -- while every surface still labels the run HIC
+    because the database column is untouched. An engine restart silently
+    turned HIC into a ladder, at several times the risk per rung.
+    """
+    cls = _CONFIG_CLASSES.get(strategy_id, StrategyConfig)
+    known = {f.name for f in dataclass_fields(cls)}
+    return cls(**{k: v for k, v in blob.items() if k in known})
 
 
 class ForwardRunner:
@@ -1105,16 +1127,17 @@ class ForwardRunner:
         """
         state = cls._readable_state(state)
 
-        known = {f.name for f in dataclass_fields(StrategyConfig)}
-        strategy = StrategyConfig(**{k: v for k, v in state["strategy"].items() if k in known})
+        # The database column wins over the blob: it is the one a query can
+        # filter on, so it is the one the rest of the engine believes. Resolved
+        # before the config, because it decides which config to build.
+        resolved_strategy_id = strategy_id or state.get("strategy_id") or LADDER
+        strategy = _strategy_from_state(state["strategy"], resolved_strategy_id)
 
         runner = cls(
             market=market, strategy=strategy, costs=costs,
             state_path=state_path, fill_model=fill_model,
             store=store, session_id=session_id, user_id=user_id,
-            # The database column wins over the blob: it is the one a query
-            # can filter on, so it is the one the rest of the engine believes.
-            strategy_id=strategy_id or state.get("strategy_id") or LADDER,
+            strategy_id=resolved_strategy_id,
             # The caller's value wins over the blob: it comes from the
             # database column, which is the one a query can filter on and
             # therefore the one the rest of the engine believes.

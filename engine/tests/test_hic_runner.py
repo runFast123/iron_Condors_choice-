@@ -152,6 +152,49 @@ def test_a_mixed_book_round_trips_as_the_same_shapes():
     assert after == before
 
 
+def test_a_resumed_run_still_opens_spreads_at_new_levels():
+    """Round-tripping what is already held is only half of it.
+
+    `restore` filtered the saved config against `StrategyConfig`'s field names
+    and built one, so the band and spread settings were dropped and the
+    rebuilt object was a plain ladder config. Everything already open came
+    back correctly -- each unit carries its own type -- so the test above
+    passed while the *next* level opened a four-leg condor at several times
+    the risk, under a run the database still labelled "hic".
+    """
+    r = runner()
+    _open(r, 23_400, 23_300, 23_200)
+
+    revived = ForwardRunner.restore(
+        r.to_state(), market=r.market, state_path=None, strategy_id="hic",
+    )
+    assert isinstance(revived.strategy, HicConfig)
+    assert revived.strategy.full_band_steps == r.strategy.full_band_steps
+    assert revived.strategy.half_mode == r.strategy.half_mode
+
+    _open(revived, 23_100)
+    opened = revived.condors[-1]
+    assert isinstance(opened, VerticalSpread), "a ladder condor at a spread level"
+    assert opened.kind is UnitKind.PUT_DEBIT_SPREAD
+    assert len(opened.legs) == 2
+    assert opened.max_loss < opened.config.qty * 200
+
+
+def test_a_resumed_ladder_is_not_handed_a_hic_config():
+    """The dispatch has to work in the other direction too, or a ladder whose
+    blob happened to carry the fields would start buying spreads."""
+    from engine.strategy.condor import StrategyConfig
+
+    r = runner()
+    _open(r, 23_400)
+    state = r.to_state()
+
+    revived = ForwardRunner.restore(
+        state, market=r.market, state_path=None, strategy_id="ladder",
+    )
+    assert type(revived.strategy) is StrategyConfig
+
+
 def test_state_written_before_hic_existed_comes_back_as_condors():
     """Both live runs are stored in exactly that shape: no kind, no k."""
     from engine.strategy.condor import StrategyConfig

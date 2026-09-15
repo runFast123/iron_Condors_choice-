@@ -188,6 +188,49 @@ def test_take_profit_works_on_a_debit_rather_than_being_silently_off():
     assert "take-profit" in (v.exit_signal(marks) or "")
 
 
+def test_a_losing_debit_spread_does_not_announce_a_take_profit():
+    """The version above passed for the wrong reason, and hid a live bug.
+
+    It marks the spread at a profit and asserts "take-profit", which a rule
+    that fires on *everything* satisfies just as well. The thresholds were
+    still measured against `credit`, which is negative on a bought spread, so
+    `pnl >= tp * credit` compared against a negative number: every debit
+    spread closed on its first mark, at whatever it was down, labelled a
+    take-profit -- and the trade log showed "captured -0% of credit".
+    """
+    v = put_debit(config=cfg(take_profit_pct=0.5, stop_loss_mult=2.0))
+
+    for loss, marks in [
+        (0.0, {v.legs[0].leg: 150.0, v.legs[1].leg: 85.0}),        # flat
+        (-975.0, {v.legs[0].leg: 135.0, v.legs[1].leg: 85.0}),     # down a little
+        (-3_345.0, {v.legs[0].leg: 100.0, v.legs[1].leg: 85.6}),   # down a lot
+    ]:
+        assert v.mtm(marks) <= 0
+        assert v.exit_signal(marks) is None, f"fired at {v.mtm(marks):+,.0f}"
+
+    # And it still fires where it should: half the debit, in profit.
+    won = {v.legs[0].leg: 150.0 + 32.5, v.legs[1].leg: 85.0}
+    assert v.exit_signal(won) == "take-profit: captured 50% of the debit paid"
+
+
+def test_a_stop_measured_against_the_debit_can_actually_trigger():
+    """A fraction of the debit is reachable; a multiple of it is not, because
+    the debit is the whole of what a bought spread can lose."""
+    v = put_debit(config=cfg(stop_loss_mult=0.5))
+    # Down 2,437.50, which is 0.58x the 4,225 debit.
+    marks = {v.legs[0].leg: 150.0 - 37.5, v.legs[1].leg: 85.0}
+
+    assert v.exit_signal(marks) == "stop-loss: lost 0.6x the debit paid"
+
+
+def test_a_credit_spread_still_speaks_of_credit():
+    v = put_credit(config=cfg(take_profit_pct=0.5))
+    # Bought leg unmoved, sold leg back half the 65-point credit.
+    marks = {v.legs[0].leg: 85.0, v.legs[1].leg: 150.0 - 32.5}
+
+    assert v.exit_signal(marks) == "take-profit: captured 50% of credit"
+
+
 def test_the_reference_an_exit_is_measured_against_is_always_positive():
     assert put_debit().risk_reference == pytest.approx(4_225.0)
     assert put_credit().risk_reference == pytest.approx(4_225.0)

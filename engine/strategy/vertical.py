@@ -123,6 +123,18 @@ class VerticalSpread(PositionUnit):
         return abs(self.credit)
 
     @property
+    def risk_reference_noun(self) -> str:
+        """A bought spread has no credit, so the message must not say "credit".
+
+        Note a stop-loss multiple above 1 can never trigger on a debit spread:
+        the most it can lose is the debit, so `pnl <= -sl x debit` is out of
+        reach. That is honest rather than broken -- the position simply has no
+        room to lose more -- but it means a 2x stop, sensible on a condor, is
+        inert here and a fraction is what does anything.
+        """
+        return "the debit paid" if self.is_debit else "credit"
+
+    @property
     def breakevens(self) -> tuple[float, ...]:
         """The single point where the payoff crosses zero, if it crosses.
 
