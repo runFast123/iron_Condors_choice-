@@ -155,6 +155,9 @@ class ForwardRunner:
         session_id: str | None = None,
         user_id: str | None = None,
         strategy_id: str = LADDER,
+        run_key: str | None = None,
+        run_label: str = "",
+        daily_loss_limit: float | None = None,
     ) -> None:
         self.market = market
         self.strategy = strategy
@@ -175,6 +178,16 @@ class ForwardRunner:
         # Which strategy this run belongs to. Not the same thing as
         # `self.strategy`, which is the geometry -- steps, offsets, lot size.
         self.strategy_id = strategy_id
+        # Which run it is. Defaults to the strategy, so a user with one run per
+        # strategy addresses it exactly as they always did.
+        self.run_key = run_key or strategy_id
+        self.run_label = run_label
+        # This run's own kill switch. Per run, so one runaway test cannot stop
+        # the others; the account-wide total is checked separately by the
+        # caller, which is the only place that can see all of a user's runs.
+        self.daily_loss_limit = (
+            abs(daily_loss_limit) if daily_loss_limit else abs(engine_config.daily_loss_limit)
+        )
         self.max_events = max_events
 
         self.ladder = Ladder(config=strategy)
@@ -621,7 +634,7 @@ class ForwardRunner:
 
         mtm = self._mark_all()
         total = self.realised + sum(mtm.values())
-        if total <= -abs(engine_config.daily_loss_limit):
+        if total <= -self.daily_loss_limit:
             self.stopped_reason = f"daily loss limit hit ({total:,.0f})"
             self.emit("error", "KILL SWITCH: " + self.stopped_reason, pnl=round(total, 2))
 
@@ -782,6 +795,8 @@ class ForwardRunner:
                     stopped_reason=self.stopped_reason,
                     state=self.to_state(),
                     strategy_id=self.strategy_id,
+                    run_key=self.run_key,
+                    run_label=self.run_label,
                 )
             except Exception:                       # noqa: BLE001
                 log.exception("Could not persist forward state")
@@ -947,6 +962,9 @@ class ForwardRunner:
             "version": self.STATE_VERSION,
             "mode": self.mode,
             "strategy_id": self.strategy_id,
+            "run_key": self.run_key,
+            "run_label": self.run_label,
+            "daily_loss_limit": self.daily_loss_limit,
             # Persisted because a resumed run that silently changed cadence is
             # a different strategy from the one the user started.
             "expiry_cadence": self.expiry_cadence,
@@ -1005,6 +1023,9 @@ class ForwardRunner:
             # The database column wins over the blob: it is the one a query
             # can filter on, so it is the one the rest of the engine believes.
             strategy_id=strategy_id or state.get("strategy_id") or LADDER,
+            run_key=state.get("run_key"),
+            run_label=state.get("run_label") or "",
+            daily_loss_limit=state.get("daily_loss_limit"),
             expiry_cadence=state.get("expiry_cadence") or "weekly",
         )
         runner.started_at = _parse_dt(state.get("started_at")) or runner.started_at

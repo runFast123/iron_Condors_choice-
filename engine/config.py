@@ -108,7 +108,14 @@ class EngineConfig:
     # setting that looks like a live-trading switch but is not is worse
     # than no setting.
     max_condors: int = field(default_factory=lambda: _i("ENGINE_MAX_CONDORS", 20))
+    # Per run. One runaway forward test must not be able to stop the others.
     daily_loss_limit: float = field(default_factory=lambda: _f("ENGINE_DAILY_LOSS_LIMIT", 25_000.0))
+    # Across all of one user's runs. Per-run limits alone leave the total
+    # unbounded: five runs each stopping at the limit is five times the
+    # intended worst case. Defaults to twice the single-run figure.
+    account_loss_limit: float = field(
+        default_factory=lambda: _f("ENGINE_ACCOUNT_LOSS_LIMIT", 50_000.0)
+    )
     log_level: str = field(default_factory=lambda: os.environ.get("ENGINE_LOG_LEVEL", "INFO").upper())
 
 

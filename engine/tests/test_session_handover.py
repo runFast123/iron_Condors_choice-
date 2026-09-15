@@ -201,6 +201,7 @@ def test_starting_a_worker_twice_does_not_leave_two_driving_one_run(registry):
     runner.tick_thread = None
     runner.poll_seconds = 15.0
     runner.strategy_id = LADDER
+    runner.run_key = LADDER
     started = threading.Event()
     runner.run = lambda poll_seconds: started.wait(2.0)  # type: ignore[method-assign]
 

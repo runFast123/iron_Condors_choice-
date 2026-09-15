@@ -111,9 +111,10 @@ class UserSession:
     # quiet mid-session and nobody was told. Keyed by user, a new session for
     # the same person simply picks up the run already in flight.
     #
-    # The strategy half of the key is what lets one person run the ladder and
-    # the hybrid condor at once without either being able to see, stop or
-    # retire the other.
+    # The second half of the key is the run's name, which is what lets one
+    # person run several forward tests at once -- two configurations of the
+    # same strategy, or two different strategies -- without any of them being
+    # able to see, stop or retire another.
     #
     # The registry passes its own dict in, so every session for one user shares
     # exactly one runner per strategy and handover costs nothing.
@@ -121,18 +122,18 @@ class UserSession:
         default_factory=dict, repr=False, compare=False
     )
 
-    def runner_for(self, strategy_id: str) -> Any:
-        """This user's live run of one strategy, or None."""
-        return self._runners.get((self.user_id, strategy_id))
+    def runner_for(self, run_key: str) -> Any:
+        """One of this user's live runs, by name, or None."""
+        return self._runners.get((self.user_id, run_key))
 
-    def set_runner(self, strategy_id: str, value: Any) -> None:
+    def set_runner(self, run_key: str, value: Any) -> None:
         if value is None:
-            self._runners.pop((self.user_id, strategy_id), None)
+            self._runners.pop((self.user_id, run_key), None)
         else:
-            self._runners[(self.user_id, strategy_id)] = value
+            self._runners[(self.user_id, run_key)] = value
 
     def runners(self) -> dict[str, Any]:
-        """Every live run this user has, by strategy. Never another user's.
+        """Every live run this user has, by name. Never another user's.
 
         There is deliberately no plain `.runner` property. An alias meaning
         "the ladder" would leave every existing call site compiling, passing

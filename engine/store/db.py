@@ -45,6 +45,16 @@ LADDER = "ladder"
 HIC = "hic"
 STRATEGIES = (LADDER, HIC)
 
+# How a run is addressed.
+#
+# `strategy_id` says which strategy a run implements; `run_key` says which run
+# it is. They were the same thing while a user could only have one run per
+# strategy, and the default keeps that true for every run that already exists.
+# Separating them is what lets someone compare two configurations of the same
+# strategy on the same live ticks, which is the only honest way to tell whether
+# a change helps.
+DEFAULT_RUN_KEY = LADDER
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS forward_sessions (
     session_id     TEXT PRIMARY KEY,
@@ -146,6 +156,10 @@ class Store:
         # ladder run, so tagging them rewrites no row and needs no downtime --
         # which matters, because some of them are live and holding positions.
         self._add_column("forward_sessions", "strategy_id", f"TEXT NOT NULL DEFAULT '{LADDER}'")
+        # Same trick again: every run that exists is a ladder run and was
+        # addressed as "ladder", so the default is already its name.
+        self._add_column("forward_sessions", "run_key", f"TEXT NOT NULL DEFAULT '{LADDER}'")
+        self._add_column("forward_sessions", "run_label", "TEXT NOT NULL DEFAULT ''")
         self._add_column("backtest_runs", "strategy_id", f"TEXT NOT NULL DEFAULT '{LADDER}'")
         # Created here and not in SCHEMA, and this is not a style choice:
         # executescript runs before this method, and on a database that
@@ -197,6 +211,8 @@ class Store:
         stopped_reason: str | None,
         state: dict[str, Any],
         strategy_id: str = LADDER,
+        run_key: str = DEFAULT_RUN_KEY,
+        run_label: str = "",
     ) -> None:
         # strategy_id is deliberately absent from the DO UPDATE list below: a
         # run belongs to one strategy for its whole life, so an update path
@@ -205,17 +221,17 @@ class Store:
         self._write(
             """
             INSERT INTO forward_sessions
-                (session_id, user_id, strategy_id, status, started_at, updated_at,
-                 stopped_reason, state_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (session_id, user_id, strategy_id, run_key, run_label, status,
+                 started_at, updated_at, stopped_reason, state_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 status=excluded.status,
                 updated_at=excluded.updated_at,
                 stopped_reason=excluded.stopped_reason,
                 state_json=excluded.state_json
             """,
-            (session_id, user_id, strategy_id, status, started_at, _now(), stopped_reason,
-             json.dumps(state, separators=(",", ":"))),
+            (session_id, user_id, strategy_id, run_key, run_label, status, started_at,
+             _now(), stopped_reason, json.dumps(state, separators=(",", ":"))),
         )
 
     def running_forwards(self, strategy_id: str | None = None) -> list[dict[str, Any]]:
@@ -242,6 +258,8 @@ class Store:
                 "session_id": row["session_id"],
                 "user_id": row["user_id"],
                 "strategy_id": row["strategy_id"] or LADDER,
+                "run_key": row["run_key"] or (row["strategy_id"] or LADDER),
+                "run_label": row["run_label"] or "",
                 "started_at": row["started_at"],
                 "state": state,
             })
@@ -252,6 +270,8 @@ class Store:
             {
                 "session_id": r["session_id"], "status": r["status"],
                 "strategy_id": r["strategy_id"] or LADDER,
+                "run_key": r["run_key"] or (r["strategy_id"] or LADDER),
+                "run_label": r["run_label"] or "",
                 "started_at": r["started_at"], "updated_at": r["updated_at"],
                 "stopped_reason": r["stopped_reason"],
             }
@@ -260,7 +280,8 @@ class Store:
                 # row and none of it is used here. Every column the caller
                 # reads has to be named here, or it comes back missing without
                 # anything saying so.
-                "SELECT session_id, strategy_id, status, started_at, updated_at, stopped_reason "
+                "SELECT session_id, strategy_id, run_key, run_label, status, "
+                "started_at, updated_at, stopped_reason "
                 "FROM forward_sessions WHERE user_id = ? "
                 "ORDER BY started_at DESC LIMIT ?",
                 (user_id, limit),

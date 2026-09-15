@@ -24,6 +24,7 @@ import contextlib
 import datetime as dt
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -50,7 +51,7 @@ from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.pricing.calibrate import calibrate
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
-from engine.store.db import LADDER, STRATEGIES, Store
+from engine.store.db import DEFAULT_RUN_KEY, LADDER, STRATEGIES, Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
 
@@ -202,8 +203,47 @@ def strategy_param(strategy: str = LADDER) -> str:
     return strategy
 
 
+# How many forward tests one user may drive at once.
+#
+# Not arbitrary: the Choice rate limit is per user, and every run polls. Five
+# is enough to compare a handful of parameter sets side by side and stays well
+# inside the budget now that runs share quotes. A cap that says why it was
+# reached beats an unbounded one that quietly slows every run down.
+MAX_RUNS_PER_USER = int(os.environ.get("ENGINE_MAX_RUNS", "5") or 5)
+
+_RUN_KEY_OK = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
+
+
+def slugify_run_key(name: str) -> str:
+    """A short, URL-safe name for a run. Raises if nothing usable is left."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")[:24].strip("-")
+    if not _RUN_KEY_OK.match(slug):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{name!r} is not a usable run name. Use letters and digits.",
+        )
+    return slug
+
+
+def run_param(run: str = DEFAULT_RUN_KEY) -> str:
+    """Which of the user's runs a request is about.
+
+    Defaulted, so a dashboard that predates named runs keeps addressing the
+    one it always did -- the ladder run is named "ladder".
+    """
+    return slugify_run_key(run)
+
+
 class StartForwardRequest(BaseModel):
     strategy: str = Field(default=LADDER, pattern=f"^({'|'.join(STRATEGIES)})$")
+    # What to call this run. Defaults to the strategy, which is what a single
+    # run has always been addressed as. Give two runs different names to
+    # compare them on the same live ticks.
+    name: str | None = Field(default=None, max_length=40)
+    # This run's own kill switch, in rupees. Defaults to the engine-wide
+    # figure. Per run so one runaway test cannot stop the others; the total
+    # across a user's runs is checked separately.
+    daily_loss_limit: float | None = Field(default=None, gt=0, le=10_000_000)
     lots: int = Field(default=1, ge=1, le=100)
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
@@ -436,22 +476,22 @@ def _resume_forward_locked(session: UserSession, *, only: str | None = None) -> 
         log.exception("Could not read saved forward runs")
         return False
 
-    by_strategy: dict[str, list[dict]] = {}
+    by_run: dict[str, list[dict]] = {}
     for row in pending:
-        strategy_id = row.get("strategy_id") or LADDER
-        if only is not None and strategy_id != only:
+        run_key = row.get("run_key") or row.get("strategy_id") or LADDER
+        if only is not None and run_key != only:
             continue
-        by_strategy.setdefault(strategy_id, []).append(row)
+        by_run.setdefault(run_key, []).append(row)
 
     resumed = False
-    for strategy_id, rows in by_strategy.items():
-        if session.runner_for(strategy_id) is not None:
+    for run_key, rows in by_run.items():
+        if session.runner_for(run_key) is not None:
             continue                                # already has a driver
-        resumed |= _resume_one(session, strategy_id, rows)
+        resumed |= _resume_one(session, run_key, rows)
     return resumed
 
 
-def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> bool:
+def _resume_one(session: UserSession, run_key: str, rows: list[dict]) -> bool:
     # Only one run of a strategy can be driven at a time, so its siblings --
     # and only its siblings -- are retired.
     ordered = sorted(rows, key=_resume_rank)
@@ -462,8 +502,8 @@ def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> boo
             1 for c in (stale_state.get("condors") or []) if c.get("status") == "OPEN"
         )
         log.warning(
-            "Superseded %s run %s for user %s (%d open condor(s)); retiring it",
-            strategy_id, stale["session_id"], session.user_id, stale_open,
+            "Superseded run %s (%s) for user %s (%d open condor(s)); retiring it",
+            run_key, stale["session_id"], session.user_id, stale_open,
         )
         try:
             store.mark_stopped(
@@ -486,9 +526,10 @@ def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> boo
     try:
         runner = ForwardRunner.restore(
             record["state"], market=market, costs=CostModel(),
-            state_path=_state_path(session, strategy_id), store=store,
+            state_path=_state_path(session, run_key), store=store,
             session_id=record["session_id"], user_id=session.user_id,
-            strategy_id=strategy_id,
+            strategy_id=record.get("strategy_id") or LADDER,
+            run_key=run_key, run_label=record.get("run_label") or "",
         )
     except UnsupportedStateVersion:
         # Only an explicitly unsupported version is retired. `ValueError` was
@@ -508,7 +549,7 @@ def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> boo
     # Any run that was live before is stale by definition, so re-open it rather
     # than leaving a stopped reason from the shutdown hanging around.
     runner.stopped_reason = None
-    session.set_runner(strategy_id, runner)
+    session.set_runner(run_key, runner)
     runner.emit(
         "info", "Forward run resumed after an engine restart",
         condors=len([c for c in runner.condors if c.is_open]),
@@ -516,7 +557,7 @@ def _resume_one(session: UserSession, strategy_id: str, rows: list[dict]) -> boo
     )
     _start_tick_thread(runner, session, poll_seconds=15.0)
     log.info(
-        "Resumed %s run %s for user %s", strategy_id, record["session_id"], session.user_id
+        "Resumed run %s (%s) for user %s", run_key, record["session_id"], session.user_id
     )
     return True
 
@@ -536,7 +577,7 @@ def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds
     thread = threading.Thread(
         target=runner.run,
         kwargs={"poll_seconds": poll},
-        name=f"forward-{session.user_id}-{runner.strategy_id}",
+        name=f"forward-{session.user_id}-{runner.run_key}",
         daemon=True,
     )
     runner.tick_thread = thread
@@ -547,8 +588,8 @@ def _start_tick_thread(runner: ForwardRunner, session: UserSession, poll_seconds
 WATCHDOG_SECONDS = float(os.environ.get("ENGINE_WATCHDOG_SECONDS", "60") or 60)
 
 
-def _revive_run(session: UserSession, strategy_id: str = LADDER) -> bool:
-    """Make sure one strategy's saved run is actually being driven.
+def _revive_run(session: UserSession, run_key: str = DEFAULT_RUN_KEY) -> bool:
+    """Make sure one saved run is actually being driven.
 
     Three states have to be told apart, and conflating them is what let a
     ladder sit frozen through a 100-point decline:
@@ -559,16 +600,16 @@ def _revive_run(session: UserSession, strategy_id: str = LADDER) -> bool:
     * a runner that is ticking -- leave it alone.
     """
     with _user_revive_lock(session.user_id):
-        runner = session.runner_for(strategy_id)
+        runner = session.runner_for(run_key)
         if runner is None:
-            return _resume_forward_locked(session, only=strategy_id)
+            return _resume_forward_locked(session, only=run_key)
         if runner.stopped_reason or runner.is_ticking:
             return False
         runner.unsuspend()
         runner.emit("warn", "Forward run had stopped ticking; restarting its worker")
         log.warning(
-            "Restarting a dead %s worker for user %s (run %s)",
-            strategy_id, session.user_id, runner.session_id,
+            "Restarting a dead worker for %s/%s (run %s)",
+            session.user_id, run_key, runner.session_id,
         )
         _start_tick_thread(runner, session, runner.poll_seconds)
         return True
@@ -589,9 +630,10 @@ def _watchdog_pass() -> None:
         return
     wanted: dict[str, set[str]] = {}
     for row in rows:
-        wanted.setdefault(row["user_id"], set()).add(row.get("strategy_id") or LADDER)
+        key = row.get("run_key") or row.get("strategy_id") or LADDER
+        wanted.setdefault(row["user_id"], set()).add(key)
 
-    for user_id, strategies in wanted.items():
+    for user_id, run_keys in wanted.items():
         try:
             session = registry.revive_for_user(user_id)
             if session is None:
@@ -601,12 +643,49 @@ def _watchdog_pass() -> None:
         except Exception:                           # noqa: BLE001
             log.exception("Watchdog could not revive a session for %s", user_id)
             continue
-        for strategy_id in sorted(strategies):
+        for run_key in sorted(run_keys):
             try:
-                _revive_run(session, strategy_id)
+                _revive_run(session, run_key)
             except Exception:                       # noqa: BLE001
-                # One strategy failing must not cost the user the other one.
-                log.exception("Watchdog failed for %s/%s", user_id, strategy_id)
+                # One run failing must not cost the user the others.
+                log.exception("Watchdog failed for %s/%s", user_id, run_key)
+        try:
+            _enforce_account_loss_limit(session)
+        except Exception:                           # noqa: BLE001
+            log.exception("Could not check the account loss limit for %s", user_id)
+
+
+def _enforce_account_loss_limit(session: UserSession) -> bool:
+    """Stop every one of a user's runs if their combined loss breaches.
+
+    Each run carries its own limit, so one runaway test cannot take the others
+    down. That leaves the sum unbounded -- five runs each stopping at the limit
+    is five times the intended worst case -- which is what this catches. It
+    lives here rather than in the runner because a runner cannot see its
+    siblings, and a per-tick check that needed to would have to reach across
+    them on every tick of every run.
+    """
+    runners = [r for r in session.runners().values() if r.stopped_reason is None]
+    if len(runners) < 2:
+        return False                     # a single run polices itself
+
+    limit = abs(engine_config.account_loss_limit)
+    total = 0.0
+    for runner in runners:
+        pnl = runner.snapshot().get("pnl") or {}
+        total += float(pnl.get("total") or 0.0)
+    if total > -limit:
+        return False
+
+    reason = f"account loss limit hit across {len(runners)} runs ({total:,.0f})"
+    log.error("KILL SWITCH for %s: %s", session.user_id, reason)
+    for runner in runners:
+        runner.stopped_reason = reason
+        runner.emit("error", "KILL SWITCH: " + reason, pnl=round(total, 2))
+        runner.save()
+        if runner.session_id:
+            store.mark_stopped(runner.session_id, reason)
+    return True
 
 
 def _start_watchdog() -> None:
@@ -775,9 +854,11 @@ def forward_start(
     market: ChoiceMarketData = Depends(user_market),
 ) -> dict[str, Any]:
     strategy_id = body.strategy
-    live = session.runner_for(strategy_id)
+    run_key = slugify_run_key(body.name) if body.name else strategy_id
+    live = session.runner_for(run_key)
     if live is not None and live.stopped_reason is None:
-        return {"ok": True, "already_running": True, "state": live.snapshot()}
+        return {"ok": True, "already_running": True, "run_key": run_key,
+                "state": live.snapshot()}
 
     # Adopt a saved run before minting a new one.
     #
@@ -787,10 +868,21 @@ def forward_start(
     # resume picks, destroying the ladder that had been trading all day.
     # Resuming here closes that window.
     if _resume_forward(session):
-        adopted = session.runner_for(strategy_id)
+        adopted = session.runner_for(run_key)
         if adopted is not None:
             return {"ok": True, "already_running": True, "resumed": True,
-                    "state": adopted.snapshot()}
+                    "run_key": run_key, "state": adopted.snapshot()}
+
+    # Capped, and the cap says why. Every run polls, and the Choice rate limit
+    # is per user rather than per run, so an unbounded count would quietly slow
+    # every one of them down instead of refusing the one that broke the budget.
+    running = [k for k, r in session.runners().items() if r.stopped_reason is None]
+    if len(running) >= MAX_RUNS_PER_USER:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"You already have {len(running)} forward tests running "
+            f"({', '.join(sorted(running))}). Stop one, or raise ENGINE_MAX_RUNS.",
+        )
 
     try:
         lot_size = market.master.lot_size_for(NIFTY)
@@ -829,13 +921,16 @@ def forward_start(
         expiry_cadence=body.expiry_cadence,
         # Per user and per strategy: neither another user's run nor this
         # user's other strategy may overwrite this one's snapshot.
-        state_path=_state_path(session, strategy_id),
+        state_path=_state_path(session, run_key),
         store=store,
         session_id=uuid.uuid4().hex,
         user_id=session.user_id,
         strategy_id=strategy_id,
+        run_key=run_key,
+        run_label=(body.name or strategy_id).strip()[:40],
+        daily_loss_limit=body.daily_loss_limit,
     )
-    session.set_runner(strategy_id, runner)
+    session.set_runner(run_key, runner)
 
     # First tick inline so the caller gets a populated state immediately, then
     # keep ticking on a worker thread. Without the background loop the ladder
@@ -880,6 +975,43 @@ def forward_tick(
     return {"ok": True, "state": runner.snapshot()}
 
 
+@app.get("/forward/runs", dependencies=[Depends(check_engine_key)])
+def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """Every forward test this user is driving, newest first.
+
+    One entry per run with enough to render a row without asking for each
+    run's full snapshot: what it is, what it was configured with, and where it
+    stands. The full state is still one call away per run.
+    """
+    out = []
+    for run_key, runner in session.runners().items():
+        snap = runner.snapshot()
+        pnl = snap.get("pnl") or {}
+        ladder = snap.get("ladder") or {}
+        out.append({
+            "run_key": run_key,
+            "label": runner.run_label or run_key,
+            "strategy": runner.strategy_id,
+            "running": runner.stopped_reason is None,
+            "stopped_reason": runner.stopped_reason,
+            "ticking": runner.is_ticking,
+            "started_at": runner.started_at.isoformat(),
+            "last_tick": snap.get("session", {}).get("last_tick"),
+            "expiry": snap.get("session", {}).get("expiry"),
+            "direction": ladder.get("direction"),
+            "lots": runner.strategy.lots,
+            "daily_loss_limit": runner.daily_loss_limit,
+            "pnl": pnl,
+            "open_condors": pnl.get("open_condors", 0),
+        })
+    out.sort(key=lambda r: r["started_at"], reverse=True)
+    return {
+        "runs": out,
+        "max_runs": MAX_RUNS_PER_USER,
+        "account_loss_limit": abs(engine_config.account_loss_limit),
+    }
+
+
 @app.get("/forward/state", dependencies=[Depends(check_engine_key)])
 def forward_state(
     session: UserSession = Depends(current_user),
@@ -895,8 +1027,10 @@ def forward_state(
     return {
         "running": runner is not None and runner.stopped_reason is None,
         "state": runner.snapshot() if runner is not None else None,
-        "strategies": {
-            sid: {"running": r.stopped_reason is None} for sid, r in session.runners().items()
+        "runs": {
+            key: {"running": r.stopped_reason is None, "label": r.run_label or key,
+                  "strategy": r.strategy_id}
+            for key, r in session.runners().items()
         },
     }
 
@@ -951,7 +1085,7 @@ def _require_runner(session: UserSession, strategy_id: str = LADDER) -> ForwardR
     return runner
 
 
-def _state_path(session: UserSession, strategy_id: str = LADDER):
+def _state_path(session: UserSession, run_key: str = DEFAULT_RUN_KEY):
     """Where a run's convenience snapshot is written.
 
     Named per strategy: one path per user meant a second strategy would
@@ -962,7 +1096,7 @@ def _state_path(session: UserSession, strategy_id: str = LADDER):
     from pathlib import Path
 
     base = Path(os.environ.get("ENGINE_STATE_DIR", "engine/state"))
-    return base / f"live-{session.user_id}-{strategy_id}.json"
+    return base / f"live-{session.user_id}-{run_key}.json"
 
 
 @app.exception_handler(ChoiceError)
