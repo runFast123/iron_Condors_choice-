@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Iterator
 
@@ -50,6 +52,20 @@ _TOKEN_KEYS = ("Token", "token", "ScripCode", "scripcode", "InstrumentToken")
 _LTP_KEYS = ("LTP", "Ltp", "ltp", "LastTradedPrice", "LastRate", "Last", "ClosePrice")
 _BID_KEYS = ("BestBidPrice", "BidPrice", "Bid", "BuyPrice", "BestBuyPrice", "bid")
 _ASK_KEYS = ("BestAskPrice", "AskPrice", "Ask", "SellPrice", "BestSellPrice", "BestOfferPrice", "ask")
+
+# How long a quote may be reused. Deliberately below the fastest poll a run can
+# be configured with (5s), so sharing can never hand a run a price older than
+# its own previous tick.
+QUOTE_TTL = 3.0
+QUOTE_CACHE_MAX = 4_000
+
+# How long to remember that the touchline does not serve a token.
+#
+# It does not serve index tokens at all, so without this the index is asked for
+# on every tick of every run and answered with nothing, every time, before
+# falling through to ChartData. Long enough to matter, short enough that a
+# token which starts being served is picked up within the minute.
+UNSERVED_TTL = 60.0
 
 
 def _candle_time(row: Any) -> dt.datetime | None:
@@ -195,6 +211,18 @@ class ChoiceMarketData:
     # anyone could make. Calibrated against ChartData, whose scaling comes from
     # the response's own PriceDivisor and is therefore known-good.
     quote_scale: float | None = None
+    # Recently fetched quotes, and when each arrived.
+    #
+    # One of these objects belongs to one user, so this is a per-user cache and
+    # never mixes two people's data. It exists because a user running several
+    # forward tests at once has them all quoting largely the same option
+    # tokens, a few seconds apart: without it, five runs cost five times the
+    # broker calls for the same prices, against a rate limit that is also
+    # per-user. With it they cost one.
+    _cache: dict[int, tuple[float, Quote]] = field(default_factory=dict, repr=False)
+    # Tokens the touchline answered nothing for, and when it did so.
+    _unserved: dict[int, float] = field(default_factory=dict, repr=False)
+    _cache_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def connect(cls, session: ChoiceSession | None = None) -> "ChoiceMarketData":
@@ -317,11 +345,36 @@ class ChoiceMarketData:
 
     # ------------------------------------------------------------------ live
 
+    def cached_quotes(self, tokens: Iterable[int], *, max_age: float = QUOTE_TTL) -> dict[int, Quote]:
+        """Quotes fetched within `max_age` seconds. Not a price source."""
+        if max_age <= 0:
+            return {}
+        now = time.monotonic()
+        with self._cache_lock:
+            return {
+                token: quote
+                for token in tokens
+                if (hit := self._cache.get(token)) is not None and now - hit[0] <= max_age
+                for quote in (hit[1],)
+            }
+
+    def _remember(self, quotes: dict[int, Quote]) -> None:
+        now = time.monotonic()
+        with self._cache_lock:
+            for token, quote in quotes.items():
+                self._cache[token] = (now, quote)
+            # Bounded so a long-running engine cannot grow one entry per strike
+            # it has ever touched. Oldest first; the working set is one expiry.
+            if len(self._cache) > QUOTE_CACHE_MAX:
+                for token in sorted(self._cache, key=lambda k: self._cache[k][0])[:len(self._cache) // 2]:
+                    self._cache.pop(token, None)
+
     def quotes(
         self,
         contracts: Iterable[Contract],
         *,
         allow_history_fallback: bool = True,
+        max_age: float = QUOTE_TTL,
     ) -> dict[int, Quote]:
         """Best available price per token, live if possible.
 
@@ -340,12 +393,46 @@ class ChoiceMarketData:
         if not items:
             return {}
 
-        found = self._touchline_quotes(items)
-        missing = [c for c in items if c.token not in found]
+        # Anything quoted a moment ago is served from memory. The window is
+        # shorter than the fastest allowed poll, so no run can be handed a
+        # price from an earlier tick than its own.
+        found = self.cached_quotes((c.token for c in items), max_age=max_age)
+        outstanding = [c for c in items if c.token not in found]
+        if not outstanding:
+            return found
+
+        # Anything the touchline is known not to serve skips it entirely and
+        # goes straight to the candle fallback, which is the only thing that
+        # was ever going to answer for it.
+        now = time.monotonic()
+        with self._cache_lock:
+            askable = [
+                c for c in outstanding
+                if now - self._unserved.get(c.token, -UNSERVED_TTL) >= UNSERVED_TTL
+            ]
+
+        if askable:
+            fresh = self._touchline_quotes(askable)
+            self._remember(fresh)
+            found.update(fresh)
+            refused = [c.token for c in askable if c.token not in fresh]
+            if refused:
+                with self._cache_lock:
+                    for token in refused:
+                        self._unserved[token] = now
+
+        missing = [c for c in outstanding if c.token not in found]
 
         if missing and allow_history_fallback:
-            for token, (price, as_of) in self.last_traded(missing).items():
-                found[token] = Quote(token=token, ltp=price, stale=True, as_of=as_of)
+            recovered = {
+                token: Quote(token=token, ltp=price, stale=True, as_of=as_of)
+                for token, (price, as_of) in self.last_traded(missing).items()
+            }
+            # Cached too, and this is the case that matters most: the index is
+            # never served by the touchline, so every tick of every run falls
+            # through to ChartData, which is the slow path with retries.
+            self._remember(recovered)
+            found.update(recovered)
 
         if not found:
             raise ChoiceError(
@@ -364,9 +451,14 @@ class ChoiceMarketData:
         Returns ``{}`` rather than raising: an empty book is a fact for the
         caller to handle, not an exception.
         """
-        # Prefer the shape that already worked this session.
-        ordered = sorted(
-            TOUCHLINE_FORMATS, key=lambda f: f[0] != self.touchline_format
+        # Once a shape is known to work, use only that one. Probing the rest
+        # on an empty response conflates "this endpoint wants a different
+        # payload" with "this endpoint has nothing for these tokens", and the
+        # second is routine: it does not serve index tokens at all. That
+        # conflation turned one refused token into four calls every tick.
+        ordered = (
+            [f for f in TOUCHLINE_FORMATS if f[0] == self.touchline_format]
+            or list(TOUCHLINE_FORMATS)
         )
         attempts: list[str] = []
 
@@ -493,9 +585,14 @@ class ChoiceMarketData:
                 out[contract.token] = (price, _candle_time(last))
         return out
 
-    def touchline(self, contracts: Iterable[Contract]) -> dict[int, float]:
+    def touchline(
+        self, contracts: Iterable[Contract], *, max_age: float = QUOTE_TTL
+    ) -> dict[int, float]:
         """LTP only, for callers that do not care about the spread."""
-        return {token: q.ltp for token, q in self.quotes(contracts).items()}
+        return {
+            token: q.ltp
+            for token, q in self.quotes(contracts, max_age=max_age).items()
+        }
 
     @staticmethod
     def _shape_of(resp: dict) -> str:

@@ -107,15 +107,71 @@ def test_touchline_finds_whichever_shape_the_endpoint_accepts(shape):
     assert market.touchline_format == shape
 
 
+def _both(accepts="segment,token|"):
+    """A fake that answers for every token in PAIR."""
+    return _Session(
+        accepts=accepts,
+        rows=[{"Token": 26000, "LTP": 24_000}, {"Token": 42632, "LTP": 120}],
+    )
+
+
 def test_touchline_remembers_the_working_shape():
-    session = _Session(accepts="segment,token|")
+    """Probing is for the first call only. Once the shape is known, an empty
+    response means "nothing for these tokens" rather than "wrong payload" --
+    and the second reading is routine, since the endpoint does not serve index
+    tokens at all."""
+    session = _both()
+    market = _market(session)
+
+    market.touchline(PAIR)
+    assert len(session.seen) > 1, "the first call should have had to probe"
+
+    session.seen.clear()
+    market.touchline(PAIR, max_age=0)          # cache deliberately bypassed
+    assert len(session.seen) == 1, session.seen
+
+
+def test_a_repeat_within_the_window_costs_no_broker_call_at_all():
+    """What makes several forward tests affordable. They quote largely the
+    same tokens seconds apart, and the rate limit is per user, not per run."""
+    session = _both()
     market = _market(session)
     market.touchline(PAIR)
-    first_attempts = len(session.seen)
+
     session.seen.clear()
+    assert market.touchline(PAIR) == {26000: 24_000.0, 42632: 120.0}
+    assert session.seen == [], "a cached quote must not reach the broker"
+
+
+def test_the_cache_expires_rather_than_serving_a_stale_price_forever():
+    session = _both()
+    market = _market(session)
     market.touchline(PAIR)
-    # Second call should hit the known-good shape immediately.
-    assert len(session.seen) == 1 < first_attempts
+
+    session.seen.clear()
+    market.touchline(PAIR, max_age=0)
+    assert session.seen, "an expired quote must be re-fetched"
+
+
+def test_a_token_the_endpoint_refuses_is_not_asked_for_again():
+    """The index is exactly this case: never served, asked for on every tick of
+    every run, answered with nothing every time."""
+    import contextlib
+
+    from engine.choice.errors import ChoiceError
+
+    session = _Session(accepts="segment,token|")          # answers 26000 only
+    market = _market(session)
+    market.touchline(PAIR)
+
+    assert 42632 in market._unserved, "the refusal was not recorded"
+
+    session.seen.clear()
+    # Raises here only because this fake has no history client to fall back
+    # to; what is under test is which tokens reached the endpoint.
+    with contextlib.suppress(ChoiceError):
+        market.touchline(PAIR, max_age=0)
+    assert all("42632" not in payload for payload in session.seen), session.seen
 
 
 def test_touchline_reports_what_it_tried_when_nothing_works():
