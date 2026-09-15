@@ -93,11 +93,35 @@ def test_downside_deviation_divides_by_all_observations():
 
 
 def test_sortino_exceeds_sharpe_on_a_positively_skewed_series():
+    # Small losses most days and an occasional large gain: the shape a condor
+    # ladder is supposed to have. Long enough to annualise -- an annual ratio
+    # off six returns is arithmetic, not a measurement.
+    equity, level = [], 0.0
+    for day in range(M.MIN_RATIO_SAMPLES + 6):
+        level += 300.0 if day % 5 == 4 else -10.0
+        equity.append(level)
+    pts = [M.EquityPoint(ts=dt.datetime(2026, 3, 1) + dt.timedelta(days=i), equity=e)
+           for i, e in enumerate(equity)]
+
+    m = M.compute(realised=[equity[-1]], equity=pts, total_credit=0, total_costs=0,
+                  capital_at_risk=10_000, max_concurrent=1)
+
+    assert m.sortino is not None and m.sharpe is not None
+    assert m.sortino > m.sharpe > 0
+
+
+def test_a_handful_of_days_reports_no_ratio_rather_than_a_fantastic_one():
+    """Two returns is one degree of freedom, and sqrt(252) turns that into a
+    Sharpe above 30 -- a figure no real strategy reaches, printed as confidently
+    as a real one."""
     pts = [M.EquityPoint(ts=dt.datetime(2026, 3, 1) + dt.timedelta(days=i), equity=e)
            for i, e in enumerate([100, 90, 80, 400, 390, 380, 700])]
+
     m = M.compute(realised=[700.0], equity=pts, total_credit=0, total_costs=0,
                   capital_at_risk=10_000, max_concurrent=1)
-    assert m.sortino > m.sharpe > 0
+
+    assert m.sharpe is None and m.sortino is None
+    assert m.net_pnl == 700.0, "the P&L it did make is still reported"
 
 
 def test_a_short_span_does_not_annualise_into_a_fantasy():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 
 import pandas as pd
 import pytest
@@ -145,6 +146,36 @@ def test_stop_loss_closes_on_an_adverse_move():
     condor = result.condors[0]
     assert condor.status is CondorStatus.CLOSED_STOP
     assert "stop-loss" in (condor.exit_reason or "")
+
+
+def test_slippage_is_charged_on_the_way_out_as_well_as_in():
+    """Charging it only on entry understated the round trip by about half,
+    which flatters exactly the configurations that trade most."""
+    free = ZERO_COST
+    charged = replace(free, slippage_points=2.0)
+    spots = [24_000] * 80
+
+    without = run(spots, params=BacktestParams(strategy=cfg(take_profit_pct=0.4), costs=free),
+                  minutes=60).condors[0]
+    with_slip = run(spots, params=BacktestParams(strategy=cfg(take_profit_pct=0.4), costs=charged),
+                    minutes=60).condors[0]
+
+    assert without.status is CondorStatus.CLOSED_TARGET
+    assert with_slip.status is CondorStatus.CLOSED_TARGET
+    per_leg = 2.0 * with_slip.legs[0].leg.qty
+    assert with_slip.entry_costs == pytest.approx(4 * per_leg)
+    assert with_slip.exit_costs == pytest.approx(4 * per_leg), "both halves, not one"
+
+
+def test_a_cash_settlement_is_not_charged_slippage():
+    """There is no spread to cross at expiry: the exchange settles at
+    intrinsic, so only STT on in-the-money shorts applies."""
+    charged = replace(ZERO_COST, slippage_points=2.0)
+    result = run([24_000] * 10, params=BacktestParams(strategy=cfg(), costs=charged))
+    condor = result.condors[0]
+
+    assert condor.status is CondorStatus.EXPIRED
+    assert condor.exit_costs == pytest.approx(0.0)
 
 
 def test_without_exits_configured_the_condor_is_held_to_expiry():

@@ -382,8 +382,16 @@ class Backtest:
                 marks = self._mark(condor, when, spot)
                 reason = condor.exit_signal(marks)
                 if reason is not None:
+                    # Slippage on the way out as well as in. Charging it only
+                    # on entry understated the round trip by about half, which
+                    # flatters exactly the configurations that trade most.
+                    # Dormant while `slippage_points` is 0, which is its
+                    # default and what every API path sends today -- but it is
+                    # a setting, and a setting that half-works is worse than
+                    # one that does not exist.
                     exit_costs = sum(
                         params.costs.leg_cost(_flip(fl.leg.side), marks[fl.leg], fl.leg.qty)
+                        + params.costs.slippage(fl.leg.qty)
                         for fl in condor.legs
                     )
                     for fl in condor.legs:

@@ -12,6 +12,13 @@ TRADING_DAYS = 252
 # Below this, an annualised growth rate says more about the calendar than the
 # strategy. A 2% gain over one day annualises to five figures.
 MIN_CAGR_DAYS = 90.0
+#: Daily returns needed before an annualised ratio means anything.
+#
+# Two returns give one degree of freedom, and multiplying that by sqrt(252)
+# produced headline Sharpes above 30 from three days of data -- a number no
+# real strategy reaches, printed with the same confidence as a real one. A
+# month of sessions is the least that can carry an annual figure.
+MIN_RATIO_SAMPLES = 20
 
 
 @dataclass
@@ -187,7 +194,7 @@ def compute(
             metrics.max_drawdown_pct = metrics.max_drawdown / capital_at_risk
 
         rets = daily_returns(equity, capital_at_risk)
-        if len(rets) > 1:
+        if len(rets) >= MIN_RATIO_SAMPLES:
             sigma = _stdev(rets)
             mu = _mean(rets)
             # A zero standard deviation is a run with no variation at all, for
