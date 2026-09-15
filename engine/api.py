@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime as dt
+from dataclasses import replace
 import logging
 import os
 import re
@@ -51,9 +52,10 @@ from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.pricing.calibrate import calibrate
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
-from engine.store.db import DEFAULT_RUN_KEY, LADDER, STRATEGIES, Store
+from engine.store.db import DEFAULT_RUN_KEY, HIC, LADDER, STRATEGIES, Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
+from engine.strategy.hic import HicConfig
 
 log = logging.getLogger(__name__)
 
@@ -235,6 +237,20 @@ class StartForwardRequest(BaseModel):
     # figure. Per run so one runaway test cannot stop the others; the total
     # across a user's runs is checked separately.
     daily_loss_limit: float | None = Field(default=None, gt=0, le=10_000_000)
+
+    # --- HIC only. Ignored by the ladder, which has no band and no spreads.
+    #
+    # Steps either side of the anchor that open a full condor rather than a
+    # spread. 0 makes only the anchor a condor.
+    full_band_steps: int = Field(default=1, ge=0, le=10)
+    # "buy" is the strategy. "sell" is the opposite reading, kept so a run can
+    # price the comparison the document calls H4.
+    half_mode: str = Field(default="buy", pattern="^(buy|sell)$")
+    # 0 reverses the condor's own strikes at that level; 200 buys at the level
+    # itself, which costs more and starts paying sooner.
+    debit_shift: float = Field(default=0.0, ge=0, le=1000)
+    max_put_spreads: int = Field(default=10, ge=0, le=100)
+    max_call_spreads: int = Field(default=10, ge=0, le=100)
     lots: int = Field(default=1, ge=1, le=100)
     step: float = Field(default=100.0, gt=0, le=5000)
     poll_seconds: float = Field(default=15.0, ge=5, le=300)
@@ -838,6 +854,50 @@ def refresh_calibration(
     return {"ok": True, "calibration": result.summary()}
 
 
+def _strategy_config(
+    body: "StartForwardRequest", *, lot_size: int, strike_step: float
+) -> StrategyConfig:
+    """The geometry a run will trade, of whichever strategy's shape.
+
+    HIC's config is a subclass, so everything downstream -- the trigger, the
+    leg builder, the cost model, the persistence round-trip -- takes one and
+    none of them need to know which they were handed.
+    """
+    common = dict(
+        step=body.step, lots=body.lots, lot_size=lot_size,
+        max_condors=min(body.max_condors, engine_config.max_condors),
+        direction=body.direction,
+        anchor_mode=body.anchor_mode,
+        max_down=body.max_down,
+        max_up=body.max_up,
+        strike_step=strike_step,
+        take_profit_pct=body.take_profit,
+        stop_loss_mult=body.stop_loss,
+    )
+    if body.strategy != HIC:
+        return StrategyConfig(**common)
+
+    # HIC is two-way by construction: the spreads it buys follow the move, so
+    # a one-directional run of it is a different strategy wearing the name.
+    common["direction"] = "both"
+    config = HicConfig(
+        **common,
+        full_band_steps=body.full_band_steps,
+        half_mode=body.half_mode,
+        debit_shift=body.debit_shift,
+        max_put_spreads=body.max_put_spreads,
+        max_call_spreads=body.max_call_spreads,
+    )
+    # The per-side caps say how far the ladder may go; for HIC that is the band
+    # plus its spreads. Left to the caller only if they asked for something
+    # tighter, since a cap is a limit rather than an instruction.
+    return replace(
+        config,
+        max_down=min(body.max_down or config.max_down_levels, config.max_down_levels),
+        max_up=min(body.max_up or config.max_up_levels, config.max_up_levels),
+    )
+
+
 @app.post("/forward/start", dependencies=[Depends(check_engine_key)])
 def forward_start(
     body: StartForwardRequest,
@@ -897,17 +957,7 @@ def forward_start(
 
     runner = ForwardRunner(
         market=market,
-        strategy=StrategyConfig(
-            step=body.step, lots=body.lots, lot_size=lot_size,
-            max_condors=min(body.max_condors, engine_config.max_condors),
-            direction=body.direction,
-            anchor_mode=body.anchor_mode,
-            max_down=body.max_down,
-            max_up=body.max_up,
-            strike_step=strike_step,
-            take_profit_pct=body.take_profit,
-            stop_loss_mult=body.stop_loss,
-        ),
+        strategy=_strategy_config(body, lot_size=lot_size, strike_step=strike_step),
         costs=CostModel(),
         expiry_cadence=body.expiry_cadence,
         # Per user and per strategy: neither another user's run nor this

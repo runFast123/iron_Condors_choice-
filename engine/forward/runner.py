@@ -45,13 +45,17 @@ from engine.strategy.condor import (
     CondorStatus,
     FilledLeg,
     Leg,
+    PositionUnit,
     PriceSource,
     Side,
     StrategyConfig,
+    UnitKind,
     build_legs,
     net_positions,
     netting_summary,
 )
+from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
+from engine.strategy.vertical import VerticalSpread
 from engine.store.db import LADDER, Store
 from engine.strategy.ladder import Ladder
 
@@ -191,7 +195,12 @@ class ForwardRunner:
         self.max_events = max_events
 
         self.ladder = Ladder(config=strategy)
-        self.condors: list[Condor] = []
+        # Still called `condors`: that is the persisted key and the name every
+        # surface reads. It now holds whatever the strategy opens -- for HIC,
+        # condors near the anchor and vertical spreads beyond it. The name is
+        # a little wrong; renaming it is a schema change, so the debt is
+        # recorded rather than paid.
+        self.condors: list[PositionUnit] = []
         self.events: list[Event] = []
         self.fills: list[Fill] = []
         self.started_at = dt.datetime.now(tz=IST)
@@ -352,8 +361,37 @@ class ForwardRunner:
 
     # ---------------------------------------------------------------- open
 
-    def _open_condor(self, level: float, expiry: dt.date, side: str = "down") -> Condor | None:
-        legs = build_legs(level, self.strategy)
+    def _plan_unit(self, level: float) -> tuple[list[Leg], UnitKind, int | None]:
+        """What this strategy opens at `level`: its legs, its kind, its step.
+
+        The ladder opens a condor at every level. HIC opens a condor near the
+        anchor and a vertical spread beyond it, so it has to know how far the
+        level is from the anchor before it can say what to build.
+        """
+        config = self.strategy
+        if not isinstance(config, HicConfig):
+            return build_legs(level, config), UnitKind.CONDOR, None
+
+        anchor = self.ladder.anchor
+        if anchor is None:
+            # Nothing can be outside a band that has not been placed yet.
+            return build_legs(level, config), UnitKind.CONDOR, 0
+        k = steps_from_anchor(level, anchor, config.step)
+        return build_hic_legs(level, k, config), structure_kind(k, config), k
+
+    def _open_condor(
+        self, level: float, expiry: dt.date, side: str = "down"
+    ) -> PositionUnit | None:
+        try:
+            legs, kind, k = self._plan_unit(level)
+        except ValueError as exc:
+            # A structure that cannot be built -- a spread whose two strikes
+            # collapse onto one, say -- is a configuration fault, not a
+            # tradeable position.
+            self.emit(
+                "error", "Could not build a unit at this level", level=level, error=str(exc)
+            )
+            return None
         quoted = self._quote_legs(legs, expiry)
         if quoted is None:
             return None
@@ -406,10 +444,11 @@ class ForwardRunner:
                 )
             )
 
-        condor = Condor(
+        unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
+        condor = unit_type(
             level=level, entry_time=now, expiry=expiry, legs=filled,
             config=self.strategy, entry_costs=entry_costs, index=len(self.condors),
-            side=side,
+            side=side, kind=kind, k=k,
         )
         self.condors.append(condor)
         self.emit(
@@ -418,28 +457,68 @@ class ForwardRunner:
             max_loss=round(condor.max_loss, 2), expiry=expiry.isoformat(),
             modelled_legs=modelled,
         )
-        # A credit worth a rounding error against the risk is not a trade, it
-        # is a pricing fault. Seen live: a 20-DTE 200-point condor opened for
-        # Rs62 against Rs13,000 of risk, because every premium was a hundredth
-        # of its value. The structure looked perfectly well formed.
-        risk = condor.wing_width * condor.config.qty
-        if risk > 0 and 0 < condor.credit < risk * MIN_CREDIT_FRACTION:
+        self._check_premium_is_plausible(condor, level)
+        return condor
+
+    def _check_premium_is_plausible(self, unit: PositionUnit, level: float) -> None:
+        """Warn when what a structure cost looks like a quote fault.
+
+        Written for a real one: a 20-DTE 200-point condor opened for Rs62
+        against Rs13,000 of risk, because every premium came through at a
+        hundredth of its value. The structure itself looked perfectly well
+        formed, which is what made it dangerous.
+
+        The test is against what the structure was *meant* to be, not against
+        the sign of what it cost. A condor is a credit structure, so a debit is
+        a fault. A bought spread is a debit structure, so a credit is equally
+        one -- and that case was invisible before, because the old check only
+        looked for the condor's failure.
+        """
+        span = _premium_span(unit)
+        if span <= 0:
+            return
+
+        expects_credit = unit.kind is UnitKind.CONDOR or not _expects_debit(unit)
+        taken = unit.credit
+        paid = -taken
+
+        if taken == 0:
+            self.emit(
+                "warn", "Opened for nothing at all; check the quotes",
+                level=level, kind=unit.kind.value,
+            )
+            return
+
+        if expects_credit and taken < 0:
+            self.emit(
+                "warn", "Credit structure opened at a net debit; check the quotes",
+                level=level, kind=unit.kind.value, credit=round(taken, 2),
+            )
+            return
+        if not expects_credit and taken > 0:
+            self.emit(
+                "warn", "Debit structure opened for a credit; check the quotes",
+                level=level, kind=unit.kind.value, credit=round(taken, 2),
+            )
+            return
+
+        premium = taken if expects_credit else paid
+        if premium < span * MIN_CREDIT_FRACTION:
             self.emit(
                 "warn",
-                "Credit is implausibly small for the risk; check the quote scale",
-                level=level, credit=round(condor.credit, 2),
-                risk=round(risk, 2),
-                credit_pct_of_width=round(100 * condor.credit / risk, 3),
+                "Premium is implausibly small for the risk; check the quote scale",
+                level=level, kind=unit.kind.value, premium=round(premium, 2),
+                risk=round(span, 2),
+                premium_pct_of_width=round(100 * premium / span, 3),
             )
-        if condor.credit <= 0:
-            # An iron condor is a credit structure by construction. A debit
-            # means the quotes are wrong -- a stale strike, the wrong divisor,
-            # the wrong segment -- not that the trade is merely unattractive.
+        elif not expects_credit and paid >= span:
+            # A bought spread cannot rationally cost more than it can ever pay,
+            # and the width is the most it can pay.
             self.emit(
-                "warn", "Condor opened at a net debit; check the quotes",
-                level=level, credit=round(condor.credit, 2),
+                "warn", "Debit spread cost more than its maximum payout",
+                level=level, kind=unit.kind.value, debit=round(paid, 2),
+                max_payout=round(span, 2),
             )
-        return condor
 
     # -------------------------------------------------------------- manage
 
@@ -927,6 +1006,10 @@ class ForwardRunner:
             "index": condor.index,
             "level": condor.level,
             "side": getattr(condor, "side", "down"),
+            # Absent on state written before HIC existed, where every unit was
+            # a condor -- which is exactly what the restore default says.
+            "kind": condor.kind.value,
+            "k": condor.k,
             "entry_time": condor.entry_time.isoformat(),
             "expiry": condor.expiry.isoformat(),
             "status": condor.status.value,
@@ -1066,6 +1149,23 @@ class ForwardRunner:
         return runner
 
 
+def _expects_debit(unit: PositionUnit) -> bool:
+    """Whether this structure was built to be paid for rather than sold."""
+    return unit.kind in (UnitKind.PUT_DEBIT_SPREAD, UnitKind.CALL_DEBIT_SPREAD)
+
+
+def _premium_span(unit: PositionUnit) -> float:
+    """The most the structure can be worth at expiry, in rupees.
+
+    A condor's is one wing; a vertical's is the gap between its two strikes.
+    Both are the figure the premium has to look sane against.
+    """
+    width = getattr(unit, "wing_width", None)
+    if width is None:
+        width = getattr(unit, "width", 0.0)
+    return float(width) * unit.config.qty
+
+
 def _parse_dt(value: str | None) -> dt.datetime | None:
     if not value:
         return None
@@ -1085,7 +1185,16 @@ def _parse_date(value: str | None) -> dt.date | None:
         return None
 
 
-def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> Condor:
+def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> PositionUnit:
+    """Rebuild one saved unit as the type it actually is.
+
+    State written before HIC carries no kind, and every unit in it is a condor,
+    so that is the default. Getting this wrong would not raise -- a vertical
+    rebuilt as a Condor would refuse to construct, which is the validation
+    doing its job, but a condor rebuilt as a vertical would too. Either way the
+    run would fail to resume rather than resume wrong, which is the right way
+    round for a mistake.
+    """
     legs = [
         FilledLeg(
             leg=Leg(
@@ -1100,7 +1209,10 @@ def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> Condor:
         )
         for item in raw.get("legs") or []
     ]
-    return Condor(
+    kind = UnitKind(raw.get("kind") or UnitKind.CONDOR.value)
+    unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
+    k = raw.get("k")
+    return unit_type(
         level=float(raw["level"]),
         entry_time=_parse_dt(raw.get("entry_time")) or dt.datetime.now(tz=IST),
         expiry=_parse_date(raw.get("expiry")) or dt.date.today(),
@@ -1113,4 +1225,6 @@ def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> Condor:
         exit_costs=float(raw.get("exit_costs") or 0.0),
         index=int(raw.get("index") or 0),
         side=raw.get("side", "down"),
+        kind=kind,
+        k=int(k) if k is not None else None,
     )
