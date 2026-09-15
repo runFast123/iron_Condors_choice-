@@ -4,6 +4,7 @@ import { getDataset } from "@/lib/data";
 import { inr, num } from "@/lib/format";
 import { Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { PayoffChart } from "@/components/charts/PayoffChart";
+import { UnitKindBadge } from "@/components/UnitKindBadge";
 
 /**
  * Breakevens as text, however many there are.
@@ -60,7 +61,7 @@ export default async function PayoffPage() {
         </Card>
 
         <Card title="Per-condor structure" pad={0}
-              hint={`Each condor risks at most one ${num(params.long_offset - params.short_offset)}-point wing, because only one side can finish in the money.`}>
+              hint={`A condor risks at most one ${num(params.long_offset - params.short_offset)}-point wing, since only one of its sides can finish in the money. A bought spread risks only what it cost, and both of its legs can finish in the money.`}>
           <div className="scroll-x">
             <table>
               <thead>
@@ -76,6 +77,7 @@ export default async function PayoffPage() {
               <tbody>
                 {condors.map((c) => (
                   <tr key={c.index}>
+                    <td><UnitKindBadge kind={c.kind} k={c.k} /></td>
                     <td className="tnum" style={{ fontWeight: 600 }}>{num(c.level)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(c.credit)}</td>
                     <td className="tnum" style={{ textAlign: "right", color: "var(--pos)" }}>
