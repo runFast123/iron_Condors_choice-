@@ -211,6 +211,14 @@ class RunBacktestRequest(BaseModel):
 # reached beats an unbounded one that quietly slows every run down.
 MAX_RUNS_PER_USER = int(os.environ.get("ENGINE_MAX_RUNS", "5") or 5)
 
+# The strategies this build has an implementation for.
+#
+# Deliberately separate from db.STRATEGIES, which is the set of names the
+# database may hold -- including ones written by a newer build than this one.
+# Conflating "a name I recognise" with "a strategy I can trade" is how a run
+# came to be recorded as HIC while trading a down-only ladder.
+RUNNABLE_STRATEGIES = (LADDER, HIC)
+
 _RUN_KEY_OK = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
 
 
@@ -396,6 +404,10 @@ def status_endpoint(authorization: str | None = Header(default=None)) -> dict[st
         "vendor_id": session.vendor_id if session else None,
         "expires_at": session.expires_at.isoformat() if session else None,
         "has_market_data": bool(session and session.market is not None),
+        # What this build can actually trade, not merely name. A dashboard
+        # newer than its engine would otherwise offer a strategy the engine
+        # will refuse, and the refusal is better surfaced before the click.
+        "strategies": sorted(RUNNABLE_STRATEGIES),
         "forward_running": bool(session and session.runners()),
         "forward_strategies": sorted(session.runners()) if session else [],
         "engine_egress_ip": egress_ip.get()["ip"],
@@ -881,8 +893,21 @@ def _strategy_config(
         take_profit_pct=body.take_profit,
         stop_loss_mult=body.stop_loss,
     )
-    if body.strategy != HIC:
+    if body.strategy == LADDER:
         return StrategyConfig(**common)
+    if body.strategy != HIC:
+        # Reached when a build knows a strategy's name but not how to trade it.
+        # That has happened: an engine accepted `strategy: "hic"`, recorded the
+        # row as HIC, and -- having no code to build one -- silently ran a
+        # down-only ladder under the label. Every surface then reported a
+        # strategy the run was not trading. Refusing is the only honest answer;
+        # substituting quietly is the one that misleads.
+        raise HTTPException(
+            status.HTTP_501_NOT_IMPLEMENTED,
+            f"This engine build cannot run {body.strategy!r}. It knows the name "
+            f"but has no implementation, which usually means the engine is older "
+            f"than the dashboard. Restart the engine on a matching build.",
+        )
 
     # HIC is two-way by construction: the spreads it buys follow the move, so
     # a one-directional run of it is a different strategy wearing the name.

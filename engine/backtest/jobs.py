@@ -110,8 +110,15 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         take_profit_pct=p.get("take_profit"),
         stop_loss_mult=p.get("stop_loss"),
     )
-    if str(p.get("strategy") or "ladder") != "hic":
+    wanted = str(p.get("strategy") or "ladder")
+    if wanted == "ladder":
         return StrategyConfig(**common)
+    if wanted != "hic":
+        # Same reasoning as the forward path: a build that knows a name but not
+        # how to trade it must say so rather than run something else.
+        raise ChoiceError(
+            f"This engine build cannot backtest {wanted!r}; it has no implementation."
+        )
 
     # Two-way and centred, for the reasons the forward path forces the same:
     # the spreads follow the move, and a structure symmetric by construction
