@@ -184,7 +184,15 @@ export default async function Overview() {
             <StatGrid min={130}>
               <Stat label="Sharpe" value={ratio(m.sharpe)} />
               <Stat label="Sortino" value={ratio(m.sortino)} />
-              <Stat label="CAGR" value={pct(m.cagr)} tone={m.cagr > 0 ? "pos" : "neg"} />
+              {/* Untoned when unknown: red on a dash reads as a bad result
+                  rather than an absent one, which is what it did on every
+                  run shorter than a quarter. */}
+              <Stat
+                label="CAGR"
+                value={pct(m.cagr)}
+                tone={m.cagr == null ? "neutral" : m.cagr > 0 ? "pos" : "neg"}
+                hint={m.cagr == null ? "needs a quarter of data" : undefined}
+              />
               <Stat label="Best condor" value={inr(m.best, { sign: true })} tone="pos" />
               <Stat label="Worst condor" value={inr(m.worst, { sign: true })} tone="neg" />
               <Stat label="Total credit" value={inr(m.total_credit)} hint="premium collected" />

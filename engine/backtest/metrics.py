@@ -44,10 +44,18 @@ class Metrics:
 
     max_drawdown: float = 0.0
     max_drawdown_pct: float = 0.0
-    sharpe: float = 0.0
-    sortino: float = 0.0
-    calmar: float = 0.0
-    cagr: float = 0.0
+    # None, not 0.0, when there is not enough of a run to compute them.
+    #
+    # Zero is a real answer to these questions -- "no excess return per unit of
+    # risk", "flat annualised" -- and reporting it for "not computable" told a
+    # reader something false about a run that had simply been too short. A
+    # three-day backtest showed Sharpe 0.00 and CAGR 0.0% in red beside a
+    # healthy profit. The code already knew not to compute them; it just said
+    # zero instead of saying nothing.
+    sharpe: float | None = None
+    sortino: float | None = None
+    calmar: float | None = None
+    cagr: float | None = None
 
     max_concurrent: int = 0
     avg_days_held: float = 0.0
@@ -182,9 +190,13 @@ def compute(
         if len(rets) > 1:
             sigma = _stdev(rets)
             mu = _mean(rets)
-            metrics.sharpe = (mu / sigma) * math.sqrt(TRADING_DAYS) if sigma > 0 else 0.0
+            # A zero standard deviation is a run with no variation at all, for
+            # which the ratio is undefined rather than zero.
+            if sigma > 0:
+                metrics.sharpe = (mu / sigma) * math.sqrt(TRADING_DAYS)
             dsigma = _downside_deviation(rets)
-            metrics.sortino = (mu / dsigma) * math.sqrt(TRADING_DAYS) if dsigma > 0 else 0.0
+            if dsigma > 0:
+                metrics.sortino = (mu / dsigma) * math.sqrt(TRADING_DAYS)
 
         span = (equity[-1].ts - equity[0].ts).total_seconds() / 86_400.0
         # Annualising a few days produces a headline like "137,641%" from a 2%
@@ -200,7 +212,9 @@ def compute(
                     metrics.cagr = (1.0 + total_return) ** (1.0 / years) - 1.0
                 except OverflowError:
                     metrics.cagr = float("inf")
-        if metrics.max_drawdown < 0:
-            metrics.calmar = metrics.cagr / abs(metrics.max_drawdown_pct) if metrics.max_drawdown_pct else 0.0
+        # Calmar needs both halves. Without an annual rate, or without a
+        # drawdown to divide by, there is no ratio -- not a ratio of zero.
+        if metrics.cagr is not None and metrics.max_drawdown < 0 and metrics.max_drawdown_pct:
+            metrics.calmar = metrics.cagr / abs(metrics.max_drawdown_pct)
 
     return metrics

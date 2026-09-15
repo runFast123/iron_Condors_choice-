@@ -48,12 +48,15 @@ export function num(value: number, decimals = 0): string {
   }).format(value);
 }
 
-export function pct(value: number, decimals = 1): string {
-  if (!Number.isFinite(value)) return "--";
+export function pct(value: number | null | undefined, decimals = 1): string {
+  // Null means the engine could not compute it -- too short a run, no
+  // variation to divide by. That is not zero, and must not read as zero.
+  if (value == null || !Number.isFinite(value)) return "--";
   return `${(value * 100).toFixed(decimals)}%`;
 }
 
-export function ratio(value: number, decimals = 2): string {
+export function ratio(value: number | null | undefined, decimals = 2): string {
+  if (value == null) return "--";
   if (!Number.isFinite(value)) return "\u221E";
   return value.toFixed(decimals);
 }

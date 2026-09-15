@@ -65,7 +65,10 @@ export interface Metrics {
   profit_factor: number; expectancy: number; avg_win: number; avg_loss: number;
   best: number; worst: number;
   max_drawdown: number; max_drawdown_pct: number;
-  sharpe: number; sortino: number; calmar: number; cagr: number;
+  /** Null when the run was too short, or too flat, to compute them.
+   *  Zero is a real answer to a different question and must not stand in. */
+  sharpe: number | null; sortino: number | null;
+  calmar: number | null; cagr: number | null;
   max_concurrent: number; avg_days_held: number; capital_at_risk: number;
   real_price_fraction: number; modeled_quotes: number;
 }

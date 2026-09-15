@@ -101,21 +101,31 @@ def test_sortino_exceeds_sharpe_on_a_positively_skewed_series():
 
 
 def test_a_short_span_does_not_annualise_into_a_fantasy():
-    """A 2% gain over one day used to be reported as 137,641% CAGR."""
+    """A 2% gain over one day used to be reported as 137,641% CAGR.
+
+    Now reported as nothing at all. It used to come back as 0.0, which is a
+    real answer to a different question -- "flat, annualised" -- and read as
+    one on the dashboard: 0.0% in red beside a profit.
+    """
     pts = [M.EquityPoint(ts=dt.datetime(2026, 3, 2), equity=0.0),
            M.EquityPoint(ts=dt.datetime(2026, 3, 3), equity=20.0)]
     m = M.compute(realised=[20.0], equity=pts, total_credit=0, total_costs=0,
                   capital_at_risk=1000, max_concurrent=1)
-    assert m.cagr == 0.0
+    assert m.cagr is None
 
 
 def test_a_huge_short_run_return_does_not_overflow():
-    """`7.0 ** 365` raises OverflowError and took the whole metric set with it."""
+    """`7.0 ** 365` raises OverflowError and took the whole metric set with it.
+
+    The span guard means this one never reaches the exponent, but the point
+    stands: whatever comes back must be usable, never a crash and never a
+    number invented to fill the field.
+    """
     pts = [M.EquityPoint(ts=dt.datetime(2026, 3, 2), equity=0.0),
            M.EquityPoint(ts=dt.datetime(2026, 3, 3), equity=6000.0)]
     m = M.compute(realised=[6000.0], equity=pts, total_credit=0, total_costs=0,
                   capital_at_risk=1000, max_concurrent=1)
-    assert math.isfinite(m.cagr)
+    assert m.cagr is None or math.isfinite(m.cagr)
 
 
 def test_drawdown_is_measured_from_inception():
