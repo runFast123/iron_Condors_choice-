@@ -230,6 +230,9 @@ class ForwardRunner:
         self.last_spot: float | None = None
         self.expiry: dt.date | None = None
         self.realised = 0.0
+        # Which open positions the last kill-switch check could not see, so
+        # the warning is raised when that changes rather than every tick.
+        self._unmarked_seen: tuple[int, ...] = ()
         self.stopped_reason: str | None = None
         # Why the last tick produced no quotes, shown in the UI rather than
         # buried in the log: a dash with no explanation is not diagnosable.
@@ -647,6 +650,142 @@ class ForwardRunner:
             level=condor.level, reason=reason, pnl=round(condor.realised_pnl(), 2),
         )
 
+    # ----------------------------------------------------- expiry settlement
+
+    def _expiry_is_settled(self, now: dt.datetime) -> bool:
+        """Whether this campaign's expiry is past its settlement.
+
+        On expiry day only after the close: the positions trade and mark right
+        up to it, and settling at midday would book an intrinsic against a
+        spot with hours left to move.
+        """
+        if self.expiry is None:
+            return False
+        if now.date() > self.expiry:
+            return True
+        return now.date() == self.expiry and now.time() >= MARKET_CLOSE_TIME
+
+    def _settlement_spot(self, now: dt.datetime, spot: float) -> tuple[float | None, str]:
+        """The index level to settle against, and where it came from.
+
+        On expiry day, the last spot observed. NSE settles index options
+        against the average of the final half hour, which is not something a
+        tick stream reproduces, so a paper run approximates either way and the
+        event log says so rather than implying an exchange figure.
+
+        Past expiry day -- the engine was down over a settlement, or the run
+        was suspended across one -- today's spot is a *different day's* number
+        and would book a P&L that never happened. The daily candle for the
+        expiry is the honest source; if it cannot be fetched nothing settles,
+        because leaving positions open and visibly unsettled is recoverable
+        and booking a fiction is not.
+        """
+        if self.expiry is None:
+            return None, ""
+        if now.date() <= self.expiry:
+            return spot, "the last observed index level"
+        try:
+            frame = self.market.nifty(self.expiry - dt.timedelta(days=10), self.expiry)
+        except ChoiceError as exc:
+            self.emit(
+                "warn", "Cannot settle: no NIFTY close for the expiry",
+                expiry=self.expiry.isoformat(), error=str(exc),
+            )
+            return None, ""
+        for row in reversed(list(frame.itertuples())):
+            ts = row.ts.to_pydatetime() if hasattr(row.ts, "to_pydatetime") else row.ts
+            if ts.date() == self.expiry:
+                return float(row.close), f"the NIFTY close on {self.expiry:%d-%b-%Y}"
+        self.emit(
+            "warn", "Cannot settle: the expiry date is missing from the NIFTY series",
+            expiry=self.expiry.isoformat(),
+        )
+        return None, ""
+
+    def _settle(self, unit: PositionUnit, now: dt.datetime, spot: float, note: str) -> None:
+        """Close one position at intrinsic value.
+
+        Index options cash-settle, so there is no exit brokerage -- only STT on
+        in-the-money shorts, which the cost model applies. Mirrors the
+        backtester's `_settle` exactly, so a forward run and a backtest of the
+        same path book the same expiry.
+        """
+        exit_costs = 0.0
+        for fl in unit.legs:
+            intrinsic = fl.leg.intrinsic(spot)
+            fl.exit_price = intrinsic
+            fl.exit_source = PriceSource.CHOICE
+            if intrinsic > 0 and fl.leg.side is Side.SELL:
+                exit_costs += self.costs.leg_cost(Side.SELL, intrinsic, fl.leg.qty)
+            opposite = Side.BUY if fl.leg.side is Side.SELL else Side.SELL
+            self.fills.append(
+                Fill(
+                    ts=now.isoformat(), condor_index=unit.index, condor_level=unit.level,
+                    expiry=unit.expiry.isoformat(), right=fl.leg.right, side=opposite.value,
+                    strike=fl.leg.strike, qty=fl.leg.qty, price=intrinsic, source="settlement",
+                    mode=self.mode, token=fl.token, action="CLOSE",
+                )
+            )
+        unit.close(now, f"expired; settled at intrinsic against {note}",
+                   CondorStatus.EXPIRED, exit_costs)
+
+    def _settle_and_roll(self, now: dt.datetime, spot: float) -> None:
+        """Settle an expired book, then start a fresh campaign.
+
+        Nothing did this before. `self.expiry` was resolved once and never
+        reset, so after expiry day `_contract` could no longer resolve the
+        dead contracts, `_mark_all` dropped every position out of the marks,
+        and the run's headline P&L fell to whatever had closed early --
+        usually zero -- while the positions sat OPEN for ever. The book did not
+        lose money on the dashboard so much as quietly cease to exist. Then the
+        ladder went on firing into the settled expiry.
+
+        Offsetting only works inside one expiry, so the ladder re-anchors
+        afterwards, exactly as the backtest does at each roll.
+        """
+        expired = self.expiry
+        if expired is None:
+            return
+        settlement, note = self._settlement_spot(now, spot)
+        if settlement is None:
+            return                      # already explained; try again next tick
+
+        settled = 0
+        for unit in self.condors:
+            if unit.is_open and unit.expiry == expired:
+                self._settle(unit, now, settlement, note)
+                self.realised += unit.realised_pnl()
+                self.last_mtm.pop(unit.index, None)
+                settled += 1
+                self.emit(
+                    "trade", f"Settled {unit.level:,.0f} at expiry",
+                    level=unit.level, reason=unit.exit_reason,
+                    pnl=round(unit.realised_pnl(), 2),
+                )
+
+        self.emit(
+            "info",
+            f"{expired:%d-%b-%Y} expired: settled {settled} position"
+            f"{'' if settled == 1 else 's'} against {note} of {settlement:,.0f}",
+            expiry=expired.isoformat(), settled=settled,
+            settlement_spot=round(settlement, 2),
+            realised=round(self.realised, 2),
+        )
+        self.expiry = None
+        self.ladder.reset()
+        self.emit(
+            "info",
+            "Ladder re-anchored for the next expiry, because offsetting only "
+            "works within one",
+        )
+
+    def _pnl_total_locked(self) -> tuple[float, tuple[int, ...]]:
+        """Total P&L as the dashboard shows it, and what is missing from it."""
+        open_units = [c for c in self.condors if c.is_open]
+        marked = [self.last_mtm[c.index] for c in open_units if c.index in self.last_mtm]
+        unmarked = tuple(c.index for c in open_units if c.index not in self.last_mtm)
+        return self.realised + sum(marked), unmarked
+
     # ----------------------------------------------------------------- tick
 
     def tick(self) -> None:
@@ -704,6 +843,12 @@ class ForwardRunner:
             except Exception:                       # noqa: BLE001
                 log.exception("Could not record tick")
 
+        # Settle before resolving, so a campaign that has expired books its
+        # P&L and clears the way for the next one rather than sitting open
+        # against contracts that no longer trade.
+        if self.expiry is not None and self._expiry_is_settled(now):
+            self._settle_and_roll(now, spot)
+
         if self.expiry is None:
             try:
                 self.expiry = nearest_listed_expiry(
@@ -733,11 +878,27 @@ class ForwardRunner:
                 continue
             self._open_condor(trigger.level, self.expiry, side=trigger.side)
 
-        mtm = self._mark_all()
-        total = self.realised + sum(mtm.values())
+        self._mark_all()
+        # From `last_mtm`, not from what `_mark_all` just returned. A failed
+        # quote refresh returns nothing without clearing the stored marks, so
+        # the switch summed an empty dict and read a book 40,000 under water
+        # as exactly zero -- while the snapshot next to it, which does read
+        # `last_mtm`, still showed the real figure. Stale marks are a worse
+        # answer than fresh ones and a far better one than silence.
+        total, unmarked = self._pnl_total_locked()
         if total <= -self.daily_loss_limit:
             self.stopped_reason = f"daily loss limit hit ({total:,.0f})"
             self.emit("error", "KILL SWITCH: " + self.stopped_reason, pnl=round(total, 2))
+        elif unmarked and unmarked != self._unmarked_seen:
+            # Said when it changes, not every ten seconds. The limit is being
+            # measured against part of the book, and a reader deciding whether
+            # the run is safe should know which part is missing.
+            self.emit(
+                "warn", "Daily loss limit is being measured against an incomplete book",
+                unmarked=len(unmarked), total=round(total, 2),
+                limit=round(self.daily_loss_limit, 2),
+            )
+        self._unmarked_seen = unmarked
 
     # ---------------------------------------------------------------- state
 

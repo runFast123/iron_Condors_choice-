@@ -310,6 +310,45 @@ def test_the_daily_loss_limit_stops_the_run():
     assert r.stopped_reason and "daily loss limit" in r.stopped_reason
 
 
+def test_the_kill_switch_does_not_read_a_failed_refresh_as_break_even():
+    """`_mark_all` returns nothing when a quote refresh fails, without
+    clearing the marks it already had. The switch summed that empty result, so
+    a book deep under water evaluated to exactly zero and did not trip --
+    while the snapshot beside it, which reads `last_mtm`, went on showing the
+    real figure. The two disagreed about whether the run should still be
+    alive."""
+    from engine.config import engine_config
+
+    limit = abs(engine_config.daily_loss_limit)
+    r = runner()
+    r.expiry = EXPIRY
+    r.market.prices = {26000: 24_000.0}
+    r._open_condor(24_000.0, EXPIRY, side="anchor")
+    index = r.condors[0].index
+    r.last_mtm = {index: -limit - 1_000.0}
+
+    r.market.fails = True
+    assert r._mark_all() == {}, "the refresh failed"
+    total, unmarked = r._pnl_total_locked()
+
+    assert unmarked == (), "the stale mark still covers the position"
+    assert total == pytest.approx(-limit - 1_000.0)
+    assert total <= -r.daily_loss_limit, "this is what the switch must see"
+
+
+def test_a_position_that_was_never_marked_is_named_rather_than_counted_as_zero():
+    r = runner()
+    r.expiry = EXPIRY
+    r.market.prices = {26000: 24_000.0}
+    r._open_condor(24_000.0, EXPIRY, side="anchor")
+    r.last_mtm = {}
+
+    total, unmarked = r._pnl_total_locked()
+
+    assert total == 0.0
+    assert unmarked == (r.condors[0].index,), "the total does not cover it"
+
+
 def test_the_runner_has_no_order_placing_surface_at_all():
     """Paper-only is a structural property, not a flag that could flip back."""
     r = runner()
