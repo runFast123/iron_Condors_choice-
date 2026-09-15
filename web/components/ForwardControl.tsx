@@ -29,6 +29,11 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
   const [runs, setRuns] = useState<ForwardRunSummary[]>([]);
   const [maxRuns, setMaxRuns] = useState(5);
   const [runName, setRunName] = useState("");
+  // Whether the start form is on screen. It used to be shown only when
+  // nothing was running, which meant that once a test was going there was no
+  // way to start a second one -- the feature existed in the engine and was
+  // unreachable from the page.
+  const [starting, setStarting] = useState(false);
   const [lots, setLots] = useState(1);
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
   const [direction, setDirection] = useState<"down" | "up" | "both">("down");
@@ -181,8 +186,8 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
     }
   }
 
-  const start = () =>
-    post(
+  const start = async () => {
+    await post(
       "/api/forward/start",
       {
         name: runName.trim() || undefined,
@@ -197,6 +202,12 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       },
       "starting",
     );
+    // Close the form and clear the name, so the next "New test" starts from a
+    // blank one rather than silently reusing the last run's name.
+    setStarting(false);
+    setRunName("");
+  };
+
   const stop = async (key: string = runKey) => {
     await post(`/api/forward/stop?run=${encodeURIComponent(key)}`, undefined, "stopping");
     // A stopped run drops out of the listing, so staying pointed at it would
@@ -242,7 +253,7 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
       {/* Every forward test this user is driving. They keep ticking in the
           engine regardless of which one is on screen, so this is a view of
           them rather than a switch that starts and stops anything. */}
-      {runs.length > 1 && (
+      {runs.length > 0 && (
         <div
           style={{
             display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch",
@@ -299,8 +310,27 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
               </button>
             );
           })}
-          <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 11.5, color: "var(--ink-muted)" }}>
+          <span
+            style={{
+              marginLeft: "auto", alignSelf: "center", display: "flex",
+              gap: 10, alignItems: "center", fontSize: 11.5, color: "var(--ink-muted)",
+            }}
+          >
             {liveRuns.length} of {maxRuns} running
+            <button
+              type="button"
+              onClick={() => setStarting((v) => !v)}
+              disabled={atCap && !starting}
+              className="btn-quiet"
+              style={{ fontSize: 11.5, padding: "4px 10px" }}
+              title={
+                atCap
+                  ? `${maxRuns} tests are already running. Stop one to start another.`
+                  : "Start another forward test, with its own settings"
+              }
+            >
+              {starting ? "Cancel" : "+ New test"}
+            </button>
           </span>
         </div>
       )}
@@ -312,8 +342,14 @@ export function ForwardControl({ initial }: { initial: LiveState | null }) {
           </div>
         )}
 
-        {!running ? (
+        {!running || starting ? (
           <>
+            {starting && running && (
+              <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--ink-2)" }}>
+                Starting a second test. It runs alongside the others on the same
+                live ticks, which is what makes the two comparable.
+              </p>
+            )}
             {atCap && (
               <div className="auth-alert auth-alert-info" style={{ marginBottom: 14 }}>
                 {maxRuns} forward tests are already running. Stop one to start another.
