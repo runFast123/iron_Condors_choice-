@@ -78,7 +78,9 @@ class FakeMarket:
     def vix_by_date(self, start, end):
         return self._vix
 
-    def option_candles(self, underlying, expiry, strike, right, start, end, resolution):
+    def option_candles(
+        self, underlying, expiry, strike, right, start, end, resolution, instruments=None
+    ):
         self.option_calls += 1
         if not self._option_frames:
             return pd.DataFrame()

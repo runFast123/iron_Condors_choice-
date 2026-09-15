@@ -42,6 +42,14 @@ export function ForwardControl({
   // unreachable from the page.
   const [starting, setStarting] = useState(false);
   const [lots, setLots] = useState(1);
+  // Which strategy a new run trades. Without this the form could only ever
+  // start a ladder, which made HIC unreachable from the page entirely.
+  const [strategy, setStrategy] = useState<"ladder" | "hic">("ladder");
+  // HIC only. The ladder has no band and buys no spreads.
+  const [bandSteps, setBandSteps] = useState(1);
+  const [putSpreads, setPutSpreads] = useState(10);
+  const [callSpreads, setCallSpreads] = useState(10);
+  const [debitShift, setDebitShift] = useState<0 | 200>(0);
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
   const [direction, setDirection] = useState<"down" | "up" | "both">("down");
   const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
@@ -197,15 +205,27 @@ export function ForwardControl({
     await post(
       "/api/forward/start",
       {
+        strategy,
         name: runName.trim() || undefined,
         lots,
         step: 100,
         poll_seconds: 10,
         expiry_cadence: cadence,
+        // HIC is two-way by construction and the engine forces it, so these
+        // are the ladder's to set. Sent regardless; the engine ignores them
+        // for HIC rather than the form having to know that it does.
         direction,
         anchor_mode: anchorMode,
         max_down: maxDown !== "" ? Number(maxDown) : undefined,
         max_up: maxUp !== "" ? Number(maxUp) : undefined,
+        ...(strategy === "hic"
+          ? {
+              full_band_steps: bandSteps,
+              max_put_spreads: putSpreads,
+              max_call_spreads: callSpreads,
+              debit_shift: debitShift,
+            }
+          : {}),
       },
       "starting",
     );
@@ -434,6 +454,26 @@ export function ForwardControl({
             )}
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Strategy
+                <select
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value as "ladder" | "hic")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 190 }}
+                >
+                  <option value="ladder">Condor ladder</option>
+                  <option value="hic">Hybrid iron condor</option>
+                </select>
+                <span
+                  style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 190 }}
+                >
+                  {strategy === "ladder"
+                    ? "A condor at every step. Earns when the market stalls."
+                    : "Condors near the anchor, bought spreads beyond it. Earns when a move keeps going."}
+                </span>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Name
                 <input
                   className="auth-input"
@@ -462,6 +502,65 @@ export function ForwardControl({
                 </select>
               </label>
 
+              {strategy === "hic" ? (
+                <>
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Core band
+                    <select
+                      value={bandSteps}
+                      onChange={(e) => setBandSteps(Number(e.target.value))}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 190 }}
+                    >
+                      <option value={0}>Anchor only</option>
+                      <option value={1}>Anchor and one step either way</option>
+                      <option value={2}>Anchor and two steps either way</option>
+                    </select>
+                    <span
+                      style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 190 }}
+                    >
+                      How many levels open a full condor. Everything beyond
+                      buys a spread.
+                    </span>
+                  </label>
+
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Spread strikes
+                    <select
+                      value={debitShift}
+                      onChange={(e) => setDebitShift(Number(e.target.value) as 0 | 200)}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 175 }}
+                    >
+                      <option value={0}>Reverse the condor&rsquo;s</option>
+                      <option value={200}>Bought at the level</option>
+                    </select>
+                    <span
+                      style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 175 }}
+                    >
+                      Buying at the level costs more and starts paying sooner.
+                    </span>
+                  </label>
+
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Put spreads
+                    <input
+                      type="number" min={0} max={40} value={putSpreads}
+                      onChange={(e) => setPutSpreads(Number(e.target.value))}
+                      className="auth-input" style={{ marginTop: 4, width: 90 }}
+                    />
+                  </label>
+
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Call spreads
+                    <input
+                      type="number" min={0} max={40} value={callSpreads}
+                      onChange={(e) => setCallSpreads(Number(e.target.value))}
+                      className="auth-input" style={{ marginTop: 4, width: 90 }}
+                    />
+                  </label>
+                </>
+              ) : (
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Direction (v2)
                 <select
@@ -483,7 +582,9 @@ export function ForwardControl({
                   <option value="up">Up-only (v2)</option>
                 </select>
               </label>
+              )}
 
+              {strategy === "hic" ? null : (
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Anchor Mode
                 <select
@@ -497,6 +598,7 @@ export function ForwardControl({
                   <option value="round">Round</option>
                 </select>
               </label>
+              )}
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Lots

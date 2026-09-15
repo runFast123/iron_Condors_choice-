@@ -30,7 +30,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from engine.choice.errors import ChoiceInstrumentError
+from engine.choice.errors import ChoiceError, ChoiceInstrumentError
 from engine.config import IST
 
 log = logging.getLogger(__name__)
@@ -458,7 +458,13 @@ class ScripMaster:
 # --------------------------------------------------------------- shared cache
 
 _MASTER_LOCK = threading.Lock()
-_MASTER_CACHE: tuple[dt.date, "ScripMaster"] | None = None
+# Masters by the date they were asked for. A dict rather than one slot,
+# because a backtest needs several: today's lists only contracts that still
+# exist, and a run over past months is asking about ones that have settled.
+_MASTER_CACHE: dict[dt.date, "ScripMaster"] = {}
+# Each is 20-30 MB parsed. Enough for a long backtest's handful of dates,
+# bounded so an engine left running for weeks cannot accumulate them.
+MASTER_CACHE_SIZE = 6
 
 
 def shared_master(on: dt.date | None = None) -> "ScripMaster":
@@ -473,22 +479,22 @@ def shared_master(on: dt.date | None = None) -> "ScripMaster":
     read-only afterwards. The lock means ten users signing in together download
     it once between them rather than ten times.
     """
-    global _MASTER_CACHE
-
     today = on or dt.datetime.now(tz=IST).date()
-    cached = _MASTER_CACHE
-    if cached is not None and cached[0] == today:
-        return cached[1]
+    cached = _MASTER_CACHE.get(today)
+    if cached is not None:
+        return cached
 
     with _MASTER_LOCK:
         # Re-check: another thread may have loaded it while we waited.
-        cached = _MASTER_CACHE
-        if cached is not None and cached[0] == today:
-            return cached[1]
+        cached = _MASTER_CACHE.get(today)
+        if cached is not None:
+            return cached
 
         master = ScripMaster()
         master.fetch(on=today)
-        _MASTER_CACHE = (today, master)
+        if len(_MASTER_CACHE) >= MASTER_CACHE_SIZE:
+            _MASTER_CACHE.pop(next(iter(_MASTER_CACHE)))
+        _MASTER_CACHE[today] = master
         log.info(
             "Scrip master loaded for %s (%d contracts), shared process-wide",
             today, len(master.contracts),
@@ -496,9 +502,75 @@ def shared_master(on: dt.date | None = None) -> "ScripMaster":
         return master
 
 
+class HistoricalInstruments:
+    """Resolves option contracts that may no longer be listed.
+
+    A scrip master describes what exists on the day it was published. Today's
+    file carries no expiry earlier than today, so a backtest over past months
+    cannot resolve a single one of the contracts it is asking about -- every
+    leg fetch fails, the failure is swallowed as "no data for this leg", and
+    the run quietly prices everything from the model instead. That is what a
+    report reading 100% MODELED actually meant.
+
+    Choice publishes the file per trading day, so the fix is to ask the one
+    from a day when the contract still existed. Masters already loaded are
+    tried first, and they cover a lot: NSE lists weeklies about seven weeks
+    ahead and monthlies about three months, so one file answers for a wide
+    span of expiries either side of it.
+    """
+
+    def __init__(self, base: "ScripMaster | None" = None) -> None:
+        # Newest first, so the common case -- a live or near expiry -- is
+        # answered by the master the engine already had in memory.
+        self._loaded: list[tuple[dt.date, ScripMaster]] = []
+        if base is not None:
+            self._loaded.append((dt.datetime.now(tz=IST).date(), base))
+        self.downloads = 0
+
+    def option(self, underlying: str, expiry: dt.date, strike: float, right: str) -> Contract:
+        found = self.find_option(underlying, expiry, strike, right)
+        if found is not None:
+            return found
+        raise ChoiceInstrumentError(
+            f"No {underlying.upper()} {right} at strike {strike:g} expiring "
+            f"{expiry:%d-%b-%Y} in any scrip master from {expiry:%d-%b-%Y} onward. "
+            "The contract may predate what Choice still publishes."
+        )
+
+    def find_option(
+        self, underlying: str, expiry: dt.date, strike: float, right: str
+    ) -> Contract | None:
+        for _on, master in self._loaded:
+            hit = master.find_option(underlying, expiry, strike, right)
+            if hit is not None:
+                return hit
+
+        master = self._master_covering(expiry)
+        if master is None:
+            return None
+        return master.find_option(underlying, expiry, strike, right)
+
+    def _master_covering(self, expiry: dt.date) -> "ScripMaster | None":
+        """The file published while `expiry` was still a listed contract.
+
+        Dated on the expiry itself: a contract is listed right up to the day it
+        settles, and `fetch` already walks back over weekends and holidays to
+        the nearest file that exists.
+        """
+        if any(on == expiry for on, _ in self._loaded):
+            return None                       # already tried, and it did not have it
+        try:
+            master = shared_master(expiry)
+        except ChoiceError:
+            log.info("No scrip master available around %s", expiry)
+            return None
+        self.downloads += 1
+        self._loaded.insert(0, (expiry, master))
+        return master
+
+
 def clear_shared_master() -> None:
     """Drop the cache. For tests, and for a forced mid-day refresh."""
-    global _MASTER_CACHE
     with _MASTER_LOCK:
-        _MASTER_CACHE = None
+        _MASTER_CACHE.clear()
 

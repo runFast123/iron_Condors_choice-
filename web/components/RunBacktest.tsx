@@ -33,6 +33,10 @@ export function RunBacktest({
   const [lots, setLots] = useState(1);
   const [resolution, setResolution] = useState("D");
   const [cadence, setCadence] = useState<"weekly" | "monthly">("weekly");
+  const [strategy, setStrategy] = useState<"ladder" | "hic">("ladder");
+  const [bandSteps, setBandSteps] = useState(1);
+  const [halfMode, setHalfMode] = useState<"buy" | "sell">("buy");
+  const [debitShift, setDebitShift] = useState<0 | 200>(0);
   const [direction, setDirection] = useState<"down" | "up" | "both">("down");
   const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
   const [maxDown, setMaxDown] = useState<number | "">(20);
@@ -106,8 +110,16 @@ export function RunBacktest({
           max_condors: 20,
           roll: true,
           expiry_cadence: cadence,
+          strategy,
           direction,
           anchor_mode: anchorMode,
+          ...(strategy === "hic"
+            ? {
+                full_band_steps: bandSteps,
+                half_mode: halfMode,
+                debit_shift: halfMode === "sell" ? 0 : debitShift,
+              }
+            : {}),
           max_down: maxDown !== "" ? Number(maxDown) : undefined,
           max_up: maxUp !== "" ? Number(maxUp) : undefined,
         }),
@@ -226,6 +238,66 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Strategy
+                <select
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value as "ladder" | "hic")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 180 }}
+                >
+                  <option value="ladder">Condor ladder</option>
+                  <option value="hic">Hybrid iron condor</option>
+                </select>
+              </label>
+
+              {strategy === "hic" && (
+                <>
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Core band
+                    <select
+                      value={bandSteps}
+                      onChange={(e) => setBandSteps(Number(e.target.value))}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 150 }}
+                    >
+                      <option value={0}>Anchor only</option>
+                      <option value={1}>Anchor ± 1 step</option>
+                      <option value={2}>Anchor ± 2 steps</option>
+                    </select>
+                  </label>
+
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Beyond the band
+                    <select
+                      value={halfMode}
+                      onChange={(e) => setHalfMode(e.target.value as "buy" | "sell")}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 165 }}
+                    >
+                      <option value="buy">Buy a spread</option>
+                      <option value="sell">Sell one (comparison)</option>
+                    </select>
+                  </label>
+
+                  {halfMode === "buy" && (
+                    <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                      Spread strikes
+                      <select
+                        value={debitShift}
+                        onChange={(e) => setDebitShift(Number(e.target.value) as 0 | 200)}
+                        className="auth-input"
+                        style={{ marginTop: 5, minWidth: 175 }}
+                      >
+                        <option value={0}>Reverse the condor&rsquo;s</option>
+                        <option value={200}>Bought at the level</option>
+                      </select>
+                    </label>
+                  )}
+                </>
+              )}
+
+              {strategy === "hic" ? null : (
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Direction (v2)
                 <select
                   value={direction}
@@ -246,6 +318,7 @@ export function RunBacktest({
                   <option value="up">Up-only (v2)</option>
                 </select>
               </label>
+              )}
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 Anchor Mode

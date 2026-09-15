@@ -37,11 +37,14 @@ from engine.strategy.condor import (
     PriceSource,
     Side,
     StrategyConfig,
+    UnitKind,
     build_legs,
     net_positions,
     netting_summary,
 )
+from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
 from engine.strategy.ladder import AnchorMode, Ladder, LadderTrigger
+from engine.strategy.vertical import VerticalSpread
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +68,31 @@ class BacktestParams:
     roll_to_next_expiry: bool = True
     min_dte: int = 1
     label: str = ""
+
+
+def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
+    """What this strategy opens at `level`, and how far from the anchor.
+
+    The ladder opens a condor everywhere. HIC opens one near the anchor and a
+    spread beyond it, so it has to know the distance first.
+    """
+    if not isinstance(config, HicConfig) or ladder.anchor is None:
+        return UnitKind.CONDOR, None
+    k = steps_from_anchor(level, ladder.anchor, config.step)
+    return structure_kind(k, config), k
+
+
+def _legs_for(level: float, ladder: Ladder, config):
+    """The legs to price at `level`, for whichever strategy is running.
+
+    Pass one has to ask for the strikes the strategy will actually touch. For
+    HIC that is a different set beyond the band, and fetching the condor's
+    would leave every spread unpriceable.
+    """
+    kind, k = _kind_for(level, ladder, config)
+    if k is None:
+        return build_legs(level, config)
+    return build_hic_legs(level, k, config)
 
 
 @dataclass
@@ -171,7 +199,7 @@ def discover_requirements(
 
         for trigger in ladder.on_price(spot, when):
             triggers.append(trigger)
-            for leg in build_legs(trigger.level, params.strategy):
+            for leg in _legs_for(trigger.level, ladder, params.strategy):
                 requirement = LegRequirement(expiry, leg.strike, leg.right, when)
                 requirements.setdefault(requirement.key(), requirement)
 
@@ -305,7 +333,11 @@ class Backtest:
 
             # 1. Open new rungs.
             for trigger in (ladder.on_price(spot, when) if expiry is not None else ()):
-                legs = build_legs(trigger.level, params.strategy)
+                try:
+                    legs = _legs_for(trigger.level, ladder, params.strategy)
+                except ValueError as exc:
+                    result.skipped.append((when, trigger.level, str(exc)))
+                    continue
                 priced = self._price_legs(legs, expiry, when, spot)
                 if priced is None:
                     result.skipped.append((when, trigger.level, "no price for one or more legs"))
@@ -319,7 +351,9 @@ class Backtest:
                     params.costs.leg_cost(fl.leg.side, fl.entry_price, fl.leg.qty) for fl in filled
                 ) + sum(params.costs.slippage(fl.leg.qty) for fl in filled)
 
-                condor = Condor(
+                kind, k = _kind_for(trigger.level, ladder, params.strategy)
+                unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
+                condor = unit_type(
                     level=trigger.level,
                     entry_time=when,
                     expiry=expiry,
@@ -328,6 +362,8 @@ class Backtest:
                     entry_costs=entry_costs,
                     index=next_index,
                     side=trigger.side,
+                    kind=kind,
+                    k=k,
                 )
                 next_index += 1
                 condors.append(condor)

@@ -34,12 +34,14 @@ from engine.backtest.runner import (
 from engine.backtest.serialise import empty_bundle, serialise
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE, expiry_calendar
 from engine.choice.errors import ChoiceError
+from engine.choice.instruments import HistoricalInstruments
 from engine.config import IST
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.pricing.costs import CostModel
 from engine.pricing.iv_surface import IVSurface, from_vix
 from engine.store.db import Store
 from engine.strategy.condor import StrategyConfig
+from engine.strategy.hic import HicConfig
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +89,48 @@ class BacktestJob:
             "finished_at": self.finished_at,
             "params": self.params,
         }
+
+
+def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
+    """The geometry a backtest will trade, of whichever strategy's shape.
+
+    HIC's config is a subclass, so the trigger, the leg builder and the cost
+    model all take one without needing to know which they were handed.
+    """
+    common = dict(
+        direction=str(p.get("direction") or "down"),
+        anchor_mode=p.get("anchor_mode"),
+        max_down=p.get("max_down"),
+        max_up=p.get("max_up"),
+        step=float(p["step"]),
+        lots=int(p["lots"]),
+        lot_size=lot_size,
+        max_condors=int(p["max_condors"]),
+        strike_step=market.master.strike_step(NIFTY, listed[0]) if listed else 50.0,
+        take_profit_pct=p.get("take_profit"),
+        stop_loss_mult=p.get("stop_loss"),
+    )
+    if str(p.get("strategy") or "ladder") != "hic":
+        return StrategyConfig(**common)
+
+    # Two-way and centred, for the reasons the forward path forces the same:
+    # the spreads follow the move, and a structure symmetric by construction
+    # cannot be anchored to one side of the spot.
+    common["direction"] = "both"
+    common["anchor_mode"] = None
+    config = HicConfig(
+        **common,
+        full_band_steps=int(p.get("full_band_steps", 1)),
+        half_mode=str(p.get("half_mode") or "buy"),
+        debit_shift=float(p.get("debit_shift") or 0.0),
+        max_put_spreads=int(p.get("max_put_spreads", 10)),
+        max_call_spreads=int(p.get("max_call_spreads", 10)),
+    )
+    return replace(
+        config,
+        max_down=min(p.get("max_down") or config.max_down_levels, config.max_down_levels),
+        max_up=min(p.get("max_up") or config.max_up_levels, config.max_up_levels),
+    )
 
 
 class BacktestRunner:
@@ -219,19 +263,7 @@ class BacktestRunner:
         lot_size = market.master.lot_size_for(NIFTY)
 
         params = BacktestParams(
-            strategy=StrategyConfig(
-                direction=str(p.get("direction") or "down"),
-                anchor_mode=p.get("anchor_mode"),
-                max_down=p.get("max_down"),
-                max_up=p.get("max_up"),
-                step=float(p["step"]),
-                lots=int(p["lots"]),
-                lot_size=lot_size,
-                max_condors=int(p["max_condors"]),
-                strike_step=market.master.strike_step(NIFTY, listed[0]) if listed else 50.0,
-                take_profit_pct=p.get("take_profit"),
-                stop_loss_mult=p.get("stop_loss"),
-            ),
+            strategy=_strategy_for(p, lot_size, listed, market),
             costs=CostModel(),
             anchor_mode=p.get("anchor_mode"),
             roll_to_next_expiry=bool(p.get("roll", True)),
@@ -246,6 +278,13 @@ class BacktestRunner:
 
         candles = CandlePriceProvider()
         fetched = 0
+        # Today's scrip master lists nothing that has already expired, so a
+        # run over past months could not resolve a single one of its legs:
+        # every fetch failed, the failure was swallowed as "no data", and the
+        # whole run silently priced off the model. This reaches the file from
+        # a day when each contract was still listed.
+        instruments = HistoricalInstruments(market.master)
+        missing: list[str] = []
         total = max(1, len(requirements))
         for i, req in enumerate(requirements, 1):
             self._step(
@@ -255,15 +294,26 @@ class BacktestRunner:
             )
             try:
                 frame = market.option_candles(
-                    NIFTY, req.expiry, req.strike, req.right, start, end, p.get("option_resolution") or resolution
+                    NIFTY, req.expiry, req.strike, req.right, start, end,
+                    p.get("option_resolution") or resolution,
+                    instruments=instruments,
                 )
             except ChoiceError as exc:
                 log.info("[%s] leg %s %g %s unavailable: %s", job.job_id, req.expiry, req.strike, req.right, exc)
+                missing.append(f"{req.expiry} {req.strike:g}{req.right}")
                 continue
             if not frame.empty:
                 candles.add(req.expiry, req.strike, req.right, frame)
                 fetched += 1
 
+        if missing:
+            # Said plainly rather than left to be inferred from a MODELED
+            # badge: "some legs were modelled" and "no real premium was found
+            # for any of them" are very different results.
+            log.warning(
+                "[%s] %d of %d legs had no Choice premium; %d scrip master(s) consulted",
+                job.job_id, len(missing), total, instruments.downloads,
+            )
         self._step("replay", 0.90, "Replaying the ladder")
         provider = FallbackPriceProvider(
             primary=candles,

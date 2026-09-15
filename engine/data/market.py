@@ -338,9 +338,18 @@ class ChoiceMarketData:
         start,
         end,
         resolution: str = "5",
+        instruments: Any = None,
     ) -> pd.DataFrame:
-        """Historical premiums for one option leg."""
-        contract = self.master.option(underlying, expiry, strike, right)
+        """Historical premiums for one option leg.
+
+        `instruments` resolves the contract. It defaults to this session's
+        scrip master, which describes what exists today -- fine for a live
+        run, and useless for a backtest, because today's file carries no
+        expiry earlier than today. A backtest passes a resolver that can reach
+        the file from a day when the contract still existed.
+        """
+        resolver = instruments if instruments is not None else self.master
+        contract = resolver.option(underlying, expiry, strike, right)
         return self.candles(contract, start, end, resolution)
 
     # ------------------------------------------------------------------ live

@@ -156,6 +156,13 @@ class LoginRequest(BaseModel):
 
 
 class RunBacktestRequest(BaseModel):
+    strategy: str = Field(default=LADDER, pattern=f"^({'|'.join(STRATEGIES)})$")
+    # HIC only; the ladder has no band and buys no spreads.
+    full_band_steps: int = Field(default=1, ge=0, le=10)
+    half_mode: str = Field(default="buy", pattern="^(buy|sell)$")
+    debit_shift: float = Field(default=0.0, ge=0, le=1000)
+    max_put_spreads: int = Field(default=10, ge=0, le=100)
+    max_call_spreads: int = Field(default=10, ge=0, le=100)
     days: int = Field(default=120, ge=5, le=3650)
     resolution: str = Field(default="D", pattern="^(1|3|5|10|15|30|60|D|W)$")
     option_resolution: str | None = Field(default=None, pattern="^(1|3|5|10|15|30|60|D|W)$")
@@ -880,6 +887,12 @@ def _strategy_config(
     # HIC is two-way by construction: the spreads it buys follow the move, so
     # a one-directional run of it is a different strategy wearing the name.
     common["direction"] = "both"
+    # And centred. Under `floor` the spot sits up to 99 points above the
+    # anchor, so the first rung up can be a point away while the first rung
+    # down is 199 -- which defeats a structure that is symmetric by design.
+    # Cleared rather than validated, so a form that sends the ladder's setting
+    # (as it does, since it sends every field regardless) cannot tilt it.
+    common["anchor_mode"] = None
     config = HicConfig(
         **common,
         full_band_steps=body.full_band_steps,
