@@ -27,7 +27,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from typing import TYPE_CHECKING
 
 from engine.choice.errors import ChoiceError
@@ -38,6 +38,8 @@ from engine.pricing.iv_surface import (
     VIX_TENOR_DAYS,
     IVSurface,
     VolPoint,
+    better_of,
+    credit_error,
     fit_skew,
     observations_from_chain,
 )
@@ -66,11 +68,15 @@ class Calibration:
     """A fitted surface plus the evidence behind it."""
 
     surface: IVSurface
-    observations: int
-    tenors: list[float]
-    atm_by_tenor: dict[float, float]
-    spot: float
-    as_of: dt.datetime
+    #: How far this surface prices the condor credit from the observed chain,
+    #: as a fraction. The headline a modelled backtest should be read with:
+    #: -0.08 means modelled condors collect 8% less credit than the market did.
+    credit_error: float | None = None
+    observations: int = 0
+    tenors: list[float] = field(default_factory=list)
+    atm_by_tenor: dict[float, float] = field(default_factory=dict)
+    spot: float = 0.0
+    as_of: dt.datetime = dt.datetime.min
 
     def summary(self) -> dict:
         return {
@@ -79,6 +85,7 @@ class Calibration:
             "curvature": round(self.surface.curvature, 1),
             "term_exponent": round(self.surface.term_exponent, 4),
             "observations": self.observations,
+            "credit_error": None if self.credit_error is None else round(self.credit_error, 4),
             "tenors": [round(t, 1) for t in self.tenors],
             "atm_by_tenor": {str(round(k, 1)): round(v, 4) for k, v in self.atm_by_tenor.items()},
             "spot": round(self.spot, 2),
@@ -215,6 +222,30 @@ def calibrate(
         if scale > 0:
             surface = replace(surface, atm_vol=atm_by_tenor[nearest_days] / scale)
 
+    # Keep the fit only if it prices the chain better than the shape it would
+    # replace. It did not: measured against real Choice premiums, a fitted
+    # surface put a live NIFTY condor's credit at 60 points where the market
+    # paid 110, while the built-in default came within half a point. The fit
+    # minimises its own residual on tenor-normalised points and is then used
+    # through `vol()`, which scales by tenor on top -- so a fit can look good
+    # to itself and still be wrong everywhere it is read.
+    scored = better_of(surface, all_points)
+    if scored is not surface:
+        log.warning(
+            "Chain fit rejected: it prices the condor credit %.1f%% from the "
+            "market against the default's %.1f%% (slope %.2f, curvature %.1f).",
+            100 * (credit_error(surface, all_points) or 0.0),
+            100 * (credit_error(scored, all_points) or 0.0),
+            surface.slope, surface.curvature,
+        )
+        surface = scored
+
+    # Recorded whichever surface won, because it is the honest headline for a
+    # modelled backtest: how far the model sits from the market on the one
+    # number the strategy earns. A per-leg score cannot show this -- errors
+    # that cancel within the structure hide there.
+    residual = credit_error(surface, all_points)
+
     log.info(
         "Calibrated from %d quotes across %d tenors: atm=%.1f%% slope=%.2f term=%s",
         len(all_points), len(atm_by_tenor), 100 * surface.atm_vol, surface.slope,
@@ -222,6 +253,7 @@ def calibrate(
     )
     return Calibration(
         surface=surface,
+        credit_error=residual,
         observations=len(all_points),
         tenors=sorted(atm_by_tenor),
         atm_by_tenor=atm_by_tenor,

@@ -212,3 +212,63 @@ def test_the_summary_is_json_safe_and_says_what_it_rests_on():
     assert summary["observations"] >= 8
     assert len(summary["atm_by_tenor"]) >= 4
     assert all(math.isfinite(v) for v in result.atm_by_tenor.values())
+
+
+# ============================== judged on the credit, not on each leg
+
+
+def test_a_surface_is_judged_on_the_credit_because_leg_errors_cancel():
+    """Real Choice premiums from a live NIFTY condor, 16-Sep-2026.
+
+    The fitted surface of that day scored *better* than the default on RMS
+    implied vol -- 0.016 against 0.035 -- and still priced the condor's credit
+    at 60 points where the market paid 110. A condor's credit is a difference
+    of four premiums, so equal-and-opposite leg errors vanish from any per-leg
+    score while destroying the thing the strategy earns.
+    """
+    import datetime as dt
+
+    from engine.pricing.black76 import implied_vol
+    from engine.pricing.iv_surface import IVSurface, VolPoint, better_of, credit_error, rms_error
+
+    spot, dte = 23_118.6, 13.0
+    forward = spot * (1 + 0.065 * dte / 365)
+    real = [("PE", 22_800, 84.70), ("PE", 22_900, 86.95), ("PE", 23_000, 128.70),
+            ("PE", 23_100, 132.65), ("CE", 23_400, 155.90), ("CE", 23_500, 139.65),
+            ("CE", 23_600, 86.80), ("CE", 23_700, 75.65)]
+    points = []
+    for right, strike, premium in real:
+        iv = implied_vol(premium, forward, float(strike), dte / 365, 0.065, right)
+        assert iv is not None
+        points.append(VolPoint(forward=forward, strike=float(strike), days=dte, iv=iv))
+
+    fitted = IVSurface(atm_vol=0.1174, slope=4.636, curvature=923.5,
+                       term_exponent=0.159, fitted_from=83)
+    plain = IVSurface(atm_vol=fitted.atm_vol, term_exponent=fitted.term_exponent)
+
+    # Per-leg vol says the fit is the better surface.
+    assert rms_error(fitted, points) < rms_error(plain, points)
+    # The credit says otherwise, by a wide margin.
+    assert abs(credit_error(fitted, points)) > 0.35
+    assert abs(credit_error(plain, points)) < 0.15
+
+    assert better_of(fitted, points).slope == plain.slope, "the fit must be rejected"
+
+
+def test_a_fit_that_prices_the_credit_well_is_kept():
+    """The guard must not simply always prefer the default."""
+    import math
+
+    from engine.pricing.iv_surface import DEFAULT_CURVATURE, IVSurface, VolPoint, better_of
+
+    truth = IVSurface(atm_vol=0.12, slope=-4.0, curvature=120.0)
+    forward, days = 23_000.0, 14.0
+    points = [
+        VolPoint(forward=forward, strike=k, days=days, iv=truth.vol(forward, k, days))
+        for k in [forward + off for off in range(-600, 601, 100)]
+    ]
+
+    kept = better_of(truth, points)
+
+    assert kept.slope == truth.slope and kept.curvature == truth.curvature
+    assert not math.isclose(kept.curvature, DEFAULT_CURVATURE)

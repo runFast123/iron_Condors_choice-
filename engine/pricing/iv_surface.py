@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 # Default NIFTY smile, in normalised moneyness m = K/F - 1.
 #   iv(m) = atm * (1 + slope*m + curvature*m^2)
@@ -96,6 +96,113 @@ class VolPoint:
     strike: float
     days: float
     iv: float
+
+
+def rms_error(surface: IVSurface, points: Sequence[VolPoint]) -> float:
+    """How far a surface sits from the vols it claims to describe.
+
+    Measured through `vol()` -- the way the surface is actually consumed --
+    rather than against the fit's own objective. The two are not the same
+    thing: the skew is solved on tenor-normalised points with a single level,
+    while `vol()` applies `atm_for_tenor` on top, so a fit can minimise its own
+    residual and still be wrong where it is used.
+    """
+    if not points:
+        return float("inf")
+    total = 0.0
+    for p in points:
+        total += (surface.vol(p.forward, p.strike, p.days) - p.iv) ** 2
+    return math.sqrt(total / len(points))
+
+
+def condor_credit(
+    vol_at: "Callable[[float, str], float]",
+    forward: float,
+    days: float,
+    short_offset: float,
+    long_offset: float,
+    rate: float = 0.065,
+) -> float:
+    """Per-share credit of the condor this platform trades, under some vols.
+
+    The figure to judge a surface by. A condor's credit is a *difference* of
+    four premiums, so equal-and-opposite errors on the sold and bought legs
+    cancel in any per-leg score while destroying the thing the strategy
+    actually earns. Measured on real Choice premiums, a fitted surface scored
+    better than the default on RMS implied vol -- 0.016 against 0.035 -- and
+    still priced the credit at 60 points where the market paid 110.
+    """
+    from engine.pricing.black76 import greeks     # local: avoids a cycle
+
+    years = max(days, 0.5) / 365.0
+
+    def px(strike: float, right: str) -> float:
+        return greeks(forward, strike, years, vol_at(strike, right), rate, right).price
+
+    return (
+        px(forward - short_offset, "PE") + px(forward + short_offset, "CE")
+        - px(forward - long_offset, "PE") - px(forward + long_offset, "CE")
+    )
+
+
+def credit_error(
+    surface: IVSurface,
+    points: Sequence[VolPoint],
+    *,
+    short_offset: float = 200.0,
+    long_offset: float = 400.0,
+) -> float | None:
+    """Relative error in the condor credit this surface implies, against the
+    credit the observed chain implies. None when the chain is too thin."""
+    by_tenor: dict[float, list[VolPoint]] = {}
+    for p in points:
+        by_tenor.setdefault(p.days, []).append(p)
+
+    errors: list[float] = []
+    for days, group in by_tenor.items():
+        forward = group[0].forward
+        span = [p for p in group if abs(p.strike - forward) <= long_offset * 1.6]
+        if len(span) < 4:
+            continue
+
+        def market_vol(strike: float, _right: str, _span=span) -> float:
+            # Nearest observed strike. The chain is sampled every strike step,
+            # so this is a short hop, and interpolating would invent a shape
+            # between points that is exactly what is in question.
+            return min(_span, key=lambda p: abs(p.strike - strike)).iv
+
+        def model_vol(strike: float, _right: str, _d=days, _f=forward) -> float:
+            return surface.vol(_f, strike, _d)
+
+        real = condor_credit(market_vol, forward, days, short_offset, long_offset)
+        model = condor_credit(model_vol, forward, days, short_offset, long_offset)
+        if real > 0:
+            errors.append(model / real - 1.0)
+
+    if not errors:
+        return None
+    return sum(errors) / len(errors)
+
+
+def better_of(fitted: IVSurface, points: Sequence[VolPoint]) -> IVSurface:
+    """The fitted shape, or the default one if the fit prices worse.
+
+    Judged on the condor credit rather than on per-leg implied vol, for the
+    reason `condor_credit` gives: the credit is a difference, and a per-leg
+    score cannot see an error that cancels within it.
+
+    The old guard was `abs(slope) > 50 or abs(curvature) > 5000`, loose enough
+    to admit a curvature of 923 where the default is 40.
+    """
+    if not points:
+        return fitted
+    plain = IVSurface(atm_vol=fitted.atm_vol, term_exponent=fitted.term_exponent)
+    fit_err, plain_err = credit_error(fitted, points), credit_error(plain, points)
+    if fit_err is None or plain_err is None:
+        return fitted
+    if abs(fit_err) <= abs(plain_err):
+        return fitted
+    return replace(plain, fitted_from=0)
 
 
 def fit_skew(points: Sequence[VolPoint], *, atm_vol: float | None = None) -> IVSurface:

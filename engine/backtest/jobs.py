@@ -242,6 +242,13 @@ class BacktestRunner:
                 f"{calibration.get('observations', 0)}q,"
                 f"term^{float(calibration['term_exponent']):+.2f})"
             )
+            # The one number that says how much a modelled premium can be
+            # trusted: how far this surface prices the condor credit from the
+            # chain it was fitted to. Errors that cancel within a leg-by-leg
+            # score live here, and the credit is what the strategy earns.
+            err = calibration.get("credit_error")
+            if err is not None:
+                vol_source += f" credit{float(err):+.1%}-vs-market"
 
         # An explicit override always wins, so a run can be compared against
         # its own assumption rather than only against the fit.
