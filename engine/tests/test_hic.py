@@ -407,3 +407,44 @@ def test_a_one_sided_ladder_counts_only_the_side_it_trades():
 
     down = StrategyConfig(lots=1, lot_size=65, direction="down", max_down=5, max_up=99)
     assert _rungs_requested(down) == 6
+
+
+def test_hic_left_to_itself_is_symmetric():
+    """HIC is symmetric by construction, so its two sides must match.
+
+    A live run came out with max_down 12 and max_up 10. The Direction control
+    is hidden for HIC, so the form's `direction` state stayed at the ladder
+    default "down" -- which hid the Max up box while the form went on sending
+    its untouched default of 10, cutting the call side two rungs shorter than
+    the put side with nothing on screen to show it.
+    """
+    from engine.api import StartForwardRequest, _strategy_config
+
+    body = StartForwardRequest(
+        strategy="hic", step=100.0, lots=1,
+        full_band_steps=2, max_put_spreads=10, max_call_spreads=10,
+    )
+    config = _strategy_config(body, lot_size=65, strike_step=50.0)
+
+    assert config.max_down == config.max_up == 12
+    assert config.direction == "both"
+
+
+def test_an_explicit_cap_still_narrows_hic_but_never_widens_it():
+    """A cap is a limit, not an instruction: asking for more than the band and
+    spreads allow cannot conjure rungs that the structure does not have."""
+    from engine.api import StartForwardRequest, _strategy_config
+
+    tighter = _strategy_config(
+        StartForwardRequest(strategy="hic", step=100.0, lots=1, full_band_steps=2,
+                            max_put_spreads=10, max_call_spreads=10, max_down=4, max_up=4),
+        lot_size=65, strike_step=50.0,
+    )
+    assert tighter.max_down == tighter.max_up == 4
+
+    wider = _strategy_config(
+        StartForwardRequest(strategy="hic", step=100.0, lots=1, full_band_steps=2,
+                            max_put_spreads=10, max_call_spreads=10, max_down=99, max_up=99),
+        lot_size=65, strike_step=50.0,
+    )
+    assert wider.max_down == wider.max_up == 12

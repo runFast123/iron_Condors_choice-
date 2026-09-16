@@ -178,17 +178,35 @@ export async function getForwardRuns(): Promise<ForwardRunSummary[]> {
  */
 export async function getLiveState(
   run?: string,
-): Promise<{ state: LiveState | null; engineError: string | null }> {
+): Promise<{
+  state: LiveState | null;
+  /** Every run this user has, so a page need not ask a second time. */
+  runs: ForwardRunSummary[];
+  /** Which run the engine actually served. Authoritative over any guess. */
+  activeRun: string;
+  maxRuns: number;
+  engineError: string | null;
+}> {
+  const empty = { state: null, runs: [], activeRun: run ?? "ladder", maxRuns: 5 };
   if (!engineConfigured()) {
-    return { state: null, engineError: "ENGINE_URL is not configured." };
+    return { ...empty, engineError: "ENGINE_URL is not configured." };
   }
   const token = await getSessionToken();
-  if (!token) return { state: null, engineError: null };
+  if (!token) return { ...empty, engineError: null };
 
   try {
+    // One call, not two. The engine answers from India behind a tunnel while
+    // this renders on Vercel, so asking separately for the roll-call and the
+    // state cost two ocean round trips before the page could draw anything.
     const body = await engine.forwardState(token, run);
-    return { state: (body.state as LiveState | null) ?? null, engineError: null };
+    return {
+      state: (body.state as LiveState | null) ?? null,
+      runs: body.runs ?? [],
+      activeRun: body.run_key ?? run ?? "ladder",
+      maxRuns: body.max_runs ?? 5,
+      engineError: null,
+    };
   } catch (err) {
-    return { state: null, engineError: (err as Error).message };
+    return { ...empty, engineError: (err as Error).message };
   }
 }

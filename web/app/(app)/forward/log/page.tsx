@@ -1,5 +1,5 @@
-import { getForwardRuns, getLiveState } from "@/lib/live";
-import { RunScope, resolveRun } from "@/components/RunScope";
+import { getLiveState } from "@/lib/live";
+import { RunScope } from "@/components/RunScope";
 import { dateTime, inr, num } from "@/lib/format";
 import { Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
 import { LiveCondorBlotter } from "@/components/LiveCondorBlotter";
@@ -23,13 +23,13 @@ export default async function ForwardLogPage({
   // so someone watching a second test in the monitor would come here and read
   // the first one's trades without anything saying so.
   const { run } = await searchParams;
-  const runs = await getForwardRuns();
-  const active = resolveRun(run, runs);
-  // The error, not just the state. It used to be dropped, so an unreachable
-  // engine fell through to the defaults below and the page read "Realised P&L
-  // +Rs 0 / Log entries 0 / Condors closed 0" -- a confident set of zeros
-  // indistinguishable from a run that had genuinely done nothing.
-  const { state, engineError } = await getLiveState(active);
+  // One call for the run, the roll-call and which run was served -- and the
+  // error, not just the state. That error used to be dropped, so an
+  // unreachable engine fell through to the defaults below and the page read
+  // "Realised P&L +Rs 0 / Log entries 0 / Condors closed 0", a confident set
+  // of zeros indistinguishable from a run that had genuinely done nothing.
+  const { state, runs, activeRun, engineError } = await getLiveState(run);
+  const active = activeRun;
   const session = state?.session ?? null;
   const events = state?.events ?? [];
   const fills = state?.fills ?? [];

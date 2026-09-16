@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { LiveState } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime } from "@/lib/format";
@@ -16,6 +16,33 @@ import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
 /** Matched to the engine's own poll cadence; polling faster only re-ships
  *  the same session payload. */
 const POLL_MS = 10_000;
+
+/**
+ * One field in the start form: label, control, hint, stacked.
+ *
+ * A column, because a `<label>` whose text and control are inline siblings
+ * puts them side by side -- and only wraps when something *else* inside forces
+ * the box narrow. That is why the selects, which carry a 190px hint below
+ * them, had their label above while the bare number inputs had theirs beside:
+ * the same markup, laid out two different ways, in one row.
+ */
+const FIELD: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-start",
+  gap: 4,
+  fontSize: 11.5,
+  fontWeight: 600,
+  color: "var(--ink-2)",
+};
+
+/** The explanatory line under a field. */
+const HINT: CSSProperties = {
+  fontSize: 10.5,
+  fontWeight: 400,
+  lineHeight: 1.45,
+  color: "var(--ink-muted)",
+};
 
 /** The run a page with no selection is about. Named this since before runs
  *  had names, which is why it is the default everywhere. */
@@ -86,6 +113,13 @@ export function ForwardControl({
         return;
       }
       const body = await res.json();
+      // The roll-call rides along with the state now, so one poll does what
+      // two used to. Each request is a browser -> Vercel -> tunnel -> India
+      // round trip, and there were two of them every ten seconds.
+      if (Array.isArray(body.runs)) {
+        setRuns(body.runs as ForwardRunSummary[]);
+        if (typeof body.max_runs === "number") setMaxRuns(body.max_runs);
+      }
       if (res.ok && body.state) {
         setRawState(body.state as LiveState);
         setStateRun(runKey);
@@ -161,7 +195,6 @@ export function ForwardControl({
     })();
     setTicks([]);
     void refresh();
-    void refreshRuns();
     return () => {
       cancelled = true;
     };
@@ -175,11 +208,10 @@ export function ForwardControl({
     if (!running) return;
     const id = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      void refresh();
-      void refreshRuns();
+      void refresh();          // carries the roll-call with it
     }, POLL_MS);
     return () => clearInterval(id);
-  }, [running, refresh, refreshRuns]);
+  }, [running, refresh]);
 
   // The list has to keep refreshing even when the run on screen has stopped,
   // or a user watching a finished run would never see the others move.
@@ -228,21 +260,27 @@ export function ForwardControl({
         step: 100,
         poll_seconds: 10,
         expiry_cadence: cadence,
-        // HIC is two-way by construction and the engine forces it, so these
-        // are the ladder's to set. Sent regardless; the engine ignores them
-        // for HIC rather than the form having to know that it does.
-        direction,
-        anchor_mode: anchorMode,
-        max_down: maxDown !== "" ? Number(maxDown) : undefined,
-        max_up: maxUp !== "" ? Number(maxUp) : undefined,
         ...(strategy === "hic"
           ? {
               full_band_steps: bandSteps,
               max_put_spreads: putSpreads,
               max_call_spreads: callSpreads,
               debit_shift: debitShift,
+              // No direction, anchor or per-side caps. HIC derives all four
+              // from the band and the spread counts, and it is symmetric by
+              // construction. Sending the ladder's defaults anyway is what
+              // produced a live run with max_down 12 and max_up 10: the
+              // Direction control is hidden for HIC so `direction` stayed
+              // "down", which hid the Max up box -- while the form kept
+              // sending its untouched default of 10, quietly cutting the call
+              // side two rungs shorter than the put side.
             }
-          : {}),
+          : {
+              direction,
+              anchor_mode: anchorMode,
+              max_down: maxDown !== "" ? Number(maxDown) : undefined,
+              max_up: maxUp !== "" ? Number(maxUp) : undefined,
+            }),
       },
       "starting",
     );
@@ -469,20 +507,25 @@ export function ForwardControl({
                 {maxRuns} forward tests are already running. Stop one to start another.
               </div>
             )}
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+            {/* Tops aligned, not bottoms. Some fields carry a two-line hint
+                and some carry none, so `flex-end` stepped every short field
+                down to the tallest one's baseline and left the row looking
+                broken. The action moved out of the row entirely -- wrapped
+                between two number boxes is no place for the primary button. */}
+            <div style={{ display: "flex", gap: "14px 16px", flexWrap: "wrap", alignItems: "flex-start" }}>
+              <label style={FIELD}>
                 Strategy
                 <select
                   value={strategy}
                   onChange={(e) => setStrategy(e.target.value as "ladder" | "hic")}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 190 }}
+                  style={{ minWidth: 190 }}
                 >
                   <option value="ladder">Condor ladder</option>
                   <option value="hic">Hybrid iron condor</option>
                 </select>
                 <span
-                  style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 190 }}
+                  style={{ ...HINT, maxWidth: 190 }}
                 >
                   {strategy === "ladder"
                     ? "A condor at every step. Earns when the market stalls."
@@ -490,29 +533,29 @@ export function ForwardControl({
                 </span>
               </label>
 
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+              <label style={FIELD}>
                 Name
                 <input
                   className="auth-input"
                   value={runName}
                   onChange={(e) => setRunName(e.target.value)}
-                  placeholder="ladder"
+                  placeholder={strategy}
                   maxLength={40}
-                  style={{ marginTop: 4, width: 170 }}
+                  style={{ width: 170 }}
                 />
                 <span
-                  style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400 }}
+                  style={{ ...HINT, maxWidth: 200 }}
                 >
                   Name two runs differently to compare them on the same ticks.
                 </span>
               </label>
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+              <label style={FIELD}>
                 Expiry
                 <select
                   value={cadence}
                   onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 110 }}
+                  style={{ minWidth: 110 }}
                 >
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
@@ -521,64 +564,64 @@ export function ForwardControl({
 
               {strategy === "hic" ? (
                 <>
-                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <label style={FIELD}>
                     Core band
                     <select
                       value={bandSteps}
                       onChange={(e) => setBandSteps(Number(e.target.value))}
                       className="auth-input"
-                      style={{ marginTop: 5, minWidth: 190 }}
+                      style={{ minWidth: 190 }}
                     >
                       <option value={0}>Anchor only</option>
                       <option value={1}>Anchor and one step either way</option>
                       <option value={2}>Anchor and two steps either way</option>
                     </select>
                     <span
-                      style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 190 }}
+                      style={{ ...HINT, maxWidth: 190 }}
                     >
                       How many levels open a full condor. Everything beyond
                       buys a spread.
                     </span>
                   </label>
 
-                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <label style={FIELD}>
                     Spread strikes
                     <select
                       value={debitShift}
                       onChange={(e) => setDebitShift(Number(e.target.value) as 0 | 200)}
                       className="auth-input"
-                      style={{ marginTop: 5, minWidth: 175 }}
+                      style={{ minWidth: 175 }}
                     >
                       <option value={0}>Reverse the condor&rsquo;s</option>
                       <option value={200}>Bought at the level</option>
                     </select>
                     <span
-                      style={{ display: "block", marginTop: 3, fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 400, maxWidth: 175 }}
+                      style={{ ...HINT, maxWidth: 175 }}
                     >
                       Buying at the level costs more and starts paying sooner.
                     </span>
                   </label>
 
-                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <label style={FIELD}>
                     Put spreads
                     <input
                       type="number" min={0} max={40} value={putSpreads}
                       onChange={(e) => setPutSpreads(Number(e.target.value))}
-                      className="auth-input" style={{ marginTop: 4, width: 90 }}
+                      className="auth-input" style={{ width: 90 }}
                     />
                   </label>
 
-                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <label style={FIELD}>
                     Call spreads
                     <input
                       type="number" min={0} max={40} value={callSpreads}
                       onChange={(e) => setCallSpreads(Number(e.target.value))}
-                      className="auth-input" style={{ marginTop: 4, width: 90 }}
+                      className="auth-input" style={{ width: 90 }}
                     />
                   </label>
                 </>
               ) : (
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+              <label style={FIELD}>
                 Direction (v2)
                 <select
                   value={direction}
@@ -592,7 +635,7 @@ export function ForwardControl({
                     }
                   }}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 140 }}
+                  style={{ minWidth: 140 }}
                 >
                   <option value="down">Down-only (v1)</option>
                   <option value="both">Two-way / Both (v2)</option>
@@ -602,13 +645,13 @@ export function ForwardControl({
               )}
 
               {strategy === "hic" ? null : (
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Anchor Mode
+              <label style={FIELD}>
+                Anchor mode
                 <select
                   value={anchorMode}
                   onChange={(e) => setAnchorMode(e.target.value as "floor" | "nearest" | "round")}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 110 }}
+                  style={{ minWidth: 110 }}
                 >
                   <option value="floor">Floor</option>
                   <option value="nearest">Nearest</option>
@@ -617,7 +660,7 @@ export function ForwardControl({
               </label>
               )}
 
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+              <label style={FIELD}>
                 Lots
                 <input
                   type="number"
@@ -626,13 +669,13 @@ export function ForwardControl({
                   value={lots}
                   onChange={(e) => setLots(Math.max(1, Number(e.target.value)))}
                   className="auth-input"
-                  style={{ marginTop: 5, width: 70 }}
+                  style={{ width: 70 }}
                 />
               </label>
 
-              {direction !== "up" && (
-                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max Down
+              {strategy !== "hic" && direction !== "up" && (
+                <label style={FIELD}>
+                  Max down
                   <input
                     type="number"
                     min={1}
@@ -640,14 +683,14 @@ export function ForwardControl({
                     value={maxDown}
                     onChange={(e) => setMaxDown(e.target.value === "" ? "" : Number(e.target.value))}
                     className="auth-input"
-                    style={{ marginTop: 5, width: 80 }}
+                    style={{ width: 80 }}
                   />
                 </label>
               )}
 
-              {direction !== "down" && (
-                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max Up
+              {strategy !== "hic" && direction !== "down" && (
+                <label style={FIELD}>
+                  Max up
                   <input
                     type="number"
                     min={1}
@@ -655,25 +698,37 @@ export function ForwardControl({
                     value={maxUp}
                     onChange={(e) => setMaxUp(e.target.value === "" ? "" : Number(e.target.value))}
                     className="auth-input"
-                    style={{ marginTop: 5, width: 80 }}
+                    style={{ width: 80 }}
                   />
                 </label>
               )}
 
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 14,
+                alignItems: "center",
+                flexWrap: "wrap",
+                marginTop: 18,
+                paddingTop: 14,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
               <button
                 onClick={start}
                 disabled={busy !== null}
                 className="auth-submit"
-                style={{ marginTop: 0, minWidth: 140 }}
+                style={{ marginTop: 0, minWidth: 150 }}
               >
                 {busy === "starting" ? "Starting…" : "Start paper run"}
               </button>
+              <p style={{ fontSize: 12, color: "var(--ink-muted)", margin: 0, lineHeight: 1.6, maxWidth: "62ch" }}>
+                Runs against live Choice quotes and records simulated fills. This platform places
+                no orders — there is no live-trading path to switch into.
+              </p>
             </div>
-
-            <p style={{ fontSize: 12, color: "var(--ink-muted)", margin: "12px 0 0", lineHeight: 1.6, maxWidth: "80ch" }}>
-              Runs against live Choice quotes and records simulated fills. This platform places no
-              orders — there is no live-trading path to switch into.
-            </p>
           </>
         ) : (
           <>

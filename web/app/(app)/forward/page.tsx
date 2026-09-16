@@ -1,11 +1,11 @@
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
-import { getForwardRuns, getLiveState } from "@/lib/live";
+import { getLiveState } from "@/lib/live";
 import { num } from "@/lib/format";
 import { Badge, Card, PageHeader } from "@/components/ui";
 import { ForwardControl } from "@/components/ForwardControl";
-import { resolveRun } from "@/components/RunScope";
+
 
 export default async function ForwardPage({
   searchParams,
@@ -16,9 +16,10 @@ export default async function ForwardPage({
   // someone else lands on the same test rather than on whichever one happens
   // to be first.
   const { run } = await searchParams;
-  const runs = await getForwardRuns();
-  const active = resolveRun(run, runs);
-  const { state, engineError } = await getLiveState(active);
+  // One call. It returns the run, the roll-call and which run it served, so
+  // the page no longer pays two ocean round trips before it can draw.
+  const { state, runs, activeRun, engineError } = await getLiveState(run);
+  const active = activeRun;
   const ladder = state?.ladder;
 
   return (

@@ -1086,13 +1086,12 @@ def forward_tick(
     return {"ok": True, "state": runner.snapshot()}
 
 
-@app.get("/forward/runs", dependencies=[Depends(check_engine_key)])
-def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
     """Every forward test this user is driving, newest first.
 
     One entry per run with enough to render a row without asking for each
     run's full snapshot: what it is, what it was configured with, and where it
-    stands. The full state is still one call away per run.
+    stands.
     """
     out = []
     for run_key, runner in session.runners().items():
@@ -1116,8 +1115,14 @@ def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]
             "open_condors": pnl.get("open_condors", 0),
         })
     out.sort(key=lambda r: r["started_at"], reverse=True)
+    return out
+
+
+@app.get("/forward/runs", dependencies=[Depends(check_engine_key)])
+def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """The roll-call on its own. `/forward/state` carries the same list."""
     return {
-        "runs": out,
+        "runs": _run_summaries(session),
         "max_runs": MAX_RUNS_PER_USER,
         "account_loss_limit": abs(engine_config.account_loss_limit),
     }
@@ -1126,23 +1131,38 @@ def forward_runs(session: UserSession = Depends(current_user)) -> dict[str, Any]
 @app.get("/forward/state", dependencies=[Depends(check_engine_key)])
 def forward_state(
     session: UserSession = Depends(current_user),
-    run_key: str = Depends(run_param),
+    run: str | None = None,
 ) -> dict[str, Any]:
-    """One strategy's run, plus a roll-call of every strategy this user has.
+    """One run's full state, and the roll-call of every run beside it.
 
-    `running` and `state` keep their exact meaning for the strategy asked for,
-    so a dashboard that sends no strategy sees precisely what it saw before.
-    `strategies` is additive, for a UI that wants to show both at once.
+    Both in one response on purpose. The dashboard renders from Vercel and the
+    engine answers from a machine in India behind a tunnel, so a page that
+    asked for the roll-call and then the state paid two ocean round trips
+    before it could draw anything -- about a second of blank screen per click,
+    every click. Nothing about the two is ordered, so they travel together.
+
+    `run` is optional. Omitted, it serves the run a dashboard would have shown
+    anyway -- the one called "ladder", which is what a single run has always
+    been -- but falls through to whichever run the user actually has, so a
+    caller with no ladder gets a real run rather than a confident `null`. The
+    response names the run it served, so the caller never has to guess.
     """
-    runner = session.runner_for(run_key)
+    runners = session.runners()
+    if run:
+        run_key = slugify_run_key(run)
+    elif DEFAULT_RUN_KEY in runners:
+        run_key = DEFAULT_RUN_KEY
+    else:
+        run_key = next(iter(runners), DEFAULT_RUN_KEY)
+
+    runner = runners.get(run_key)
     return {
+        "run_key": run_key,
         "running": runner is not None and runner.stopped_reason is None,
         "state": runner.snapshot() if runner is not None else None,
-        "runs": {
-            key: {"running": r.stopped_reason is None, "label": r.run_label or key,
-                  "strategy": r.strategy_id}
-            for key, r in session.runners().items()
-        },
+        "runs": _run_summaries(session),
+        "max_runs": MAX_RUNS_PER_USER,
+        "account_loss_limit": abs(engine_config.account_loss_limit),
     }
 
 

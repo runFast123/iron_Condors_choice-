@@ -176,7 +176,14 @@ export const engine = {
   // the engine defaults to the one called "ladder", which is what a single run
   // has always been -- so a caller that predates named runs keeps working.
   forwardState: (token: string, run?: string) =>
-    call<{ running: boolean; state: unknown }>(`/forward/state${runQuery(run)}`, { token }),
+    call<{
+      run_key: string;
+      running: boolean;
+      state: unknown;
+      runs: ForwardRunSummary[];
+      max_runs: number;
+      account_loss_limit: number;
+    }>(`/forward/state${runQuery(run)}`, { token }),
 
   forwardRuns: (token: string) =>
     call<{ runs: ForwardRunSummary[]; max_runs: number; account_loss_limit: number }>(
