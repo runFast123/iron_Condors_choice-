@@ -422,3 +422,66 @@ def test_a_stale_fit_is_ignored_rather_than_trusted(store):
     assert job.status == "done", job.error
     assert "flat-term" in job.result["provenance"]["vol_source"]
     assert job.result["provenance"]["iv_calibration"] is None
+
+
+# ============================== one user's run is not another's
+
+
+def test_a_backtest_row_never_changes_owner(store):
+    """The run id was a process-local counter, so the first backtest after
+    every restart was "bt-1" -- and the upsert is keyed on it. One user's run
+    overwrote another's stored row while keeping the original owner, so user A
+    opened the dashboard and was served user B's backtest."""
+    db = store
+
+    db.save_backtest(run_id="bt-1", user_id="userA", status="done",
+                     params={"days": 180}, dataset={"whose": "userA"},
+                     result_version=RESULT_VERSION)
+    db.save_backtest(run_id="bt-1", user_id="userB", status="done",
+                     params={"days": 30}, dataset={"whose": "userB"},
+                     result_version=RESULT_VERSION)
+
+    mine = db.latest_backtest("userA", min_version=RESULT_VERSION)
+    assert mine is not None
+    assert mine["dataset"] == {"whose": "userA"}, "served another user's result"
+
+    # B's write was refused rather than misfiled, so B simply has nothing yet.
+    assert db.latest_backtest("userB", min_version=RESULT_VERSION) is None
+
+
+def test_two_runs_by_one_user_both_survive(store):
+    """Every re-run overwrote the previous row, so the history could never
+    grow and the stored date stayed at the first run's -- a result computed
+    today was dated to whenever the counter last started from zero."""
+    db = store
+
+    db.save_backtest(run_id="bt-aaa", user_id="u", status="done",
+                     params={"days": 180}, dataset={"n": 1},
+                     result_version=RESULT_VERSION,
+                     created_at="2026-09-08T10:00:00+00:00")
+    db.save_backtest(run_id="bt-bbb", user_id="u", status="done",
+                     params={"days": 30}, dataset={"n": 2},
+                     result_version=RESULT_VERSION,
+                     created_at="2026-09-16T10:00:00+00:00")
+
+    assert len(db.backtest_history("u")) == 2
+    assert db.latest_backtest("u", min_version=RESULT_VERSION)["dataset"] == {"n": 2}
+
+
+def test_job_ids_are_unique_across_engine_restarts(store):
+    """Two JobStores stand in for two engine sessions. A counter restarted at
+    zero in each and handed out the same id twice -- so the second user's run
+    landed in the first user's row."""
+    first = JobStore(store)
+    a = first.start(FakeMarket(), "alice", params())
+    _wait(first, "alice")
+
+    restarted = JobStore(store)            # as if the engine had been restarted
+    b = restarted.start(FakeMarket(), "bob", params())
+    _wait(restarted, "bob")
+
+    assert a.job_id != b.job_id
+    assert store.latest_backtest("alice", min_version=RESULT_VERSION) is not None
+    assert store.latest_backtest("bob", min_version=RESULT_VERSION) is not None
+    assert len(store.backtest_history("alice")) == 1
+    assert len(store.backtest_history("bob")) == 1

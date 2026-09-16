@@ -440,6 +440,10 @@ class Store:
     def save_backtest(
         self,
         *,
+        # Must be unique across users and across engine restarts. The upsert
+        # below refuses to hand a row to a different owner, so a collision
+        # loses the write rather than leaking it -- but the caller should not
+        # be generating collisions in the first place.
         run_id: str,
         user_id: str,
         status: str,
@@ -461,6 +465,7 @@ class Store:
                 dataset_json=excluded.dataset_json,
                 error=excluded.error,
                 result_version=excluded.result_version
+            WHERE backtest_runs.user_id = excluded.user_id
             """,
             (run_id, user_id, created_at or _now(), status,
              json.dumps(params, separators=(",", ":")),

@@ -15,6 +15,7 @@ import datetime as dt
 from dataclasses import replace
 import logging
 import threading
+import uuid
 import traceback
 from dataclasses import dataclass, field
 from typing import Any
@@ -390,8 +391,16 @@ class JobStore:
             existing = self._jobs.get(user_id)
             if existing and existing.status in ("queued", "running"):
                 return existing
-            self._counter += 1
-            job = BacktestJob(job_id=f"bt-{self._counter}", user_id=user_id, params=params)
+            # A uuid, not a counter. `self._counter` restarted at 0 with the
+            # process, so the first backtest after every restart was "bt-1" --
+            # and `save_backtest` upserts on the run id. One user's run
+            # therefore overwrote another user's stored row, keeping the
+            # original owner: user A opened the dashboard and was served user
+            # B's backtest. It also froze `created_at` at the first run ever
+            # to carry that number, so a result computed today was dated to
+            # whenever the counter last started, and every re-run destroyed
+            # the history rather than adding to it.
+            job = BacktestJob(job_id=f"bt-{uuid.uuid4().hex}", user_id=user_id, params=params)
             self._jobs[user_id] = job
 
         thread = threading.Thread(
