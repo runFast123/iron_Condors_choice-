@@ -12,7 +12,7 @@ export default async function AboutPage() {
     <>
       <PageHeader
         title="The Strategy"
-        subtitle="What the ladder does, why the legs cancel, and how Ladder v2 operates in both directions."
+        subtitle="The two strategies this platform runs: the condor ladder, which earns while the market stalls, and the hybrid iron condor, which earns while a move keeps going. Both trade the same 100-point trigger on the same live ticks, so a month tells you which kind of month it was."
       />
 
       <div style={{ display: "grid", gap: 16, maxWidth: 1000 }}>
@@ -123,14 +123,109 @@ export default async function AboutPage() {
           </p>
         </Card>
 
+        <Card
+          title="Hybrid iron condor (HIC)"
+          hint="The second strategy. Same trigger, same anchor — but what it opens depends on how far the level has travelled."
+        >
+          <p style={{ margin: 0, fontSize: 13.5, lineHeight: 1.8, color: "var(--ink-2)" }}>
+            The ladder sells a condor at every rung, so it earns while NIFTY stays inside the
+            strikes and bleeds when a move keeps running. HIC is built for the opposite month. It
+            sells condors only <em>near</em> the anchor, and past that it stops selling and starts{" "}
+            <strong>buying</strong> — a two-leg vertical spread per step, paid for rather than
+            sold, which is worth more the further the move goes.
+          </p>
+
+          <div className="scroll-x" style={{ marginTop: 14 }}>
+            <table style={{ minWidth: 620 }}>
+              <thead>
+                <tr>
+                  <th>Steps from the anchor</th>
+                  <th>What opens</th>
+                  <th>Legs at level <span className="mono">L</span></th>
+                  <th style={{ textAlign: "right" }}>Cash</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="mono" style={{ fontSize: 12 }}>|k| &le; band</td>
+                  <td><Badge tone="brand">Iron condor</Badge></td>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    the same four legs the ladder opens
+                  </td>
+                  <td style={{ textAlign: "right", color: "var(--pos)", fontWeight: 600 }}>credit</td>
+                </tr>
+                <tr>
+                  <td className="mono" style={{ fontSize: 12 }}>k &lt; &minus;band (below)</td>
+                  <td><Badge tone="pos">Put spread</Badge></td>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    BUY L&nbsp;&minus;&nbsp;{num(params.short_offset)} PE ·
+                    SELL L&nbsp;&minus;&nbsp;{num(params.long_offset)} PE
+                  </td>
+                  <td style={{ textAlign: "right", color: "var(--neg)", fontWeight: 600 }}>debit</td>
+                </tr>
+                <tr>
+                  <td className="mono" style={{ fontSize: 12 }}>k &gt; +band (above)</td>
+                  <td><Badge tone="pos">Call spread</Badge></td>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    BUY L&nbsp;+&nbsp;{num(params.short_offset)} CE ·
+                    SELL L&nbsp;+&nbsp;{num(params.long_offset)} CE
+                  </td>
+                  <td style={{ textAlign: "right", color: "var(--neg)", fontWeight: 600 }}>debit</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p style={{ fontSize: 12.5, color: "var(--ink-muted)", lineHeight: 1.75, margin: "14px 0 0" }}>
+            The spread is the condor&rsquo;s own put side at that level with the two sides swapped:
+            bought near, sold far. Setting <strong>Spread strikes</strong> to &ldquo;bought at the
+            level&rdquo; shifts the whole pair {num(params.short_offset)} points toward the money —
+            it costs more and starts paying sooner. Bought legs are written first, the same order
+            the ladder uses, so one fill log reads the same whichever strategy wrote it.
+          </p>
+
+          <h4 style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)", margin: "18px 0 8px" }}>
+            The two settings that shape it
+          </h4>
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.9, color: "var(--ink-2)" }}>
+            <li>
+              <strong>Core band</strong> — how many steps either side of the anchor still sell a
+              full condor. A band of 1 sells three condors (the anchor and one step each way) and
+              buys a spread at every step beyond. A band of 0 sells only at the anchor.
+            </li>
+            <li>
+              <strong>Put spreads / Call spreads</strong> — how many bought spreads each side may
+              open. These set how far the ladder runs: the band plus the spread count{" "}
+              <em>is</em> the per-side cap, so HIC has no separate Max down and Max up. It is
+              symmetric by construction and the engine keeps it that way.
+            </li>
+          </ul>
+
+          <p style={{ fontSize: 12.5, color: "var(--ink-muted)", lineHeight: 1.75, margin: "14px 0 0" }}>
+            HIC is always two-way and always centred on the nearest step. A one-directional HIC
+            would be a different strategy wearing the name, and an anchor rounded down would put
+            the spot up to {num(params.step - 1)} points off centre in a structure whose whole point
+            is symmetry.
+          </p>
+        </Card>
+
         <Card title="Where the risk is">
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.9, color: "var(--ink-2)" }}>
             <li>
-              <strong>Per condor, loss is bounded</strong> at{" "}
+              <strong>A sold condor&rsquo;s loss is bounded</strong> at{" "}
               <span className="mono">
                 {num(params.long_offset - params.short_offset)} &times; {num(params.qty)} &minus; credit
               </span>
               . Only one side can finish in the money, so you are never exposed to both wings at once.
+            </li>
+            <li>
+              <strong>A bought spread risks only what it cost.</strong> The debit paid is the whole
+              of the downside — there is no wing to subtract a credit from — and unlike a condor,{" "}
+              <em>both</em> its legs can finish in the money, which is the case it is bought for.
+              It has one breakeven rather than two. A stop-loss set as a multiple of what was paid
+              can therefore never trigger on one: the position has no room to lose more than the
+              debit. That is honest rather than broken, but it means a 2&times; stop, sensible on a
+              condor, does nothing here.
             </li>
             <li>
               <strong>Firing rule:</strong> Each level fires at most once per campaign. A sustained one-way
@@ -141,12 +236,25 @@ export default async function AboutPage() {
               so an overnight move builds the same ladder a gradual move would.
             </li>
             <li>
-              <strong>Caps:</strong> Condors are bounded by <code>max_condors</code> (e.g. 20) and optional per-side caps (<code>max_down</code>, <code>max_up</code>).
+              <strong>Caps:</strong> positions are bounded by <code>max_condors</code> (e.g. 20),
+              and the ladder takes optional per-side caps (<code>max_down</code>,{" "}
+              <code>max_up</code>) on top. HIC derives its own from the band and the spread counts.
+              Where the two disagree the tighter one wins and the run says so in its log, rather
+              than dropping the furthest rungs silently.
+            </li>
+            <li>
+              <strong>Both strategies hold to expiry</strong> by default, and settle at intrinsic
+              against the closing index level on expiry day. A campaign lives inside one expiry:
+              when it settles, the ladder re-anchors, because a long put in September offsets
+              nothing in October.
             </li>
           </ul>
         </Card>
 
-        <Card title="Current parameters">
+        <Card
+          title="Current parameters"
+          hint="From the most recent backtest on this dashboard. A live forward run carries its own settings, shown on the Live Monitor."
+        >
           <div className="scroll-x">
             <table>
               <tbody>

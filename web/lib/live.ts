@@ -201,7 +201,11 @@ export async function getLiveState(
     const body = await engine.forwardState(token, run);
     return {
       state: (body.state as LiveState | null) ?? null,
-      runs: body.runs ?? [],
+      // Array-checked, not just null-checked. An engine older than this build
+      // answers `runs` as a dict keyed by run, which is truthy -- so `?? []`
+      // would hand the page an object where it expects a list. The two deploy
+      // separately, so that window is real.
+      runs: Array.isArray(body.runs) ? body.runs : [],
       activeRun: body.run_key ?? run ?? "ladder",
       maxRuns: body.max_runs ?? 5,
       engineError: null,
