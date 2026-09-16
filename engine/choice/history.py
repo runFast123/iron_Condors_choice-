@@ -55,10 +55,12 @@ COLUMNS = ["ts", "open", "high", "low", "close", "volume", "oi"]
 # chart endpoints universally cap intraday history; kkunal documents no limits
 # and does no chunking, which is the most likely reason long-range requests
 # come back empty.  Conservative defaults, auto-bisected on failure.
+# Keys are exactly the Interval codes Choice documents for ChartData:
+# 1, 5, 10, 15, 30, 60 intraday and D/W/M/Q/H/Y/T/F for EOD. "2" and "3" were
+# here and are not among them -- Choice rejects them, every leg fails, and the
+# run silently prices off the model instead.
 MAX_SPAN_DAYS: dict[str, int] = {
     "1": 7,
-    "2": 10,
-    "3": 15,
     "5": 30,
     "10": 60,
     "15": 90,
@@ -71,7 +73,7 @@ MAX_SPAN_DAYS: dict[str, int] = {
 
 _RESOLUTION_ALIASES = {
     "1m": "1", "1min": "1", "minute": "1",
-    "3m": "3", "5m": "5", "10m": "10", "15m": "15", "30m": "30",
+    "5m": "5", "10m": "10", "15m": "15", "30m": "30",
     "1h": "60", "60m": "60", "hour": "60",
     "d": "D", "1d": "D", "day": "D", "daily": "D",
     "w": "W", "1w": "W", "week": "W", "weekly": "W",

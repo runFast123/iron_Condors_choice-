@@ -300,6 +300,12 @@ class BacktestRunner:
         # a day when each contract was still listed.
         instruments = HistoricalInstruments(market.master)
         missing: list[str] = []
+        # Resolved fine, and Choice returned an empty series anyway. A
+        # different fact from "the contract could not be found", and until now
+        # indistinguishable: an empty frame fell through `if not frame.empty`
+        # with nothing logged and nothing recorded, so the only symptom was a
+        # MODELED percentage nobody could account for.
+        served_nothing: list[str] = []
         total = max(1, len(requirements))
         for i, req in enumerate(requirements, 1):
             self._step(
@@ -320,7 +326,19 @@ class BacktestRunner:
             if not frame.empty:
                 candles.add(req.expiry, req.strike, req.right, frame)
                 fetched += 1
+            else:
+                served_nothing.append(f"{req.expiry} {req.strike:g}{req.right}")
 
+        if served_nothing:
+            by_expiry: dict[str, int] = {}
+            for entry in served_nothing:
+                by_expiry[entry.split(" ", 1)[0]] = by_expiry.get(entry.split(" ", 1)[0], 0) + 1
+            log.warning(
+                "[%s] Choice resolved %d legs and returned no candles for any of them: %s. "
+                "ChartData does not serve settled option contracts, so these are modelled.",
+                job.job_id, len(served_nothing),
+                ", ".join(f"{k} ({v} legs)" for k, v in sorted(by_expiry.items())),
+            )
         if missing:
             # Said plainly rather than left to be inferred from a MODELED
             # badge: "some legs were modelled" and "no real premium was found
@@ -343,6 +361,14 @@ class BacktestRunner:
             "term_exponent": term_exponent,
             "iv_calibration": calibration,
             "premium_source": "choice:ChartData" if fetched else "modeled:black76",
+            # Why a leg is modelled, split by cause, because the three are
+            # different problems: one is fixed by a shorter range, one by a
+            # correct expiry, and one cannot be fixed at all.
+            "legs_total": total,
+            "legs_real": fetched,
+            "legs_empty": len(served_nothing),
+            "legs_unresolved": len(missing),
+            "empty_expiries": sorted({e.split(" ", 1)[0] for e in served_nothing}),
             # The scrip master delists expired contracts, so a historical run
             # necessarily rests partly on a derived calendar. Say how much.
             "expiry_source": (

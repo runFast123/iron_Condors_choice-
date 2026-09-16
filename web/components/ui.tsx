@@ -174,12 +174,21 @@ export function ProvenanceBanner({
   note,
   awaiting = false,
   hasData = true,
+  legs,
 }: {
   verified: boolean;
   realFraction: number;
   note: string;
   awaiting?: boolean;
   hasData?: boolean;
+  /** Why legs were modelled, when the run recorded it. */
+  legs?: {
+    total?: number;
+    real?: number;
+    empty?: number;
+    unresolved?: number;
+    emptyExpiries?: string[];
+  };
 }) {
   if (awaiting) return <AwaitingConnection note={note} />;
 
@@ -232,6 +241,22 @@ export function ProvenanceBanner({
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-muted)", maxWidth: "88ch", lineHeight: 1.55 }}>
           {note}
         </p>
+        {/* The reason, not just the percentage. "76% modelled" invites a hunt
+            for a misconfiguration; "Choice served no candles for three settled
+            expiries" is the actual answer and is not fixable from here. */}
+        {legs?.empty ? (
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
+            <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice
+            candles. Choice resolved <strong>{legs.empty}</strong> more and returned an empty
+            series for every one
+            {legs.emptyExpiries?.length
+              ? ` — all of them expiries that have already settled (${legs.emptyExpiries.join(", ")})`
+              : ""}
+            . ChartData does not serve settled option contracts, so those legs can only be
+            modelled. A range inside the current expiry prices entirely from real data.
+            {legs.unresolved ? ` ${legs.unresolved} leg(s) could not be resolved at all.` : ""}
+          </p>
+        ) : null}
       </div>
     </div>
   );

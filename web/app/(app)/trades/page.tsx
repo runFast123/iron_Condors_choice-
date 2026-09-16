@@ -22,6 +22,13 @@ export default async function TradesPage() {
           note={provenance.note}
           awaiting={(provenance.awaiting_connection ?? false)}
           hasData={condors.length > 0}
+          legs={{
+            total: provenance.legs_total,
+            real: provenance.legs_real,
+            empty: provenance.legs_empty,
+            unresolved: provenance.legs_unresolved,
+            emptyExpiries: provenance.empty_expiries,
+          }}
         />
 
         <Card

@@ -485,3 +485,53 @@ def test_job_ids_are_unique_across_engine_restarts(store):
     assert store.latest_backtest("bob", min_version=RESULT_VERSION) is not None
     assert len(store.backtest_history("alice")) == 1
     assert len(store.backtest_history("bob")) == 1
+
+
+# ============================== why a leg was modelled
+
+
+def test_a_leg_choice_resolves_but_will_not_serve_is_reported(monkeypatch):
+    """Choice answers a settled option contract with an empty series rather
+    than an error. That fell through `if not frame.empty` with nothing logged
+    and nothing recorded, so the only symptom was a MODELED percentage with no
+    way to account for it -- and "Choice served nothing" looked exactly like
+    "the contract could not be found"."""
+    market = FakeMarket(option_frames=True)
+    served = market.option_candles
+
+    def puts_come_back_empty(underlying, expiry, strike, right, start, end, resolution, **kw):
+        if right == "PE":
+            market.option_calls += 1
+            return pd.DataFrame()
+        return served(underlying, expiry, strike, right, start, end, resolution, **kw)
+
+    monkeypatch.setattr(market, "option_candles", puts_come_back_empty)
+    job = run_job(market=market)
+    assert job.status == "done", job.error
+
+    prov = job.result["provenance"]
+    assert prov["legs_empty"] > 0, "empty legs must be counted"
+    assert prov["legs_real"] > 0, "the calls still priced from real candles"
+    assert prov["legs_unresolved"] == 0, "nothing failed to resolve"
+    assert prov["legs_total"] == prov["legs_real"] + prov["legs_empty"]
+    assert prov["empty_expiries"], "and the expiries are named"
+
+
+def test_a_fully_served_run_reports_no_empty_legs():
+    job = run_job(market=FakeMarket(option_frames=True))
+
+    prov = job.result["provenance"]
+    assert prov["legs_empty"] == 0
+    assert prov["empty_expiries"] == []
+    assert prov["legs_real"] == prov["legs_total"]
+
+
+def test_a_run_choice_serves_nothing_for_says_so_rather_than_only_modelling():
+    """The default fake serves no candles at all -- the shape of a backtest
+    over settled expiries."""
+    job = run_job(market=FakeMarket())
+
+    prov = job.result["provenance"]
+    assert prov["legs_real"] == 0
+    assert prov["legs_empty"] == prov["legs_total"] > 0
+    assert prov["premium_source"] == "modeled:black76"

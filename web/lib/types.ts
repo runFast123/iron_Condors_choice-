@@ -26,6 +26,18 @@ export interface Provenance {
   range: [string, string];
   legs_requested?: number;
   legs_with_choice_data?: number;
+  /**
+   * Why a leg ended up modelled, split by cause. The three are different
+   * problems: `legs_empty` is Choice resolving the contract and returning no
+   * candles at all, which is what it does for a settled option and cannot be
+   * fixed from here; `legs_unresolved` is a contract that could not be found;
+   * the rest priced from real candles.
+   */
+  legs_total?: number;
+  legs_real?: number;
+  legs_empty?: number;
+  legs_unresolved?: number;
+  empty_expiries?: string[];
   coverage?: Record<string, number>;
   failures?: CoverageFailure[];
   lot_size?: number;
