@@ -5,6 +5,7 @@ import type { LiveState } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { UnitKindBadge } from "@/components/UnitKindBadge";
 import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
 
 /**
@@ -102,6 +103,20 @@ export function ForwardControl({
   // Positions with no mark yet. Their value is unknown, not zero -- after an
   // engine restart outside market hours there is no tick to compute one.
   const unmarked = state?.pnl.unmarked_condors ?? 0;
+
+  // What the next rung on each side will actually be. A HIC level inside the
+  // band opens a full four-leg condor and one beyond it opens a two-leg
+  // bought spread, and the level alone does not say which -- so a rung that
+  // looked like it should be a spread arrived as a condor with no explanation.
+  const SHAPE_WORD: Record<string, string> = {
+    condor: "condor",
+    put_debit_spread: "put spread",
+    call_debit_spread: "call spread",
+    put_credit_spread: "put credit spread",
+    call_credit_spread: "call credit spread",
+  };
+  const shapeHint = (kind: string | null | undefined) =>
+    kind ? SHAPE_WORD[kind] ?? kind : undefined;
 
   const refresh = useCallback(async () => {
     try {
@@ -337,6 +352,26 @@ export function ForwardControl({
           {allUnmarked ? " no" : " the"} unrealised P&amp;L
           {allUnmarked ? " can be shown" : " above is partial"}. Marks are computed on each tick;
           the run resumes marking when the market reopens.
+        </>
+      ),
+    });
+  }
+  // HIC only. The band is the rule that decides whether a rung is a condor or
+  // a bought spread, and without it on screen a level inside the band looks
+  // like a spread that arrived as a condor.
+  const band = state?.ladder.band;
+  const anchor = state?.ladder.anchor;
+  if (band != null && anchor != null) {
+    const step = state?.ladder.step ?? 100;
+    notes.push({
+      key: "hic-band",
+      tone: "info",
+      body: (
+        <>
+          <strong>Core band {band}.</strong> Anchored at {num(anchor)}, so every level from{" "}
+          {num(anchor - band * step)} to {num(anchor + band * step)} opens a full four-leg
+          condor. The first bought spread is at {num(anchor - (band + 1) * step)} on the way
+          down and {num(anchor + (band + 1) * step)} on the way up.
         </>
       ),
     });
@@ -828,11 +863,13 @@ export function ForwardControl({
                       ? num(state.ladder.next_trigger)
                       : "—"
                 }
+                hint={shapeHint(state?.ladder.next_down_kind)}
               />
               {state?.ladder.direction === "both" && (
                 <Metric
                   label="Next up"
                   value={state?.ladder.next_up != null ? num(state.ladder.next_up) : "—"}
+                  hint={shapeHint(state?.ladder.next_up_kind)}
                 />
               )}
               <Metric label="Self-hedged" value={pct(state?.netting.offset_ratio ?? 0)} />
@@ -909,7 +946,7 @@ export function ForwardControl({
                   <table>
                     <thead>
                       <tr>
-                        <th>Level</th><th>Expiry</th>
+                        <th>Unit</th><th>Level</th><th>Expiry</th>
                         <th style={{ textAlign: "right" }}>Credit</th>
                         <th style={{ textAlign: "right" }}>Live P&amp;L</th>
                         <th style={{ textAlign: "right" }}>Max loss</th>
@@ -919,6 +956,10 @@ export function ForwardControl({
                     <tbody>
                       {openPositions.map((p) => (
                         <tr key={p.index}>
+                          {/* Without this the only way to tell a four-leg
+                              condor from a two-leg spread was to count the
+                              badges in the Legs column. */}
+                          <td><UnitKindBadge kind={p.kind} k={p.k} /></td>
                           <td className="tnum" style={{ fontWeight: 700 }}>{num(p.level)}</td>
                           <td style={{ color: "var(--ink-2)" }}>{p.expiry}</td>
                           <td className="tnum" style={{ textAlign: "right" }}>{inr(p.credit)}</td>
@@ -964,7 +1005,9 @@ export function ForwardControl({
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "pos" | "neg" }) {
+function Metric({
+  label, value, tone, hint,
+}: { label: string; value: string; tone?: "pos" | "neg"; hint?: string }) {
   const color = tone === "pos" ? "var(--pos)" : tone === "neg" ? "var(--neg)" : "var(--ink)";
   return (
     <div style={{ background: "var(--surface-3)", borderRadius: 8, padding: "9px 11px" }}>
@@ -972,6 +1015,9 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
       <div className="tnum" style={{ fontSize: 17, fontWeight: 700, color, marginTop: 2 }}>
         {value}
       </div>
+      {hint && (
+        <div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 1 }}>{hint}</div>
+      )}
     </div>
   );
 }

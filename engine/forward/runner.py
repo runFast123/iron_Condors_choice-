@@ -428,6 +428,22 @@ class ForwardRunner:
         k = steps_from_anchor(level, anchor, config.step)
         return build_hic_legs(level, k, config), structure_kind(k, config), k
 
+    def shape_at(self, level: float | None) -> str | None:
+        """What kind of structure a level would open, without building it.
+
+        For a tile that has to say whether the next rung is a condor or a
+        bought spread. HIC's answer changes with distance from the anchor, and
+        a level on its own does not tell a reader which they are about to get
+        -- the only way to know was to wait and count the legs.
+        """
+        if level is None:
+            return None
+        config = self.strategy
+        if not isinstance(config, HicConfig) or self.ladder.anchor is None:
+            return UnitKind.CONDOR.value
+        k = steps_from_anchor(level, self.ladder.anchor, config.step)
+        return structure_kind(k, config).value
+
     def _open_condor(
         self, level: float, expiry: dt.date, side: str = "down"
     ) -> PositionUnit | None:
@@ -1013,6 +1029,14 @@ class ForwardRunner:
                 ),
                 "down_count": self.ladder.down_count,
                 "up_count": self.ladder.up_count,
+                # HIC only: how many steps either side of the anchor still open
+                # a full condor. None for a ladder, which has no band.
+                "band": getattr(self.strategy, "full_band_steps", None),
+                # And what the next rung on each side will actually be, so a
+                # tile can say "condor" or "put spread" rather than leaving a
+                # reader to open it and count the legs.
+                "next_down_kind": self.shape_at(self.ladder.next_down_level),
+                "next_up_kind": self.shape_at(self.ladder.next_up_level),
             },
             "pnl": {
                 "realised": round(self.realised, 2),

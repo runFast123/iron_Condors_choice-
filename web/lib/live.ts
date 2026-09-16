@@ -124,6 +124,11 @@ export interface LiveState {
     distance_up?: number | null;
     down_count?: number;
     up_count?: number;
+    /** HIC: steps either side of the anchor that still open a full condor. */
+    band?: number | null;
+    /** What the next rung on each side will be, decided by the engine. */
+    next_down_kind?: UnitKind | null;
+    next_up_kind?: UnitKind | null;
   };
   pnl: {
     realised: number; unrealised: number; total: number;

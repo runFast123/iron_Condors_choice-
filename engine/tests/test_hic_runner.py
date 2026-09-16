@@ -349,3 +349,37 @@ def test_a_run_labelled_hic_that_was_never_hic_keeps_trading_what_it_has():
     # It goes on opening what it has been opening.
     _open(revived, 23_300)
     assert isinstance(revived.condors[-1], Condor)
+
+
+def test_the_snapshot_says_what_the_next_rung_will_be():
+    """A level inside the band opens a four-leg condor and one beyond it opens
+    a two-leg spread, and the level alone does not say which. A rung that
+    looked like it should be a spread arrived as a condor with nothing on
+    screen to explain it."""
+    r = runner(hic(full_band_steps=2))
+    _open(r, 23_400, 23_300)
+
+    ladder = r.snapshot()["ladder"]
+    assert ladder["band"] == 2
+
+    # Anchored at 23,400: everything from 23,200 to 23,600 is still a condor.
+    assert r.shape_at(23_300.0) == "condor"
+    assert r.shape_at(23_200.0) == "condor"
+    assert r.shape_at(23_100.0) == "put_debit_spread"
+    assert r.shape_at(23_600.0) == "condor"
+    assert r.shape_at(23_700.0) == "call_debit_spread"
+    assert ladder["next_down_kind"] == r.shape_at(ladder["next_down"])
+
+
+def test_a_ladder_reports_no_band_and_only_ever_condors():
+    from engine.strategy.condor import StrategyConfig
+
+    r = ForwardRunner(
+        market=FakeMarket(master=FakeMaster()),  # type: ignore[arg-type]
+        strategy=StrategyConfig(lots=1, lot_size=65, step=100.0, max_condors=20),
+    )
+    r.ladder.anchor = ANCHOR
+    r.ladder.last_level = ANCHOR
+
+    assert r.snapshot()["ladder"]["band"] is None
+    assert r.shape_at(20_000.0) == "condor"
