@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { LiveState } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
-import { inr, num, pct, dateTime } from "@/lib/format";
+import { inr, num, pct, dateTime, istClock, istDay } from "@/lib/format";
 import { Badge } from "@/components/ui";
 import { UnitKindBadge } from "@/components/UnitKindBadge";
 import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
@@ -793,7 +793,19 @@ export function ForwardControl({
                 }}
               >
                 <span>
+                  {/* The span, not just the count. The series holds the last
+                      900 ticks, which at a ten-second poll reaches back into
+                      yesterday's session — so "900 ticks" gave no hint that
+                      the left of the chart was a different day. */}
                   NIFTY live &middot; {ticks.length} tick{ticks.length === 1 ? "" : "s"}
+                  {ticks.length > 1 && (
+                    <>
+                      {" "}&middot;{" "}
+                      {istDay(ticks[0].t) === istDay(ticks[ticks.length - 1].t)
+                        ? `${istDay(ticks[0].t)}, ${istClock(ticks[0].t)}–${istClock(ticks[ticks.length - 1].t)}`
+                        : `${istDay(ticks[0].t)} ${istClock(ticks[0].t)} – ${istDay(ticks[ticks.length - 1].t)} ${istClock(ticks[ticks.length - 1].t)}`}
+                    </>
+                  )}
                 </span>
                 <span style={{ display: "flex", gap: 12 }}>
                   <span style={{ color: "var(--c3)" }}>&#9473; condor open</span>

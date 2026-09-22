@@ -9,6 +9,32 @@ export interface LivePoint {
 }
 
 /**
+ * A silence longer than this is a break in the series, not a straight line.
+ *
+ * The chart holds the last 900 ticks, which at a ten-second poll spans more
+ * than one session — so it runs an afternoon into the next morning. Drawn as
+ * one continuous line, the overnight close became a price path: the axis read
+ * "15:00" then "09:5", as though time had gone backwards, and the segment
+ * between them showed NIFTY moving through levels it never traded while the
+ * market was shut. The same applies to a daytime outage: an hour with no
+ * quotes is an hour we cannot draw.
+ */
+const SESSION_GAP_SECONDS = 30 * 60;
+
+/** Series data with a whitespace point wherever the feed went quiet. */
+function withBreaks(sorted: LivePoint[]): { time: number; value?: number }[] {
+  const out: { time: number; value?: number }[] = [];
+  sorted.forEach((p, i) => {
+    const prev = sorted[i - 1];
+    // A point carrying no value is "whitespace": the library keeps the time
+    // slot and draws nothing across it, which is the honest shape.
+    if (prev && p.t - prev.t > SESSION_GAP_SECONDS) out.push({ time: prev.t + 1 });
+    out.push({ time: p.t, value: p.price });
+  });
+  return out;
+}
+
+/**
  * A live-updating NIFTY chart with the ladder's trigger levels drawn on it.
  *
  * Uses lightweight-charts (TradingView's own library) and appends each new
@@ -66,7 +92,13 @@ export function LiveChart({
           rightOffset: 6,
           // The library defaults to UTC, which put 09:33 IST on the axis as
           // 04:03 -- beside a "Last tick" metric reading 09:33 am.
-          tickMarkFormatter: (time: number) => istClock(time),
+          //
+          // `tickMarkType` says what the library wants this mark to be. It was
+          // ignored, so every mark came out as a clock time and a series
+          // spanning two sessions read "15:00" then "09:5" with nothing to say
+          // a night had passed. Day, month and year marks now show a date.
+          tickMarkFormatter: (time: number, tickMarkType: number) =>
+            tickMarkType >= lib.TickMarkType.Time ? istClock(time) : istDay(time),
         },
         crosshair: { mode: lib.CrosshairMode.Normal },
         localization: {
@@ -121,9 +153,14 @@ export function LiveChart({
     const latest = sorted[sorted.length - 1];
 
     if (lastTimeRef.current === 0) {
-      series.setData(sorted.map((p) => ({ time: p.t as any, value: p.price })));
+      series.setData(withBreaks(sorted) as any);
       chartRef.current?.timeScale().fitContent();
     } else if (latest.t > lastTimeRef.current) {
+      // The first tick after a halt needs its break too, or appending one by
+      // one quietly rebuilds the straight line `withBreaks` just removed.
+      if (latest.t - lastTimeRef.current > SESSION_GAP_SECONDS) {
+        series.update({ time: (lastTimeRef.current + 1) as any });
+      }
       series.update({ time: latest.t as any, value: latest.price });
     }
     lastTimeRef.current = latest.t;
