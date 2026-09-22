@@ -248,3 +248,24 @@ def test_scrubbing_still_removes_real_credentials():
         assert scrub("boom SuperSecretAlphaKey here") == "boom <redacted> here"
     finally:
         forget_secrets()
+
+
+def test_a_session_that_cannot_be_renewed_is_an_auth_failure_not_a_crash():
+    """A session revived from storage holds no credentials -- they are never
+    persisted in a usable form -- so `login` raised a bare RuntimeError about
+    missing environment variables. That is not a ChoiceError, so it escaped the
+    runner's quote handling and reached the "unexpected error" branch, which
+    *stops* a run. Two live campaigns with open positions were stopped that way
+    by a session expiring overnight."""
+    s, _http = session_with(lambda url, calls: FakeResponse(401, text="VendorId does not exist"))
+    s.access_token = "stale"
+
+    def login_without_credentials(force: bool = False):
+        raise RuntimeError("Missing Choice credentials: CHOICE_API_KEY, CHOICE_MOBILE_NO.")
+
+    s.login = login_without_credentials  # type: ignore[method-assign]
+
+    with pytest.raises(ChoiceAuthError) as caught:
+        s.request("POST", "api/OpenAPI/MultipleTouchline", {})
+
+    assert "Sign out and sign in again" in str(caught.value)

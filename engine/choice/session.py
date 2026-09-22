@@ -331,7 +331,29 @@ class ChoiceSession:
                     # replay. Anything else at 4xx is the caller's problem.
                     if isinstance(err, ChoiceAuthError) and not isinstance(err, StaticIpRejectedError) and retry_auth:
                         log.info("Session rejected; re-authenticating and retrying %s", endpoint)
-                        self.login(force=True)
+                        try:
+                            self.login(force=True)
+                        except ChoiceError:
+                            raise
+                        except Exception as exc:      # noqa: BLE001
+                            # A session revived from storage holds no
+                            # credentials -- they are deliberately never
+                            # persisted in a usable form -- so `login` raises a
+                            # bare RuntimeError about missing environment
+                            # variables. That is not a `ChoiceError`, so it
+                            # escaped the runner's quote handling entirely and
+                            # reached the "unexpected error" branch, which
+                            # *stops* the run. Two live campaigns with open
+                            # positions were stopped that way by a session
+                            # expiring overnight. It is an authentication
+                            # failure and nothing else, so it is typed as one:
+                            # the run pauses marking and waits to be signed in
+                            # again, keeping its book.
+                            raise ChoiceAuthError(
+                                "This Choice session has expired and cannot be renewed "
+                                "automatically, because credentials are never stored. "
+                                "Sign out and sign in again to renew it."
+                            ) from exc
                         return self.request(
                             method, endpoint, data, require_auth=require_auth, is_order=is_order, retry_auth=False
                         )
