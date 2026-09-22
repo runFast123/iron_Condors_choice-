@@ -21,14 +21,42 @@ export interface LivePoint {
  */
 const SESSION_GAP_SECONDS = 30 * 60;
 
-/** Series data with a whitespace point wherever the feed went quiet. */
+/**
+ * How many empty slots to leave where the feed went quiet.
+ *
+ * More than one, because this chart's time scale is ordinal: every data point
+ * occupies the same width whatever the interval before it, so an eighteen-hour
+ * close and a ten-second poll are drawn the same distance apart. A single
+ * whitespace point does break the line, but the break is one slot wide --
+ * about a pixel -- and reads as a vertical jump rather than a gap. Ten slots
+ * is unmistakably a gap and still costs almost no width.
+ */
+const BREAK_SLOTS = 10;
+
+/** Whitespace points spanning a silence, so the break is actually visible. */
+function breakSlots(from: number, to: number): { time: number }[] {
+  const step = (to - from) / (BREAK_SLOTS + 1);
+  const out: { time: number }[] = [];
+  for (let k = 1; k <= BREAK_SLOTS; k++) {
+    const time = Math.round(from + step * k);
+    // Strictly ascending and never colliding with a real point, which the
+    // library requires; the gap is at least half an hour, so the slots are
+    // minutes apart at worst.
+    if (time > from && time < to && (out.length === 0 || time > out[out.length - 1].time)) {
+      out.push({ time });
+    }
+  }
+  return out;
+}
+
+/** Series data with whitespace wherever the feed went quiet. */
 function withBreaks(sorted: LivePoint[]): { time: number; value?: number }[] {
   const out: { time: number; value?: number }[] = [];
   sorted.forEach((p, i) => {
     const prev = sorted[i - 1];
     // A point carrying no value is "whitespace": the library keeps the time
     // slot and draws nothing across it, which is the honest shape.
-    if (prev && p.t - prev.t > SESSION_GAP_SECONDS) out.push({ time: prev.t + 1 });
+    if (prev && p.t - prev.t > SESSION_GAP_SECONDS) out.push(...breakSlots(prev.t, p.t));
     out.push({ time: p.t, value: p.price });
   });
   return out;
@@ -159,7 +187,9 @@ export function LiveChart({
       // The first tick after a halt needs its break too, or appending one by
       // one quietly rebuilds the straight line `withBreaks` just removed.
       if (latest.t - lastTimeRef.current > SESSION_GAP_SECONDS) {
-        series.update({ time: (lastTimeRef.current + 1) as any });
+        for (const slot of breakSlots(lastTimeRef.current, latest.t)) {
+          series.update(slot as any);
+        }
       }
       series.update({ time: latest.t as any, value: latest.price });
     }
