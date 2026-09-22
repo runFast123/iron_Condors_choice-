@@ -294,10 +294,17 @@ def test_a_session_survives_an_engine_restart(durable):
     assert revived.vendor_id == VENDOR
 
 
-def test_the_api_key_is_never_written_to_storage(durable):
-    """Requests carry `Authorization: SessionId ...`, so the key is not needed
-    after login -- and a stored key would be a far worse leak than a stored
-    day-scoped session id."""
+def test_the_api_key_is_never_written_in_the_clear(durable):
+    """The key IS stored now -- deliberately, so a run survives a restart --
+    but only inside the sealed envelope.
+
+    This test used to assert the key was not stored at all. That kept a
+    forward test from renewing its own broker session: a revived session held
+    a day-scoped session id and no way to replace it, so the first expiry left
+    a live run unable to quote until somebody signed in by hand. The trade was
+    made knowingly; what must not change is that nothing readable reaches the
+    row.
+    """
     reg, db = durable
     session = reg.login(VENDOR, KEY, MOBILE)
     from engine.auth.persistence import token_fingerprint
@@ -305,8 +312,60 @@ def test_the_api_key_is_never_written_to_storage(durable):
     row = db.auth_session(token_fingerprint(session.token))
     assert row is not None
     blob = json.dumps(row)
-    assert KEY not in blob
+    assert KEY not in blob, "the key must be sealed, not plain"
+    assert MOBILE not in blob, "so must the mobile number"
     assert session.choice.session_id not in blob, "the session id must be encrypted, not plain"
+
+
+def test_a_revived_session_can_renew_itself(durable):
+    """The whole point of storing them. A revived session used to carry only
+    the vendor id, so `login(force=True)` raised "Missing Choice credentials"
+    -- a bare RuntimeError that escaped the runner's quote handling and
+    stopped two live campaigns."""
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+
+    revived = _fresh_registry(db).get(session.token)
+
+    assert revived is not None
+    config = revived.choice.config
+    assert config.vendor_id == VENDOR
+    assert config.api_key == KEY
+    assert config.mobile_no == MOBILE
+    config.require()          # raises if anything needed for a re-login is missing
+
+
+def test_a_session_sealed_before_credentials_were_kept_still_loads(durable):
+    """Rows written by an older engine have no key in them. They must revive
+    as before -- unable to renew, waiting for a sign-in -- not crash."""
+    import datetime as dt
+
+    from engine.auth.persistence import token_fingerprint
+    from engine.config import IST
+
+    reg, db = durable
+    session = reg.login(VENDOR, KEY, MOBILE)
+    fingerprint = token_fingerprint(session.token)
+    row = db.auth_session(fingerprint)
+
+    # Re-seal without the two new fields, as the previous build did.
+    old_payload = reg._vault.open(row["payload"])
+    for gone in ("api_key", "mobile_no"):
+        old_payload.pop(gone, None)
+    db.save_auth_session(
+        token_hash=fingerprint, user_id=row["user_id"], vendor_id=row["vendor_id"],
+        mobile_masked=row["mobile_masked"], payload=reg._vault.seal(old_payload),
+        expires_at=row["expires_at"],
+    )
+
+    revived = _fresh_registry(db).get(session.token)
+
+    assert revived is not None, "an older row must still load"
+    assert revived.choice.session_id == session.choice.session_id
+    assert revived.choice.config.api_key is None
+    # And it must not pretend it can renew: the login date is stamped today so
+    # nothing tries and fails.
+    assert revived.choice._login_date == dt.datetime.now(tz=IST).date()
 
 
 def test_the_bearer_token_itself_is_not_stored(durable):

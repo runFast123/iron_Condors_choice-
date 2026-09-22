@@ -328,12 +328,29 @@ class SessionRegistry:
         """
         if self._db is None or self._vault is None:
             return
+        # The credentials travel with the session, sealed in the same envelope.
+        #
+        # Without them a revived session holds a broker session id and no way
+        # to replace it, so the first expiry -- end of day, or an engine
+        # restart onto a stale one -- left a live forward run unable to quote
+        # until somebody signed in by hand. A run that needs a human every
+        # morning is not a forward test. The login is fully non-interactive
+        # (Choice serves the OTP back to us), so these three values are all it
+        # takes to renew indefinitely.
+        #
+        # This does raise what a stolen database is worth, from a day of broker
+        # access to indefinite access -- the envelope is Fernet-sealed under
+        # ENGINE_SHARED_SECRET, so it is worth nothing without that secret, and
+        # rotating the secret still revokes everything at once.
+        config = session.choice.config
         sealed = self._vault.seal({
             "session_id": session.choice.session_id,
             "bcast_ip": getattr(session.choice, "bcast_ip", None),
             "bcast_port": getattr(session.choice, "bcast_port", None),
             "profile": session.profile,
             "created_at": session.created_at.isoformat(),
+            "api_key": config.api_key,
+            "mobile_no": config.mobile_no,
         })
         if sealed is None:
             return
@@ -445,16 +462,34 @@ class SessionRegistry:
             self._db.drop_auth_session(token_hash=row["token_hash"])
             return None
 
-        choice = ChoiceSession(config=ChoiceConfig(vendor_id=row["vendor_id"]))
+        choice = ChoiceSession(config=ChoiceConfig(
+            vendor_id=row["vendor_id"],
+            api_key=payload.get("api_key"),
+            mobile_no=payload.get("mobile_no"),
+        ))
         choice.session_id = payload["session_id"]
         # Assigned straight from the vault rather than through login, so
-        # register it here or it would not be redacted from logs.
+        # register these here or they would not be redacted from logs.
         remember_secret(choice.session_id)
+        remember_secret(payload.get("api_key"))
+        remember_secret(payload.get("mobile_no"))
         choice.bcast_ip = payload.get("bcast_ip")
         choice.bcast_port = payload.get("bcast_port")
-        # The API key was never stored, so this session cannot re-login on its
-        # own. Marking the login date keeps `ensure_session` from trying.
-        choice._login_date = now.date()
+        # Only claim today's login when the session can actually be replaced.
+        # This date is what stops `login()` re-authenticating, so setting it
+        # unconditionally -- as it was, because the API key was never stored --
+        # told a session with no way to renew that it had nothing to renew.
+        # Sealed before credentials were kept, it still has none, and the
+        # honest answer is still to wait for a sign-in.
+        if not (payload.get("api_key") and payload.get("mobile_no")):
+            choice._login_date = now.date()
+        else:
+            # Dated from when the broker session was actually minted, so one
+            # made today is used as-is and one made yesterday is replaced on
+            # the next call. Left unset it would re-login on every engine
+            # restart, which works but spends a login the session did not need.
+            minted = _parse_iso(payload.get("created_at"))
+            choice._login_date = (minted or now).date()
 
         session = UserSession(
             user_id=row["user_id"],
