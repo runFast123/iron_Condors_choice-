@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 import pandas as pd
 
-from engine.choice.errors import ChoiceError, ChoiceInstrumentError, ChoiceNoDataError
+from engine.choice.errors import ChoiceAuthError, ChoiceError, ChoiceInstrumentError, ChoiceNoDataError
 from engine.config import IST
 from engine.choice.history import FetchReport, HistoryClient
 from engine.choice.instruments import Contract, ScripMaster, shared_master
@@ -475,6 +475,15 @@ class ChoiceMarketData:
             payload = {"MultipleSegToken": build(items)}
             try:
                 resp = self.session.request("POST", TOUCHLINE_ENDPOINT, payload)
+            except ChoiceAuthError:
+                # A rejected session is not a payload problem, and trying the
+                # other shapes cannot fix it. Probing all four spent four calls
+                # of a three-per-second budget on every tick and turned one
+                # dead session into an error four times longer than the fact it
+                # was reporting. Raised, not collected: an empty book is
+                # something the caller can reason about, an expired login is
+                # not.
+                raise
             except ChoiceError as exc:
                 attempts.append(f"{name}: {exc}")
                 continue

@@ -29,7 +29,7 @@ from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Callable
 
-from engine.choice.errors import ChoiceError
+from engine.choice.errors import ChoiceAuthError, ChoiceError
 from engine.choice.instruments import Contract
 from engine.config import IST, engine_config
 from engine.choice.errors import ChoiceInstrumentError
@@ -257,6 +257,9 @@ class ForwardRunner:
         # Which open positions the last kill-switch check could not see, so
         # the warning is raised when that changes rather than every tick.
         self._unmarked_seen: tuple[int, ...] = ()
+        # Whether the last tick failed on authentication, so the expiry is
+        # reported once per spell instead of on every poll.
+        self._auth_failed = False
         self.stopped_reason: str | None = None
         # Why the last tick produced no quotes, shown in the UI rather than
         # buried in the log: a dash with no explanation is not diagnosable.
@@ -843,10 +846,27 @@ class ForwardRunner:
         try:
             index = self.market.master.index(NIFTY)
             quote = self.market.quotes([index]).get(index.token)
+        except ChoiceAuthError as exc:
+            # Choice sessions last a day. When one expires the run keeps
+            # ticking and every tick fails the same way, so say what will fix
+            # it rather than repeating the broker's wording -- and say it once
+            # per spell, not every ten seconds into a log nobody can then read.
+            self.last_error = (
+                "Choice has rejected this session, so no quotes can be fetched. "
+                "Sign out and sign in again to renew it. The run keeps its "
+                "positions and resumes marking as soon as it can quote."
+            )
+            if not self._auth_failed:
+                self._auth_failed = True
+                self.emit("error", "Choice session expired", error=str(exc))
+            return
         except ChoiceError as exc:
             self.last_error = str(exc)
             self.emit("error", "Live quote failed", error=str(exc))
             return
+        if self._auth_failed:
+            self._auth_failed = False
+            self.emit("info", "Choice session is live again; marking resumed")
         spot = quote.ltp if quote else None
         if spot is None or spot <= 0:
             self.last_error = (

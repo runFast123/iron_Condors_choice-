@@ -212,3 +212,39 @@ def test_a_logged_in_session_registers_its_own_key():
         assert scrub("boom a-very-long-api-key-x") == "boom <redacted>"
     finally:
         forget_secrets()
+
+
+# ============================== redaction must not eat the message
+
+
+def test_scrubbing_keeps_an_error_readable():
+    """The whitespace rule has no delimiter to anchor on, so it redacted
+    whatever word followed a key name. Choice answers a dead session with
+    "VendorId doesn't exists", which reached the log as "VendorId
+    <redacted>'t exists" -- an error nobody could read or act on."""
+    from engine.choice.errors import scrub
+
+    assert scrub("HTTP 401: Unauthorized, VendorId doesn't exists") == (
+        "HTTP 401: Unauthorized, VendorId doesn't exists"
+    )
+    assert scrub("Bearer token expired") == "Bearer token expired"
+    assert scrub("OTP required for this account") == "OTP required for this account"
+
+
+def test_scrubbing_still_removes_real_credentials():
+    from engine.choice.errors import forget_secrets, remember_secret, scrub
+
+    assert scrub("VendorId M09984 rejected") == "VendorId <redacted> rejected"
+    assert scrub("OTP 483920 sent") == "OTP <redacted> sent"
+    assert scrub("SessionId a1b2c3d4e5f6 expired") == "SessionId <redacted> expired"
+    # No digit, but far longer than any English word.
+    assert scrub("Bearer abcdefghijklmnopqrst") == "Bearer <redacted>"
+    # A delimiter is enough on its own.
+    assert "<redacted>" in scrub("vendorid=M09984")
+
+    # And anything this process actually holds goes by value, whatever shape.
+    try:
+        remember_secret("SuperSecretAlphaKey")
+        assert scrub("boom SuperSecretAlphaKey here") == "boom <redacted> here"
+    finally:
+        forget_secrets()

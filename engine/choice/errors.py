@@ -65,6 +65,33 @@ def forget_secrets() -> None:
         _known_secrets.clear()
 
 
+def _looks_like_a_credential(token: str) -> bool:
+    """Whether a bare word after a key name is plausibly a secret.
+
+    The whitespace rule has no delimiter to anchor on, so it redacts whatever
+    word follows the key name -- and that word is often ordinary English.
+    Choice answers a dead session with "VendorId doesn't exists", which came
+    out as "VendorId <redacted>'t exists": the redaction ate "doesn" and left
+    an error nobody could read or act on. "Bearer token expired" lost the word
+    "token"; "OTP required for this account" lost "required".
+
+    A real credential carries a digit -- vendor ids, OTPs, session ids -- or is
+    long enough that no English word reaches it. Anything else is prose. Being
+    wrong here is cheap in one direction and expensive in the other: a secret
+    this process actually holds is redacted by value in `remember_secret`, and
+    one standing beside its own name with a delimiter is caught by the pattern
+    above.
+    """
+    return any(c.isdigit() for c in token) or len(token) >= 16
+
+
+def _redact_if_credential(match: "re.Match[str]") -> str:
+    key, gap, token = match.group(1), match.group(2), match.group(3)
+    if _looks_like_a_credential(token):
+        return f"{key}{gap}<redacted>"
+    return match.group(0)
+
+
 def scrub(text: Any) -> str:
     """Redact anything that looks like a credential, or is known to be one."""
     s = str(text)
@@ -74,7 +101,7 @@ def scrub(text: Any) -> str:
     for secret in secrets:
         s = s.replace(secret, "<redacted>")
     s = _SECRET_PATTERNS[0].sub(r"\1\2<redacted>", s)
-    s = _SECRET_PATTERNS[1].sub(r"\1\2<redacted>", s)
+    s = _SECRET_PATTERNS[1].sub(_redact_if_credential, s)
     s = _SECRET_PATTERNS[2].sub(r"\1.<redacted>", s)
     return s
 

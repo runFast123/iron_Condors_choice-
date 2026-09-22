@@ -382,3 +382,62 @@ def test_a_normal_credit_is_not_flagged():
     r.market.prices = {t: (40.0 if i < 2 else 120.0) for i, t in enumerate(tokens)}
     r._open_condor(24_000, EXPIRY)
     assert not any("implausibly small" in e.message for e in r.events)
+
+
+def test_an_expired_choice_session_is_named_once_with_the_fix():
+    """Choice sessions last a day. When one expires every tick fails the same
+    way, and the run repeated the broker's wording -- four payload-shape
+    probes' worth of it -- every ten seconds into a log nobody could read."""
+    from engine.choice.errors import ChoiceAuthError
+
+    class DeadSession:
+        master = FakeMaster()
+
+        def quotes(self, contracts):
+            raise ChoiceAuthError("HTTP 401: Unauthorized, VendorId doesn't exists")
+
+    r = runner()
+    r.market = DeadSession()  # type: ignore[assignment]
+    r.expiry = EXPIRY
+
+    r.tick()
+    assert "Sign out and sign in again" in (r.last_error or "")
+    errors = [e for e in r.events if e.level == "error"]
+    assert len(errors) == 1
+    assert errors[0].message == "Choice session expired"
+
+    # Ten more failing ticks must not add ten more lines.
+    for _ in range(10):
+        r.tick()
+    assert len([e for e in r.events if e.level == "error"]) == 1
+
+    # And recovery is announced, so the log shows the spell ending.
+    r.market = FakeMarket(prices={26000: 24_000.0}, master=FakeMaster())  # type: ignore[assignment]
+    r.tick()
+    assert any("session is live again" in e.message for e in r.events)
+    assert r.last_spot == 24_000.0
+
+
+def test_a_touchline_auth_failure_does_not_probe_every_payload_shape():
+    """Four shapes against a rejected session is four calls of a three-per-
+    second budget, spent to learn nothing the first one did not say."""
+    from engine.choice.errors import ChoiceAuthError
+    from engine.data.market import ChoiceMarketData
+
+    class CountingSession:
+        def __init__(self):
+            self.calls = 0
+
+        def request(self, method, endpoint, payload):
+            self.calls += 1
+            raise ChoiceAuthError("HTTP 401: Unauthorized")
+
+    market = ChoiceMarketData.__new__(ChoiceMarketData)
+    market.session = CountingSession()
+    market.touchline_format = None
+    market.last_touchline_error = None
+
+    with pytest.raises(ChoiceAuthError):
+        market._touchline_quotes([contract(1, 23_000.0, "PE")])
+
+    assert market.session.calls == 1, "it must stop at the first rejection"
