@@ -640,18 +640,26 @@ class ChoiceMarketData:
         return self.touchline([contract]).get(contract.token)
     # -------------------------------------------------------------- coverage
 
-    def coverage_summary(self) -> dict[str, int]:
-        """What succeeded and what did not, for the Data Health page."""
+    def coverage_summary(self, since: int = 0) -> dict[str, int]:
+        """What succeeded and what did not, for the Data Health page.
+
+        `since` counts from a mark taken when a backtest started. The reports
+        belong to the session, not to a run, so without it every backtest
+        reported the fetches of every run before it in the same session: on
+        16 Sep the "failures" for a weekly run listed monthly contracts it had
+        never asked for.
+        """
+        reports = self.reports[since:]
         return {
-            "fetches": len(self.reports),
-            "ok": sum(1 for r in self.reports if r.status == "ok"),
-            "no_data": sum(1 for r in self.reports if r.status == "no_data"),
-            "errors": sum(1 for r in self.reports if r.status == "error"),
-            "bars": sum(r.bars for r in self.reports),
-            "requests": sum(r.requests_made for r in self.reports),
+            "fetches": len(reports),
+            "ok": sum(1 for r in reports if r.status == "ok"),
+            "no_data": sum(1 for r in reports if r.status == "no_data"),
+            "errors": sum(1 for r in reports if r.status == "error"),
+            "bars": sum(r.bars for r in reports),
+            "requests": sum(r.requests_made for r in reports),
         }
 
-    def failures(self) -> list[dict[str, str]]:
+    def failures(self, since: int = 0) -> list[dict[str, str]]:
         return [
             {
                 "token": str(r.token),
@@ -660,6 +668,6 @@ class ChoiceMarketData:
                 "status": r.status,
                 "error": r.error_message or "",
             }
-            for r in self.reports
+            for r in self.reports[since:]
             if r.status != "ok"
         ]

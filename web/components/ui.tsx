@@ -186,6 +186,7 @@ export function ProvenanceBanner({
     total?: number;
     real?: number;
     empty?: number;
+    unused?: number;
     unresolved?: number;
     emptyExpiries?: string[];
   };
@@ -244,17 +245,22 @@ export function ProvenanceBanner({
         {/* The reason, not just the percentage. "76% modelled" invites a hunt
             for a misconfiguration; "Choice served no candles for three settled
             expiries" is the actual answer and is not fixable from here. */}
-        {legs?.empty ? (
+        {/* The reason, not just the percentage. The percentage counts every
+            price lookup the replay made; the lines below count legs. */}
+        {legs && (legs.empty || legs.unused || legs.unresolved) ? (
           <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
-            <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice
-            candles. Choice resolved <strong>{legs.empty}</strong> more and returned an empty
-            series for every one
-            {legs.emptyExpiries?.length
-              ? ` — all of them expiries that have already settled (${legs.emptyExpiries.join(", ")})`
+            <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice candles.
+            {legs.unused
+              ? ` ${legs.unused} more came back with bars, but none close to the moments they were needed, so they were modelled as well.`
               : ""}
-            . ChartData does not serve settled option contracts, so those legs can only be
-            modelled. A range inside the current expiry prices entirely from real data.
-            {legs.unresolved ? ` ${legs.unresolved} leg(s) could not be resolved at all.` : ""}
+            {legs.empty
+              ? ` Choice returned no bars at all for ${legs.empty}${
+                  legs.emptyExpiries?.length ? ` (${legs.emptyExpiries.join(", ")})` : ""
+                }.`
+              : ""}
+            {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
+            {" "}So far only the expiry that is currently trading has priced reliably from
+            real data; a range inside it is the most trustworthy test.
           </p>
         ) : null}
       </div>

@@ -68,6 +68,11 @@ class CandlePriceProvider:
     max_staleness: dt.timedelta = dt.timedelta(minutes=15)
     hits: int = 0
     misses: int = 0
+    # Per leg. A leg whose fetch returned bars is not a leg that was priced
+    # from them: bars that never sit within `max_staleness` of a request are
+    # fetched, counted and then never used, and the run falls back to the
+    # model for every quote while the report says the data was real.
+    hits_by_key: dict[tuple[dt.date, float, str], int] = field(default_factory=dict)
 
     def add(self, expiry: dt.date, strike: float, right: str, frame: pd.DataFrame) -> None:
         if frame is None or frame.empty:
@@ -101,6 +106,8 @@ class CandlePriceProvider:
             self.misses += 1
             return None
         self.hits += 1
+        key = (request.expiry, float(request.strike), request.right)
+        self.hits_by_key[key] = self.hits_by_key.get(key, 0) + 1
         return Quote(price=price, source=PriceSource.CHOICE)
 
 

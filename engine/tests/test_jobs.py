@@ -85,14 +85,19 @@ class FakeMarket:
         if not self._option_frames:
             return pd.DataFrame()
         px = 100.0
-        return pd.DataFrame([{"ts": dt.datetime.combine(start, dt.time(9, 15), tzinfo=IST),
-                              "open": px, "high": px, "low": px, "close": px,
-                              "volume": 1, "oi": 1}])
+        if self._option_frames == "first-bar-only":
+            # Bars that exist but never sit near a moment the run needs them.
+            stamps = [dt.datetime.combine(start, dt.time(9, 15), tzinfo=IST)]
+        else:
+            # One bar at every spot bar, so every request finds a fresh print.
+            stamps = list(self._spot["ts"])
+        return pd.DataFrame([{"ts": ts, "open": px, "high": px, "low": px, "close": px,
+                              "volume": 1, "oi": 1} for ts in stamps])
 
-    def coverage_summary(self):
+    def coverage_summary(self, since=0):
         return {"fetches": self.option_calls, "ok": self.option_calls}
 
-    def failures(self):
+    def failures(self, since=0):
         return []
 
 
@@ -513,7 +518,8 @@ def test_a_leg_choice_resolves_but_will_not_serve_is_reported(monkeypatch):
     assert prov["legs_empty"] > 0, "empty legs must be counted"
     assert prov["legs_real"] > 0, "the calls still priced from real candles"
     assert prov["legs_unresolved"] == 0, "nothing failed to resolve"
-    assert prov["legs_total"] == prov["legs_real"] + prov["legs_empty"]
+    assert prov["legs_total"] == (prov["legs_real"] + prov["legs_unused"]
+                                  + prov["legs_empty"] + prov["legs_unresolved"])
     assert prov["empty_expiries"], "and the expiries are named"
 
 
@@ -524,6 +530,7 @@ def test_a_fully_served_run_reports_no_empty_legs():
     assert prov["legs_empty"] == 0
     assert prov["empty_expiries"] == []
     assert prov["legs_real"] == prov["legs_total"]
+    assert prov["legs_unused"] == 0
 
 
 def test_a_run_choice_serves_nothing_for_says_so_rather_than_only_modelling():
@@ -535,3 +542,40 @@ def test_a_run_choice_serves_nothing_for_says_so_rather_than_only_modelling():
     assert prov["legs_real"] == 0
     assert prov["legs_empty"] == prov["legs_total"] > 0
     assert prov["premium_source"] == "modeled:black76"
+
+
+def test_bars_that_never_match_a_request_are_not_counted_as_real():
+    """The report used to count a leg as "priced from real candles" as soon as
+    its fetch returned any bars. On 23 Sep it said 52 of 80 legs were real;
+    the 20 August legs among them had not priced a single quote, because none
+    of their bars sat within fifteen minutes of a moment they were needed."""
+    job = run_job(market=FakeMarket(option_frames="first-bar-only"))
+    assert job.status == "done", job.error
+    prov = job.result["provenance"]
+
+    assert prov["legs_unused"] > 0
+    assert prov["legs_real"] < prov["legs_total"] - prov["legs_empty"]
+    detail = prov["unused_legs"][0]
+    for field in ("expiry", "strike", "right", "bars", "first_bar", "last_bar", "first_needed"):
+        assert field in detail, field
+    assert prov["legs_total"] == (prov["legs_real"] + prov["legs_unused"]
+                                  + prov["legs_empty"] + prov["legs_unresolved"])
+
+
+def test_coverage_describes_this_run_not_the_whole_session(store):
+    """The fetch reports belong to the session, so every backtest reported
+    the fetches of every earlier run too."""
+    market = FakeMarket(option_frames=True)
+    market.reports = ["an earlier run's fetch"] * 7          # already in the session
+
+    seen = {}
+    real_summary = market.coverage_summary
+
+    def recording(since=0):
+        seen["since"] = since
+        return real_summary(since)
+
+    market.coverage_summary = recording
+    job = run_job(market=market)
+    assert job.status == "done", job.error
+    assert seen["since"] == 7, "the job must count from where it started"

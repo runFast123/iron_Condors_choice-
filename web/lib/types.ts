@@ -38,6 +38,12 @@ export interface Provenance {
   legs_empty?: number;
   legs_unresolved?: number;
   empty_expiries?: string[];
+  /** Bars came back for these legs, but none near a moment they were needed. */
+  legs_unused?: number;
+  unused_legs?: {
+    expiry: string; strike: number; right: string; bars: number;
+    first_bar: string | null; last_bar: string | null; first_needed: string;
+  }[];
   coverage?: Record<string, number>;
   failures?: CoverageFailure[];
   lot_size?: number;

@@ -66,6 +66,7 @@ export default async function PayoffPage() {
             total: provenance.legs_total,
             real: provenance.legs_real,
             empty: provenance.legs_empty,
+            unused: provenance.legs_unused,
             unresolved: provenance.legs_unresolved,
             emptyExpiries: provenance.empty_expiries,
           }}

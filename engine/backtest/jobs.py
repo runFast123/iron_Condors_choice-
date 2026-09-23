@@ -208,6 +208,8 @@ class BacktestRunner:
         start = end - dt.timedelta(days=int(p["days"]))
         resolution = p["resolution"]
 
+        # Where this run's fetch reports begin; the list belongs to the session.
+        report_mark = len(getattr(market, "reports", []) or [])
         self._step("spot", 0.05, f"Fetching NIFTY {start} to {end}")
         nifty = market.nifty(start, end, resolution)
         if nifty.empty:
@@ -311,6 +313,10 @@ class BacktestRunner:
         # with nothing logged and nothing recorded, so the only symptom was a
         # MODELED percentage nobody could account for.
         served_nothing: list[str] = []
+        # For every leg that came back with bars: how many, from when to when,
+        # and when the run first needed it -- the evidence for why a leg with
+        # data could still end up modelled.
+        spans: dict[tuple[dt.date, float, str], tuple[int, Any, Any, dt.datetime]] = {}
         total = max(1, len(requirements))
         for i, req in enumerate(requirements, 1):
             self._step(
@@ -331,6 +337,9 @@ class BacktestRunner:
             if not frame.empty:
                 candles.add(req.expiry, req.strike, req.right, frame)
                 fetched += 1
+                spans[(req.expiry, float(req.strike), req.right)] = (
+                    len(frame), frame["ts"].min(), frame["ts"].max(), req.first_needed,
+                )
             else:
                 served_nothing.append(f"{req.expiry} {req.strike:g}{req.right}")
 
@@ -340,7 +349,7 @@ class BacktestRunner:
                 by_expiry[entry.split(" ", 1)[0]] = by_expiry.get(entry.split(" ", 1)[0], 0) + 1
             log.warning(
                 "[%s] Choice resolved %d legs and returned no candles for any of them: %s. "
-                "ChartData does not serve settled option contracts, so these are modelled.",
+                "These are modelled.",
                 job.job_id, len(served_nothing),
                 ", ".join(f"{k} ({v} legs)" for k, v in sorted(by_expiry.items())),
             )
@@ -359,6 +368,36 @@ class BacktestRunner:
         )
         result = Backtest(params, provider, expiry_for).run(spots)
 
+        # Which fetched legs were actually priced from their bars. The two
+        # were reported as one number, so a leg whose bars never sat near a
+        # moment it was needed counted as "priced from real candles" while
+        # every quote for it came from the model: on 23 Sep the banner said 52
+        # of 80 legs were real, and the 20 August legs among them had not
+        # priced a single quote.
+        used = {k for k, n in candles.hits_by_key.items() if n > 0}
+        unused = sorted(k for k in spans if k not in used)
+        leg_detail = [
+            {
+                "expiry": k[0].isoformat(), "strike": k[1], "right": k[2],
+                "bars": spans[k][0],
+                "first_bar": spans[k][1].isoformat() if spans[k][1] is not None else None,
+                "last_bar": spans[k][2].isoformat() if spans[k][2] is not None else None,
+                "first_needed": spans[k][3].isoformat(),
+            }
+            for k in unused
+        ]
+        if unused:
+            log.warning(
+                "[%s] %d legs returned bars that never matched a moment they were needed: %s",
+                job.job_id, len(unused),
+                "; ".join(
+                    f"{d['expiry']} {d['strike']:g}{d['right']}: {d['bars']} bars "
+                    f"{(d['first_bar'] or '')[:16]}..{(d['last_bar'] or '')[:16]}, "
+                    f"needed from {d['first_needed'][:16]}"
+                    for d in leg_detail[:12]
+                ),
+            )
+
         self._step("serialise", 0.97, "Building the dashboard dataset")
         provenance = {
             "spot_source": "choice:NIFTY",
@@ -370,7 +409,11 @@ class BacktestRunner:
             # different problems: one is fixed by a shorter range, one by a
             # correct expiry, and one cannot be fixed at all.
             "legs_total": total,
-            "legs_real": fetched,
+            "legs_real": len(used),
+            # Bars came back, none of them usable -- a different fault from an
+            # empty series, and the one that was being counted as real.
+            "legs_unused": len(unused),
+            "unused_legs": leg_detail[:40],
             "legs_empty": len(served_nothing),
             "legs_unresolved": len(missing),
             "empty_expiries": sorted({e.split(" ", 1)[0] for e in served_nothing}),
@@ -387,9 +430,10 @@ class BacktestRunner:
                 "All prices sourced from Choice FinX."
                 if provider.modeled_quotes == 0
                 else (
-                    f"{fetched} of {len(requirements)} option legs had Choice historical data. "
-                    "The rest are MODELED with Black-76 driven by Choice-sourced India VIX and a "
-                    "strike skew, because Choice served no candles for those contracts."
+                    f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
+                    "the price lookups in this replay came from the model rather than a real "
+                    "Choice candle -- Black-76, driven by Choice-sourced India VIX and a strike "
+                    "skew. The breakdown by leg is below."
                 )
             ),
             "resolution": resolution,
@@ -399,8 +443,8 @@ class BacktestRunner:
             "range": [first_day.isoformat(), last_day.isoformat()],
             "legs_requested": len(requirements),
             "legs_with_choice_data": fetched,
-            "coverage": market.coverage_summary(),
-            "failures": market.failures()[:50],
+            "coverage": market.coverage_summary(since=report_mark),
+            "failures": market.failures(since=report_mark)[:50],
             "lot_size": lot_size,
         }
         job.result = serialise(result, provenance)
