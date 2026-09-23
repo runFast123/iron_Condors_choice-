@@ -90,6 +90,28 @@ def end_of_day(now: dt.datetime | None = None) -> dt.datetime:
     return dt.datetime.combine(now.date(), MARKET_DAY_END, tzinfo=IST)
 
 
+#: How long a dashboard sign-in lasts. Mirrored by the cookie in
+#: web/lib/session.ts -- the two must agree, or one side ends a session the
+#: other still believes in.
+#:
+#: This was the end of the day, to match Choice's own day-scoped session. That
+#: made sense while the engine could not renew a broker session on its own:
+#: past midnight the dashboard login was worth nothing anyway. It can renew now
+#: (the credentials are sealed with the session), so ending the dashboard login
+#: at midnight only forced a sign-in every morning -- and, worse, left every
+#: forward run unable to resume before somebody did, because the watchdog
+#: revives runs from the stored session and a stored session past its expiry is
+#: deleted, not revived. The broker session still turns over daily underneath;
+#: this only stops the dashboard insisting the user watch it happen.
+SESSION_DAYS = 7
+
+
+def session_expiry(now: dt.datetime | None = None) -> dt.datetime:
+    """When a sign-in made now stops working: the end of its last day."""
+    now = now or dt.datetime.now(tz=IST)
+    return end_of_day(now + dt.timedelta(days=SESSION_DAYS - 1))
+
+
 @dataclass
 class UserSession:
     user_id: str
@@ -290,7 +312,7 @@ class SessionRegistry:
             mobile_masked=mask_mobile(mobile),
             vendor_id=vendor_id,
             created_at=now,
-            expires_at=end_of_day(now),
+            expires_at=session_expiry(now),
             last_seen=now,
             profile=profile,
             _runners=self._runners,

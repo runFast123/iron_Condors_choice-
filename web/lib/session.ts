@@ -24,12 +24,28 @@ export function secondsUntilEndOfDayIST(): number {
   return Math.max(60, Math.floor((end.getTime() - ist.getTime()) / 1000));
 }
 
+/**
+ * How long a sign-in lasts, in days. Mirrors SESSION_DAYS in
+ * engine/auth/sessions.py: if the cookie outlived the engine's session the
+ * page would bounce to /login, and if it died first a still-valid session
+ * would be thrown away.
+ */
+export const SESSION_DAYS = 7;
+
+/** Seconds until the end of the sign-in's last day, IST. */
+export function secondsUntilSessionEnds(): number {
+  return secondsUntilEndOfDayIST() + (SESSION_DAYS - 1) * 86_400;
+}
+
 export function sessionCookieOptions() {
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax" as const,
     path: "/",
-    maxAge: secondsUntilEndOfDayIST(),
+    // Was the end of the day, matching Choice's day-scoped session. The engine
+    // renews that session on its own now, so ending the sign-in at midnight
+    // only forced a login every morning.
+    maxAge: secondsUntilSessionEnds(),
   };
 }

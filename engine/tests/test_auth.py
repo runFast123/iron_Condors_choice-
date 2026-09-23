@@ -159,10 +159,22 @@ def test_expired_session_is_rejected_and_dropped(reg):
     assert reg.count == 0
 
 
-def test_sessions_expire_with_the_choice_trading_day(reg):
+def test_a_sign_in_outlives_the_choice_trading_day(reg):
+    """The dashboard login used to end at midnight with Choice's own session.
+    That forced a sign-in every morning and, worse, left every forward run
+    unrevivable until somebody did: the watchdog revives runs from the stored
+    session, and one past its expiry is deleted rather than revived. The
+    broker session now renews on its own underneath, so the sign-in lasts a
+    week and ends at the close of its last day."""
+    import datetime as dt
+
+    from engine.auth.sessions import SESSION_DAYS
+
     s = reg.login(VENDOR, KEY, MOBILE)
-    assert s.expires_at == end_of_day(s.created_at)
-    assert s.expires_at.date() == s.created_at.date()
+    last_day = s.created_at + dt.timedelta(days=SESSION_DAYS - 1)
+    assert s.expires_at == end_of_day(last_day)
+    assert (s.expires_at.date() - s.created_at.date()).days == SESSION_DAYS - 1
+    assert not s.expired
 
 
 def test_relogin_replaces_the_previous_session(reg):
