@@ -350,7 +350,25 @@ class ChoiceMarketData:
         """
         resolver = instruments if instruments is not None else self.master
         contract = resolver.option(underlying, expiry, strike, right)
-        return self.candles(contract, start, end, resolution)
+        frame = self.candles(contract, start, end, resolution)
+
+        # Nothing after the contract's own expiry. Choice hands a settled
+        # contract's token to a new instrument -- every 28-Jul-2026 NIFTY
+        # option token belonged to a MIDCPNIFTY November contract by
+        # September -- and ChartData is keyed by token, so a bar stamped after
+        # expiry can only be the new holder's. Priced as this leg, it would be
+        # another instrument's premium reported as real.
+        if not frame.empty and "ts" in frame:
+            close = dt.datetime.combine(expiry, dt.time(15, 30), tzinfo=IST)
+            late = frame["ts"] > close
+            if late.any():
+                log.warning(
+                    "Dropped %d bars after %s for %s %g %s (token %s): past expiry, so "
+                    "they belong to whatever inherited the token",
+                    int(late.sum()), expiry, underlying, strike, right, contract.token,
+                )
+                frame = frame[~late].reset_index(drop=True)
+        return frame
 
     # ------------------------------------------------------------------ live
 

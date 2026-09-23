@@ -169,3 +169,36 @@ def test_the_cache_is_bounded(monkeypatch):
         assert len(mod._MASTER_CACHE) <= mod.MASTER_CACHE_SIZE
     finally:
         mod.clear_shared_master()
+
+
+def test_bars_after_a_contracts_expiry_are_dropped():
+    """Choice recycles a settled contract's token, and ChartData is keyed by
+    token, so a bar stamped after expiry belongs to whatever inherited it.
+    Kept, it would price this leg with another instrument's premium and call
+    it real."""
+    import datetime as dt
+
+    import pandas as pd
+
+    from engine.config import IST
+    from engine.data.market import ChoiceMarketData
+
+    expiry = dt.date(2026, 7, 28)
+    bars = [dt.datetime(2026, 7, 27, 10, 0, tzinfo=IST),
+            dt.datetime(2026, 7, 28, 15, 25, tzinfo=IST),       # last legitimate bar
+            dt.datetime(2026, 7, 29, 9, 15, tzinfo=IST),        # the token's next holder
+            dt.datetime(2026, 8, 20, 11, 0, tzinfo=IST)]
+    frame = pd.DataFrame({"ts": bars, "close": [100.0, 95.0, 3.0, 4.0]})
+
+    class Resolver:
+        def option(self, underlying, expiry, strike, right):
+            return type("C", (), {"token": 63916})()
+
+    market = ChoiceMarketData.__new__(ChoiceMarketData)
+    market.candles = lambda contract, start, end, resolution="5", **kw: frame
+
+    out = market.option_candles("NIFTY", expiry, 23_500.0, "PE",
+                                dt.date(2026, 7, 1), dt.date(2026, 9, 1), instruments=Resolver())
+
+    assert list(out["close"]) == [100.0, 95.0]
+    assert out["ts"].max() <= dt.datetime(2026, 7, 28, 15, 30, tzinfo=IST)
