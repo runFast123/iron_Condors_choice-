@@ -30,6 +30,7 @@ in order -- but its levels shift one step.
 from __future__ import annotations
 
 import math
+from typing import ClassVar
 from dataclasses import dataclass
 
 from engine.strategy.condor import (
@@ -70,6 +71,11 @@ class HicConfig(StrategyConfig):
     debit_shift: float = 0.0
     max_put_spreads: int = 10
     max_call_spreads: int = 10
+
+    #: The ladder's entry filters do not apply. HIC's core condors are the
+    #: centre of its band, and skipping one would leave the spreads beyond it
+    #: with nothing to hedge -- a different strategy wearing the name.
+    entry_filters_apply: ClassVar[bool] = False
 
     def __post_init__(self) -> None:
         super().__post_init__()

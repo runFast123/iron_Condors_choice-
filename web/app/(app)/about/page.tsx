@@ -269,6 +269,8 @@ export default async function AboutPage() {
                   ["Max down / Max up", `${params.max_down ?? "—"} / ${params.max_up ?? "—"}`],
                   ["Fill skipped levels on a gap", params.fill_gaps ? "Yes" : "No"],
                   ["Anchor mode", params.anchor_mode],
+                  ["Skip late entries", params.min_entry_dte == null ? "Off" : `Under ${params.min_entry_dte} days to expiry`],
+                  ["Minimum credit", params.min_credit_ratio == null ? "Off" : `${pct(params.min_credit_ratio)} of the wing`],
                   ["Take profit", params.take_profit_pct == null ? "Off - held to expiry" : pct(params.take_profit_pct) + " of credit"],
                   ["Stop loss", params.stop_loss_mult == null ? "Off - held to expiry" : `${params.stop_loss_mult}x credit`],
                 ].map(([k, v]) => (

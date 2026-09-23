@@ -112,6 +112,11 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         stop_loss_mult=p.get("stop_loss"),
     )
     wanted = str(p.get("strategy") or "ladder")
+    if wanted != "hic":
+        # The ladder's entry filters. HIC's config ignores them regardless,
+        # but they are only ever passed to the strategy they belong to.
+        common["min_entry_dte"] = p.get("min_entry_dte")
+        common["min_credit_ratio"] = p.get("min_credit_ratio")
     if wanted == "ladder":
         return StrategyConfig(**common)
     if wanted != "hic":

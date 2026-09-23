@@ -171,6 +171,9 @@ class RunBacktestRequest(BaseModel):
     max_condors: int = Field(default=20, ge=1, le=100)
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
+    # Ladder entry filters. Ignored for HIC. Off unless set.
+    min_entry_dte: int | None = Field(default=None, ge=0, le=45)
+    min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
     roll: bool = True
     # Weekly or monthly contracts.
     expiry_cadence: str = Field(default="monthly", pattern="^(weekly|monthly)$")
@@ -295,6 +298,9 @@ class StartForwardRequest(BaseModel):
     # strategy -- exactly the divergence this engine exists to prevent.
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
+    # Ladder entry filters. Ignored for HIC. Off unless set.
+    min_entry_dte: int | None = Field(default=None, ge=0, le=45)
+    min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
 
 
 # ----------------------------------------------------------------- dependencies
@@ -894,7 +900,11 @@ def _strategy_config(
         stop_loss_mult=body.stop_loss,
     )
     if body.strategy == LADDER:
-        return StrategyConfig(**common)
+        return StrategyConfig(
+            **common,
+            min_entry_dte=body.min_entry_dte,
+            min_credit_ratio=body.min_credit_ratio,
+        )
     if body.strategy != HIC:
         # Reached when a build knows a strategy's name but not how to trade it.
         # That has happened: an engine accepted `strategy: "hic"`, recorded the

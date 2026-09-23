@@ -51,6 +51,7 @@ from engine.strategy.condor import (
     StrategyConfig,
     UnitKind,
     build_legs,
+    entry_refusal,
     net_positions,
     netting_summary,
 )
@@ -481,6 +482,23 @@ class ForwardRunner:
             priced[leg] = (fill, contract)
 
         now = dt.datetime.now(tz=IST)
+        unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
+
+        # The ladder's entry filters, decided on the prices it would trade at
+        # and before a single fill is recorded -- deciding afterwards would
+        # leave fills in the log for a position that was never opened. The
+        # same function the backtest uses, so a filter behaves identically in
+        # both. The rung stays fired either way.
+        probe = unit_type(
+            level=level, entry_time=now, expiry=expiry,
+            legs=[FilledLeg(leg=leg, entry_price=priced[leg][0].price) for leg in legs],
+            config=self.strategy, index=len(self.condors), side=side, kind=kind, k=k,
+        )
+        refusal = entry_refusal(probe, now.date(), self.strategy)
+        if refusal is not None:
+            self.emit("info", f"Condor at {level:,.0f} not opened", level=level, reason=refusal)
+            return None
+
         filled: list[FilledLeg] = []
         entry_costs = 0.0
         modelled = 0
@@ -512,7 +530,6 @@ class ForwardRunner:
                 )
             )
 
-        unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
         condor = unit_type(
             level=level, entry_time=now, expiry=expiry, legs=filled,
             config=self.strategy, entry_costs=entry_costs, index=len(self.condors),

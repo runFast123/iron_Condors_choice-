@@ -41,6 +41,9 @@ export function RunBacktest({
   const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
   const [maxDown, setMaxDown] = useState<number | "">(20);
   const [maxUp, setMaxUp] = useState<number | "">(10);
+  // Ladder-only entry filters. "" is off, which is the default.
+  const [minDte, setMinDte] = useState<number | "">("");
+  const [minCredit, setMinCredit] = useState<number | "">("");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -111,17 +114,24 @@ export function RunBacktest({
           roll: true,
           expiry_cadence: cadence,
           strategy,
-          direction,
-          anchor_mode: anchorMode,
+          // HIC derives direction and both caps from its band and spreads, and
+          // is symmetric by construction. The ladder's own settings used to be
+          // sent to it anyway -- including an untouched Max up of 10 behind a
+          // hidden box, which cut its call side short of its put side.
           ...(strategy === "hic"
             ? {
                 full_band_steps: bandSteps,
                 half_mode: halfMode,
                 debit_shift: halfMode === "sell" ? 0 : debitShift,
               }
-            : {}),
-          max_down: maxDown !== "" ? Number(maxDown) : undefined,
-          max_up: maxUp !== "" ? Number(maxUp) : undefined,
+            : {
+                direction,
+                anchor_mode: anchorMode,
+                max_down: maxDown !== "" ? Number(maxDown) : undefined,
+                max_up: maxUp !== "" ? Number(maxUp) : undefined,
+                min_entry_dte: minDte !== "" ? Number(minDte) : undefined,
+                min_credit_ratio: minCredit !== "" ? Number(minCredit) : undefined,
+              }),
         }),
       });
       const body = await res.json();
@@ -347,9 +357,45 @@ export function RunBacktest({
                 />
               </label>
 
-              {direction !== "up" && (
+              {strategy !== "hic" && (
+                <>
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Skip late entries
+                    <select
+                      value={minDte}
+                      onChange={(e) => setMinDte(e.target.value === "" ? "" : Number(e.target.value))}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 150 }}
+                      title="Do not open a condor with fewer than this many days to expiry."
+                    >
+                      <option value="">Off</option>
+                      <option value={3}>Under 3 days left</option>
+                      <option value={5}>Under 5 days left</option>
+                      <option value={8}>Under 8 days left</option>
+                      <option value={12}>Under 12 days left</option>
+                    </select>
+                  </label>
+                  <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                    Minimum credit
+                    <select
+                      value={minCredit}
+                      onChange={(e) => setMinCredit(e.target.value === "" ? "" : Number(e.target.value))}
+                      className="auth-input"
+                      style={{ marginTop: 5, minWidth: 150 }}
+                      title="Do not open a condor collecting less than this share of its wing. 50% is 'max loss must not exceed the credit'."
+                    >
+                      <option value="">Off</option>
+                      <option value={0.45}>45% of the wing</option>
+                      <option value={0.5}>50% (loss ≤ credit)</option>
+                      <option value={0.55}>55% of the wing</option>
+                    </select>
+                  </label>
+                </>
+              )}
+
+              {strategy !== "hic" && direction !== "up" && (
                 <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max Down
+                  Max down
                   <input
                     type="number"
                     min={1}
@@ -362,9 +408,9 @@ export function RunBacktest({
                 </label>
               )}
 
-              {direction !== "down" && (
+              {strategy !== "hic" && direction !== "down" && (
                 <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max Up
+                  Max up
                   <input
                     type="number"
                     min={1}

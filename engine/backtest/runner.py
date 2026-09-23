@@ -39,6 +39,7 @@ from engine.strategy.condor import (
     StrategyConfig,
     UnitKind,
     build_legs,
+    entry_refusal,
     net_positions,
     netting_summary,
 )
@@ -365,6 +366,12 @@ class Backtest:
                     kind=kind,
                     k=k,
                 )
+                refusal = entry_refusal(condor, when.date(), params.strategy)
+                if refusal is not None:
+                    # Recorded, not silent: a filter that quietly thins the
+                    # ladder is indistinguishable from one that is broken.
+                    result.skipped.append((when, trigger.level, refusal))
+                    continue
                 next_index += 1
                 condors.append(condor)
 

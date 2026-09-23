@@ -89,6 +89,9 @@ export function ForwardControl({
   const [anchorMode, setAnchorMode] = useState<"floor" | "nearest" | "round">("floor");
   const [maxDown, setMaxDown] = useState<number | "">(20);
   const [maxUp, setMaxUp] = useState<number | "">(10);
+  // Ladder-only entry filters. "" is off, the default.
+  const [minDte, setMinDte] = useState<number | "">("");
+  const [minCredit, setMinCredit] = useState<number | "">("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -295,6 +298,8 @@ export function ForwardControl({
               anchor_mode: anchorMode,
               max_down: maxDown !== "" ? Number(maxDown) : undefined,
               max_up: maxUp !== "" ? Number(maxUp) : undefined,
+              min_entry_dte: minDte !== "" ? Number(minDte) : undefined,
+              min_credit_ratio: minCredit !== "" ? Number(minCredit) : undefined,
             }),
       },
       "starting",
@@ -707,6 +712,46 @@ export function ForwardControl({
                   style={{ width: 70 }}
                 />
               </label>
+
+              {strategy !== "hic" && (
+                <>
+                  <label style={FIELD}>
+                    Skip late entries
+                    <select
+                      value={minDte}
+                      onChange={(e) => setMinDte(e.target.value === "" ? "" : Number(e.target.value))}
+                      className="auth-input"
+                      style={{ minWidth: 150 }}
+                    >
+                      <option value="">Off</option>
+                      <option value={3}>Under 3 days left</option>
+                      <option value={5}>Under 5 days left</option>
+                      <option value={8}>Under 8 days left</option>
+                      <option value={12}>Under 12 days left</option>
+                    </select>
+                    <span style={{ ...HINT, maxWidth: 160 }}>
+                      No condor with fewer days than this to expiry.
+                    </span>
+                  </label>
+                  <label style={FIELD}>
+                    Minimum credit
+                    <select
+                      value={minCredit}
+                      onChange={(e) => setMinCredit(e.target.value === "" ? "" : Number(e.target.value))}
+                      className="auth-input"
+                      style={{ minWidth: 150 }}
+                    >
+                      <option value="">Off</option>
+                      <option value={0.45}>45% of the wing</option>
+                      <option value={0.5}>50% (loss ≤ credit)</option>
+                      <option value={0.55}>55% of the wing</option>
+                    </select>
+                    <span style={{ ...HINT, maxWidth: 160 }}>
+                      No condor collecting less than this share of its wing.
+                    </span>
+                  </label>
+                </>
+              )}
 
               {strategy !== "hic" && direction !== "up" && (
                 <label style={FIELD}>

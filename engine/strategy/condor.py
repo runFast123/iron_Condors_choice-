@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Literal, Sequence
+from typing import ClassVar, Iterable, Literal, Sequence
 
 CALL, PUT = "CE", "PE"
 
@@ -94,6 +94,21 @@ class StrategyConfig:
     take_profit_pct: float | None = None   # e.g. 0.50 -> close at 50% of credit
     stop_loss_mult: float | None = None    # e.g. 2.0  -> close at 2x credit lost
 
+    # Entry filters, the ladder's only. Both off by default, so every existing
+    # run and result is unchanged. A refused rung still counts as fired: the
+    # ladder moves on rather than reopening the level later at a stale price.
+    #
+    # Skip a condor with fewer than this many calendar days to expiry. Late
+    # in the cycle the premium has mostly gone and gamma is at its highest.
+    min_entry_dte: int | None = None
+    # Skip a condor collecting less than this fraction of its wing, gross of
+    # costs. 0.5 is "max loss must not exceed the credit".
+    min_credit_ratio: float | None = None
+
+    #: HIC's core condors are part of its band structure and are never
+    #: filtered; HicConfig turns this off.
+    entry_filters_apply: ClassVar[bool] = True
+
     def __post_init__(self) -> None:
         if self.step <= 0:
             raise ValueError("step must be positive")
@@ -109,6 +124,10 @@ class StrategyConfig:
             cap = getattr(self, name)
             if cap is not None and cap < 0:
                 raise ValueError(f"{name} cannot be negative")
+        if self.min_entry_dte is not None and self.min_entry_dte < 0:
+            raise ValueError("min_entry_dte cannot be negative")
+        if self.min_credit_ratio is not None and not 0 < self.min_credit_ratio < 1:
+            raise ValueError("min_credit_ratio must be between 0 and 1")
 
     @property
     def effective_anchor_mode(self) -> AnchorMode:
@@ -356,6 +375,30 @@ class PositionUnit:
         self.exit_time = when
         self.exit_reason = reason
         self.exit_costs = costs
+
+
+def entry_refusal(unit: "PositionUnit", entry_date: dt.date, config: StrategyConfig) -> str | None:
+    """Why a ladder condor should not be opened, or None to open it.
+
+    One function for the backtest and the forward runner, so the two cannot
+    come to disagree about which rungs a filter removes -- the whole point of
+    backtesting a filter is that the live run then does the same thing.
+    """
+    if not config.entry_filters_apply or unit.kind is not UnitKind.CONDOR:
+        return None
+    if config.min_entry_dte is not None:
+        dte = (unit.expiry - entry_date).days
+        if dte < config.min_entry_dte:
+            return f"entry filter: {dte} days to expiry, below the minimum of {config.min_entry_dte}"
+    if config.min_credit_ratio is not None:
+        width = unit.wing_width * unit.config.qty
+        ratio = unit.credit / width if width > 0 else 0.0
+        if ratio < config.min_credit_ratio:
+            return (
+                f"entry filter: credit is {ratio:.0%} of the wing, "
+                f"below the minimum of {config.min_credit_ratio:.0%}"
+            )
+    return None
 
 
 @dataclass

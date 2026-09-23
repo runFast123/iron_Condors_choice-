@@ -73,6 +73,7 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             "lots": 1, "lot_size": 0, "qty": 0, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
             "direction": "down", "max_down": None, "max_up": None,
+            "min_entry_dte": None, "min_credit_ratio": None,
             "anchor_mode": "floor", "roll_to_next_expiry": True,
             "label": "Awaiting Choice connection",
         },
@@ -237,6 +238,10 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "direction": strategy.direction,
             "max_down": strategy.max_down,
             "max_up": strategy.max_up,
+            # Recorded so a filtered run can be told from an unfiltered one --
+            # the same numbers mean something different with rungs removed.
+            "min_entry_dte": strategy.min_entry_dte,
+            "min_credit_ratio": strategy.min_credit_ratio,
             "anchor_mode": params.anchor_mode or strategy.effective_anchor_mode,
             "roll_to_next_expiry": params.roll_to_next_expiry,
             "label": params.label,

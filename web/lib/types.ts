@@ -55,6 +55,9 @@ export interface Params {
   take_profit_pct: number | null;
   stop_loss_mult: number | null;
   direction?: "down" | "up" | "both";
+  /** Ladder entry filters. Null when off. */
+  min_entry_dte?: number | null;
+  min_credit_ratio?: number | null;
   max_down?: number | null;
   max_up?: number | null;
   anchor_mode: string;
