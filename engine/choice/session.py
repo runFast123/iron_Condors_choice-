@@ -17,7 +17,7 @@ import random
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Callable, Any
 
 import requests
 
@@ -102,6 +102,73 @@ _STATIC_IP_MARKERS = ("static ip", "ip not", "invalid ip", "ip address", "whitel
 _AUTH_MARKERS = ("session", "unauthor", "expired", "invalid token", "login", "forbidden")
 
 
+# ---------------------------------------------------------------- login ledger
+
+#: No automatic re-login within this long of the account's previous login.
+RELOGIN_COOLDOWN = dt.timedelta(minutes=10)
+#: And never more than this many automatic logins for one account in a day.
+MAX_AUTOMATIC_LOGINS_PER_DAY = 6
+
+
+class _LoginLedger:
+    """Every Choice login this process makes, per account.
+
+    A Choice login is not free: `LoginTOTP` sends the account holder an OTP.
+    On 24 Sep the engine logged in 304 times before 08:35 -- one OTP every
+    thirty seconds -- because two session objects held the same account, and
+    each fresh login cancelled the other's session, whose next call was then
+    rejected and logged in again. Nothing counted, so nothing stopped it.
+
+    This is the backstop, whatever the cause of the next loop: an automatic
+    login is refused within RELOGIN_COOLDOWN of the account's last one, and
+    after MAX_AUTOMATIC_LOGINS_PER_DAY in a day. A sign-in the user makes
+    themselves is recorded but never refused here.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last: dict[str, dt.datetime] = {}
+        self._automatic: dict[str, tuple[dt.date, int]] = {}
+
+    def check_automatic(self, account: str, now: dt.datetime | None = None) -> None:
+        now = now or dt.datetime.now()
+        with self._lock:
+            last = self._last.get(account)
+            if last is not None and now - last < RELOGIN_COOLDOWN:
+                minutes = max(1, int((now - last).total_seconds() // 60))
+                raise ChoiceAuthError(
+                    f"Choice rejected a session that was renewed {minutes} minute(s) ago. "
+                    "The engine will not log in again automatically yet, because every "
+                    "Choice login sends you an OTP. Sign out and sign in again."
+                )
+            day, count = self._automatic.get(account, (now.date(), 0))
+            if day == now.date() and count >= MAX_AUTOMATIC_LOGINS_PER_DAY:
+                raise ChoiceAuthError(
+                    f"The engine has already renewed this Choice session {count} times "
+                    "today and will not log in again automatically, because every login "
+                    "sends you an OTP. Sign out and sign in again."
+                )
+
+    def record(self, account: str, *, automatic: bool, now: dt.datetime | None = None) -> None:
+        now = now or dt.datetime.now()
+        with self._lock:
+            self._last[account] = now
+            if automatic:
+                day, count = self._automatic.get(account, (now.date(), 0))
+                if day != now.date():
+                    day, count = now.date(), 0
+                self._automatic[account] = (day, count + 1)
+
+    def forget(self) -> None:
+        """For tests."""
+        with self._lock:
+            self._last.clear()
+            self._automatic.clear()
+
+
+LOGIN_LEDGER = _LoginLedger()
+
+
 class ChoiceSession:
     """Owns the authenticated Choice connection for the process."""
 
@@ -118,6 +185,10 @@ class ChoiceSession:
         self._data_bucket = TokenBucket(self.config.data_rate_limit)
         self._order_bucket = TokenBucket(self.config.order_rate_limit)
         self._login_date: dt.date | None = None
+        # Called after every successful login, so whoever stores this session
+        # can store the new id -- otherwise an engine restart revives the old
+        # one, is rejected, and spends another login (and another OTP).
+        self.on_login: Callable[[], None] | None = None
         # Set when a transport failure moved us to the alternate gateway.
         self.active_base_url = self.config.base_url
 
@@ -139,7 +210,12 @@ class ChoiceSession:
             headers["Authorization"] = f"SessionId {self.session_id}"
         return headers
 
-    def login(self, force: bool = False) -> str:
+    @property
+    def account(self) -> str:
+        """The key Choice invalidates sessions by: one live session each."""
+        return str(self.config.vendor_id or "")
+
+    def login(self, force: bool = False, *, automatic: bool = True) -> str:
         """Complete the 3-step non-interactive TOTP login.
 
         Choice serves the OTP back to us from ``GetClientLoginTOTP``, so no
@@ -149,6 +225,8 @@ class ChoiceSession:
             if not force and self.session_id and self._login_date == dt.date.today():
                 return self.session_id
 
+            if automatic:
+                LOGIN_LEDGER.check_automatic(self.account)
             self.config.require()
             encoded = self._encode_mobile(self.config.mobile_no)
 
@@ -196,7 +274,16 @@ class ChoiceSession:
             remember_secret(self.access_token)
 
             self._login_date = dt.date.today()
-            log.info("Choice login OK (session established, valid until end of day)")
+            LOGIN_LEDGER.record(self.account, automatic=automatic)
+            log.info(
+                "Choice login OK for %s (%s; session valid until end of day)",
+                self.account, "automatic renewal" if automatic else "user sign-in",
+            )
+            if self.on_login is not None:
+                try:
+                    self.on_login()
+                except Exception:                   # noqa: BLE001
+                    log.exception("Could not store the renewed session")
             return self.session_id
 
     def ensure_session(self) -> str:
@@ -280,6 +367,19 @@ class ChoiceSession:
             return ChoiceAuthError(f"HTTP {status_code}: {body[:300]}", payload=payload)
         return ChoiceError(f"HTTP {status_code}: {body[:300]}", payload=payload)
 
+    def _renew_after_rejection(self, sent_with: str | None) -> None:
+        """Log in again after a rejection -- unless someone already has.
+
+        Several threads share one session (tick threads, market-status checks,
+        backtests). When the day's session expires they are all rejected at
+        once, and each used to log in on its own: one OTP per caller.
+        """
+        with self._lock:
+            if self.session_id and self.session_id != sent_with:
+                log.info("Session already renewed by another caller; retrying on it")
+                return
+            self.login(force=True)
+
     def request(
         self,
         method: str,
@@ -292,6 +392,10 @@ class ChoiceSession:
     ) -> dict[str, Any]:
         """Perform one Choice API call with pacing, retries and typed errors."""
         url = f"{self.active_base_url}/{endpoint.lstrip('/')}"
+        # The session this call goes out with. If it is rejected but another
+        # caller has renewed the session meanwhile, the call is retried on the
+        # new one instead of logging in yet again.
+        sent_with = self.session_id
         bucket = self._order_bucket if is_order else self._data_bucket
         timeout = (self.config.connect_timeout, self.config.read_timeout)
         last: Exception | None = None
@@ -332,7 +436,7 @@ class ChoiceSession:
                     if isinstance(err, ChoiceAuthError) and not isinstance(err, StaticIpRejectedError) and retry_auth:
                         log.info("Session rejected; re-authenticating and retrying %s", endpoint)
                         try:
-                            self.login(force=True)
+                            self._renew_after_rejection(sent_with)
                         except ChoiceError:
                             raise
                         except Exception as exc:      # noqa: BLE001

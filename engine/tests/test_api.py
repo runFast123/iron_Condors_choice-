@@ -23,11 +23,19 @@ class FakeChoiceSession:
     raise_static_ip = False
 
     def __init__(self, config):
+        import threading as _threading
+        self._lock = _threading.RLock()
+        self.on_login = None
+        self._login_date = None
+        self.access_token = None
+        self.bcast_ip = None
+        self.bcast_port = None
+        self.active_base_url = None
         self.config = config
         self.session_id = None
         self.logged_off = False
 
-    def login(self, force: bool = False):
+    def login(self, force: bool = False, *, automatic: bool = True):
         if FakeChoiceSession.raise_static_ip:
             raise StaticIpRejectedError("from 1.2.3.4")
         if not FakeChoiceSession.accept:

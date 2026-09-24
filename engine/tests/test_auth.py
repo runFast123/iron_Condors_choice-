@@ -33,12 +33,20 @@ class FakeChoiceSession:
     instances: list["FakeChoiceSession"] = []
 
     def __init__(self, config):
+        import threading as _threading
+        self._lock = _threading.RLock()
+        self.on_login = None
+        self._login_date = None
+        self.access_token = None
+        self.bcast_ip = None
+        self.bcast_port = None
+        self.active_base_url = None
         self.config = config
         self.session_id = None
         self.logged_off = False
         FakeChoiceSession.instances.append(self)
 
-    def login(self, force: bool = False):
+    def login(self, force: bool = False, *, automatic: bool = True):
         if not FakeChoiceSession.accept:
             raise ChoiceAuthError("Invalid credentials")
         self.session_id = "sess-abc123"
@@ -452,3 +460,35 @@ def test_without_a_shared_secret_nothing_is_persisted(tmp_path):
         assert _fresh_registry(db).get(token) is None
     finally:
         db.close()
+
+
+# ================================ one Choice session per account
+
+
+def test_a_browser_restore_shares_the_session_the_watchdog_revived(durable):
+    """The loop of 24 Sep: after a restart the watchdog revived the user's
+    runs on one Choice session object, then the browser came back and was
+    restored onto a second. Both held the same account, so each login
+    cancelled the other -- 304 logins, 304 OTPs, before 08:35."""
+    reg, db = durable
+    signed_in = reg.login(VENDOR, KEY, MOBILE)
+
+    restarted = _fresh_registry(db)
+    revived = restarted.revive_for_user(signed_in.user_id)     # the watchdog
+    restored = restarted.get(signed_in.token)                  # then the browser
+
+    assert revived is not None and restored is not None
+    assert restored.choice is revived.choice
+
+
+def test_a_new_sign_in_reaches_the_session_the_runners_already_hold(reg):
+    """A sign-in mints a new Choice session and cancels the old one at the
+    broker. It must land in the object the runners hold, or their next call
+    is rejected and they log in again."""
+    first = reg.login(VENDOR, KEY, MOBILE)
+    held_by_runners = first.choice
+
+    second = reg.login(VENDOR, KEY, MOBILE)
+
+    assert second.choice is held_by_runners
+    assert held_by_runners.session_id == second.choice.session_id

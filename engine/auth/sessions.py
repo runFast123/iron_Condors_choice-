@@ -231,6 +231,14 @@ class SessionRegistry:
         # UserSession.runners for why it is not held per token.
         self._runners: dict[tuple[str, str], Any] = {}
         self._lock = threading.RLock()
+        # One Choice session per user, shared by every UserSession and every
+        # runner of theirs. Choice keeps one live session per account, so two
+        # objects holding the same account cancel each other on every login:
+        # a sign-in, a revival after a restart and the runners resumed under
+        # it each held their own, and on 24 Sep they took turns logging in --
+        # 304 times before 08:35, each one an OTP on the user's phone.
+        self._choice_by_user: dict[str, ChoiceSession] = {}
+        self._choice_lock = threading.Lock()
         self._throttle = LoginThrottle()
         self.max_sessions = max_sessions
         # Durable backing, attached by the API once the database is open.
@@ -286,7 +294,7 @@ class SessionRegistry:
         config = ChoiceConfig(vendor_id=vendor_id, api_key=api_key, mobile_no=mobile)
         choice = ChoiceSession(config)
         try:
-            choice.login(force=True)
+            choice.login(force=True, automatic=False)
         except ChoiceError as exc:
             self._throttle.record_failure(user_id)
             log.warning("Login failed for user %s: %s", user_id, exc)
@@ -305,6 +313,7 @@ class SessionRegistry:
             log.info("Could not load profile for %s: %s", user_id, exc)
 
         now = dt.datetime.now(tz=IST)
+        choice = self._share_choice(user_id, choice, just_logged_in=True)
         session = UserSession(
             user_id=user_id,
             token=secrets.token_urlsafe(32),
@@ -340,6 +349,53 @@ class SessionRegistry:
         log.info("User %s logged in (vendor %s)", user_id, vendor_id)
         return session
 
+    def _share_choice(self, user_id: str, fresh: ChoiceSession, *, just_logged_in: bool) -> ChoiceSession:
+        """The user's one Choice session, with `fresh` folded into it.
+
+        After a sign-in the new login has already replaced the old one at
+        Choice, so its state is copied into the object every runner already
+        holds -- they pick up the new session id without logging in again.
+        After a restore from storage the object already in memory is at least
+        as fresh as the stored copy, so it is kept as it is.
+        """
+        with self._choice_lock:
+            existing = self._choice_by_user.get(user_id)
+            if existing is None or existing is fresh:
+                self._choice_by_user[user_id] = fresh
+                fresh.on_login = lambda uid=user_id: self._reseal_user(uid)
+                return fresh
+        with existing._lock:
+            if just_logged_in:
+                existing.config = fresh.config
+                existing.session_id = fresh.session_id
+                existing.access_token = fresh.access_token
+                existing.bcast_ip = fresh.bcast_ip
+                existing.bcast_port = fresh.bcast_port
+                existing._login_date = fresh._login_date
+                existing.active_base_url = fresh.active_base_url
+            elif not existing.config.api_key and fresh.config.api_key:
+                # A session revived before credentials were stored meets one
+                # that has them: keep the live session, gain the ability to
+                # renew it.
+                existing.config = fresh.config
+        return existing
+
+    def _reseal_user(self, user_id: str) -> None:
+        """Store a renewed Choice session for every live sign-in of this user.
+
+        Without it the stored copy keeps the old session id, so the next
+        engine restart revives a dead session and spends a login -- and an
+        OTP -- replacing it.
+        """
+        if not self._lock.acquire(timeout=5):
+            return
+        try:
+            mine = [s for s in self._sessions.values() if s.user_id == user_id]
+        finally:
+            self._lock.release()
+        for session in mine:
+            self._persist(session)
+
     def _persist(self, session: UserSession) -> None:
         """Write the session so a restart can pick it back up.
 
@@ -373,6 +429,13 @@ class SessionRegistry:
             "created_at": session.created_at.isoformat(),
             "api_key": config.api_key,
             "mobile_no": config.mobile_no,
+            # When the Choice session inside was minted -- not when the user
+            # signed in to the dashboard. A renewal changes the first and not
+            # the second, and dating by the sign-in made a restart treat a
+            # session renewed this morning as yesterday's.
+            "choice_minted": (
+                session.choice._login_date.isoformat() if session.choice._login_date else None
+            ),
         })
         if sealed is None:
             return
@@ -510,8 +573,17 @@ class SessionRegistry:
             # made today is used as-is and one made yesterday is replaced on
             # the next call. Left unset it would re-login on every engine
             # restart, which works but spends a login the session did not need.
-            minted = _parse_iso(payload.get("created_at"))
-            choice._login_date = (minted or now).date()
+            minted = payload.get("choice_minted")
+            if minted:
+                try:
+                    choice._login_date = dt.date.fromisoformat(minted)
+                except ValueError:
+                    choice._login_date = now.date()
+            else:
+                created = _parse_iso(payload.get("created_at"))
+                choice._login_date = (created or now).date()
+
+        choice = self._share_choice(row["user_id"], choice, just_logged_in=False)
 
         session = UserSession(
             user_id=row["user_id"],

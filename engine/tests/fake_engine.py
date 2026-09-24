@@ -73,10 +73,18 @@ def _synthetic_candles(payload: dict) -> dict:
 
 class FakeChoiceSession:
     def __init__(self, config):
+        import threading as _threading
+        self._lock = _threading.RLock()
+        self.on_login = None
+        self._login_date = None
+        self.access_token = None
+        self.bcast_ip = None
+        self.bcast_port = None
+        self.active_base_url = None
         self.config = config
         self.session_id = None
 
-    def login(self, force: bool = False):
+    def login(self, force: bool = False, *, automatic: bool = True):
         key = (self.config.api_key or "").strip()
         if key == "wrong-ip":
             raise StaticIpRejectedError("Request came from 203.0.113.9")
