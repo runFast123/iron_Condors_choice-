@@ -33,7 +33,7 @@ from engine.backtest.runner import (
     weekly_expiry_resolver,
 )
 from engine.backtest.serialise import empty_bundle, serialise
-from engine.data.expiry_calendar import MAX_WEEKLY_DTE, expiry_calendar
+from engine.data.expiry_calendar import MAX_WEEKLY_DTE, confirm_derived_expiries, expiry_calendar
 from engine.choice.errors import ChoiceError
 from engine.choice.instruments import HistoricalInstruments
 from engine.config import IST
@@ -282,6 +282,20 @@ class BacktestRunner:
             )
         except ValueError as exc:
             raise ChoiceError(str(exc)) from exc
+
+        # Check every derived date against the scrip master Choice published a
+        # few days before it: that file lists the contract the exchange really
+        # traded, holiday roll-backs included. Dated before the expiry, not on
+        # it -- on the day after a contract expires it is already delisted.
+        corrected: dict[dt.date, dt.date] = {}
+        listed_near = getattr(market, "listed_expiries_near", None)
+        if derived_expiries and listed_near is not None:
+            self._step("calendar", 0.16, "Confirming expiry dates against Choice's scrip masters")
+            # Past dates only: a future contract is already in today's listing,
+            # and Choice has not published a master for a future day.
+            past = {e for e in derived_expiries if e < dt.date.today()}
+            expiries, corrected = confirm_derived_expiries(expiries, past, listed_near)
+            derived_expiries = {e for e in derived_expiries if e not in corrected}
         lot_size = market.master.lot_size_for(NIFTY)
 
         params = BacktestParams(
@@ -424,6 +438,10 @@ class BacktestRunner:
                 else f"derived+scripmaster ({len(derived_expiries)} of {len(expiries)} derived)"
             ),
             "expiries_derived": len(derived_expiries),
+            # Derived dates the dated scrip masters showed to be wrong, and
+            # what the exchange actually used -- a holiday roll-back the local
+            # calendar did not know about.
+            "expiries_corrected": {k.isoformat(): v.isoformat() for k, v in corrected.items()},
             "expiries_listed": len(expiries) - len(derived_expiries),
             "verified": provider.modeled_quotes == 0,
             "note": (

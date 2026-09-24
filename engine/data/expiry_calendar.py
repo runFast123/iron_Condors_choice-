@@ -23,7 +23,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections import Counter
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from engine.data.market_calendar import MarketCalendar
 
@@ -167,6 +167,46 @@ def expiry_calendar(
         start, end, len(listed_in_range), len(derived), weekday, cadence,
     )
     return combined, derived
+
+
+def confirm_derived_expiries(
+    expiries: Sequence[dt.date],
+    derived: set[dt.date],
+    listed_near: "Callable[[dt.date], Sequence[dt.date]]",
+    *,
+    tolerance_days: int = 3,
+) -> tuple[list[dt.date], dict[dt.date, dt.date]]:
+    """Replace each derived expiry with the one the exchange actually listed.
+
+    Derivation rolls a date back off holidays the calendar knows about, and
+    the calendar does not know them all. NIFTY's March 2026 monthly expired on
+    Monday 30 March, because Tuesday 31 March was Mahavir Jayanti; the derived
+    date was the 31st. A backtest built on it asked for contracts that never
+    existed -- 44 legs of one run could not be resolved -- and settled the
+    campaign on the wrong day's price.
+
+    `listed_near(day)` returns the expiries a scrip master published shortly
+    before `day` lists. The listed expiry within `tolerance_days` of a derived
+    date is that contract; with none nearby the derived date is kept, as
+    before. Returns the corrected list and a map of what changed.
+    """
+    out: list[dt.date] = []
+    changed: dict[dt.date, dt.date] = {}
+    for expiry in expiries:
+        if expiry not in derived:
+            out.append(expiry)
+            continue
+        try:
+            near = [e for e in listed_near(expiry) if abs((e - expiry).days) <= tolerance_days]
+        except Exception as exc:                    # noqa: BLE001 - keep the derived date
+            log.info("Could not confirm derived expiry %s: %s", expiry, exc)
+            near = []
+        actual = min(near, key=lambda e: (abs((e - expiry).days), e)) if near else expiry
+        if actual != expiry:
+            changed[expiry] = actual
+            log.warning("Derived expiry %s corrected to the listed %s", expiry, actual)
+        out.append(actual)
+    return sorted(set(out)), changed
 
 
 def nearest_listed_expiry(

@@ -329,6 +329,16 @@ class ChoiceMarketData:
             return {}
         return {row.ts.date(): float(row.close) for row in frame.itertuples()}
 
+    def listed_expiries_near(self, day: dt.date) -> list[dt.date]:
+        """NIFTY expiries in the scrip master Choice published a few days before `day`.
+
+        Dated before, not on: the day after a contract expires it is already
+        delisted, so the file for the expiry day itself can miss it.
+        """
+        from engine.choice.instruments import shared_master
+
+        return list(shared_master(day - dt.timedelta(days=5)).expiries(NIFTY))
+
     def option_candles(
         self,
         underlying: str,

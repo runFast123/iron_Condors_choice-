@@ -236,3 +236,40 @@ def test_todays_expiry_is_never_opened():
 
     listed = [dt.date(2026, 9, 8), dt.date(2026, 9, 15)]
     assert nearest_listed_expiry(listed, dt.date(2026, 9, 8)) == dt.date(2026, 9, 15)
+
+
+# ============================== derived dates checked against the exchange
+
+
+def test_a_derived_expiry_is_corrected_to_the_listed_one():
+    """NIFTY's March 2026 monthly expired on Monday 30 March: Tuesday 31 March
+    was Mahavir Jayanti. Derived as "last Tuesday", the backtest asked for
+    contracts that never existed and settled March on the wrong day."""
+    import datetime as dt
+
+    from engine.data.expiry_calendar import confirm_derived_expiries
+
+    derived = {dt.date(2026, 3, 31), dt.date(2026, 4, 28)}
+    expiries = [dt.date(2026, 2, 24), dt.date(2026, 3, 31), dt.date(2026, 4, 28)]
+
+    def listed_near(day):
+        return {dt.date(2026, 3, 31): [dt.date(2026, 3, 24), dt.date(2026, 3, 30), dt.date(2026, 4, 7)],
+                dt.date(2026, 4, 28): [dt.date(2026, 4, 21), dt.date(2026, 4, 28)]}[day]
+
+    fixed, changed = confirm_derived_expiries(expiries, derived, listed_near)
+
+    assert fixed == [dt.date(2026, 2, 24), dt.date(2026, 3, 30), dt.date(2026, 4, 28)]
+    assert changed == {dt.date(2026, 3, 31): dt.date(2026, 3, 30)}
+
+
+def test_a_date_that_cannot_be_confirmed_is_kept_as_derived():
+    import datetime as dt
+
+    from engine.data.expiry_calendar import confirm_derived_expiries
+
+    def unreachable(day):
+        raise ConnectionError("scrip master unavailable")
+
+    d = dt.date(2026, 5, 26)
+    fixed, changed = confirm_derived_expiries([d], {d}, unreachable)
+    assert fixed == [d] and changed == {}
