@@ -434,7 +434,9 @@ class ChoiceSession:
                     # A dead session is recoverable exactly once: re-login and
                     # replay. Anything else at 4xx is the caller's problem.
                     if isinstance(err, ChoiceAuthError) and not isinstance(err, StaticIpRejectedError) and retry_auth:
-                        log.info("Session rejected; re-authenticating and retrying %s", endpoint)
+                        # Choice's own words, so a refusal that is not really an
+                        # expired session (as MarketStatus's was not) shows up as such.
+                        log.info("Session rejected (%s); re-authenticating and retrying %s", err, endpoint)
                         try:
                             self._renew_after_rejection(sent_with)
                         except ChoiceError:

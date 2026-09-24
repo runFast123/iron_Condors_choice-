@@ -141,3 +141,47 @@ def test_this_mornings_loop_cannot_form():
         call(a); call(b)
 
     assert a.logins + b.logins == 1
+
+
+# ============================== the endpoint that started it
+
+
+def test_a_refused_market_status_check_never_logs_in():
+    """MarketStatus was refused on sessions every other endpoint accepted,
+    and each refusal was read as an expired session: a login, and an OTP,
+    per check. The check is advisory -- the calendar answers the same
+    question -- so it must never ask for a login."""
+    from engine.data.market_calendar import MarketCalendar, MarketStatus
+
+    calls = []
+
+    class Session:
+        def request(self, method, endpoint, data=None, **kw):
+            calls.append(kw)
+            raise ChoiceAuthError("HTTP 401: Unauthorized")
+
+    status = MarketStatus(Session(), MarketCalendar())
+    assert status.is_open() is None
+    assert calls[0].get("retry_auth") is False
+
+
+def test_a_refusing_market_status_is_not_asked_again_every_tick():
+    """Failures were not cached, so every tick asked again at once."""
+    from engine.data.market_calendar import STATUS_TTL, MarketCalendar, MarketStatus
+    from engine.config import IST
+
+    calls = []
+
+    class Session:
+        def request(self, method, endpoint, data=None, **kw):
+            calls.append(1)
+            raise ChoiceAuthError("HTTP 401: Unauthorized")
+
+    status = MarketStatus(Session(), MarketCalendar())
+    t0 = dt.datetime(2026, 9, 24, 10, 0, tzinfo=IST)
+    for s in range(0, 50, 10):                      # five ticks in fifty seconds
+        status.is_open(t0 + dt.timedelta(seconds=s))
+    assert len(calls) == 1
+
+    status.is_open(t0 + STATUS_TTL + dt.timedelta(seconds=1))
+    assert len(calls) == 2

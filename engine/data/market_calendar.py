@@ -157,6 +157,7 @@ class MarketStatus:
     calendar: MarketCalendar
     _cached: bool | None = None
     _fetched_at: dt.datetime | None = None
+    _failing: bool = False
 
     def is_open(self, now: dt.datetime | None = None) -> bool | None:
         now = now or dt.datetime.now(tz=IST)
@@ -164,10 +165,31 @@ class MarketStatus:
             return self._cached
 
         try:
-            resp = self.session.request("GET", "api/OpenAPI/MarketStatus")  # type: ignore[attr-defined]
-        except Exception as exc:                     # noqa: BLE001 - any transport failure
-            log.debug("MarketStatus unavailable (%s); using the local calendar", exc)
+            # Never a reason to log in. This check is advisory -- the calendar
+            # answers the same question -- and Choice refuses it on sessions
+            # that every other endpoint accepts: on 24 Sep it was rejected
+            # seconds after a fresh login, every minute, on both accounts. Read
+            # as "the session has expired", each refusal logged in again, and
+            # each login sent the user an OTP: 304 of them before 08:35.
+            resp = self.session.request(  # type: ignore[attr-defined]
+                "GET", "api/OpenAPI/MarketStatus", retry_auth=False,
+            )
+        except Exception as exc:                     # noqa: BLE001 - any failure
+            # Remembered like an answer, so a refusing endpoint is asked once
+            # per STATUS_TTL rather than on every tick; and said once per spell,
+            # with Choice's own words, rather than hidden at debug level.
+            self._cached, self._fetched_at = None, now
+            if not self._failing:
+                self._failing = True
+                log.warning(
+                    "Choice MarketStatus is refusing requests (%s); using the local "
+                    "calendar until it answers again", exc,
+                )
             return None
+
+        if self._failing:
+            self._failing = False
+            log.info("Choice MarketStatus is answering again")
 
         state = _read_status(resp)
         self._cached, self._fetched_at = state, now
