@@ -31,6 +31,7 @@ future.
 from __future__ import annotations
 
 import base64
+import binascii
 import datetime as dt
 import hashlib
 import hmac
@@ -70,6 +71,9 @@ INDEX_SYMBOLS = {"NIFTY": "NSE-NIFTY", "INDIAVIX": "NSE-INDIAVIX"}
 
 #: Groww's derivative history starts here.
 EARLIEST = dt.date(2020, 1, 1)
+
+#: How long a refusal on permission is believed before asking again, seconds.
+FORBIDDEN_HOLD = 600.0
 
 # Hard-coded rather than strftime("%b"), which follows the Windows locale and
 # has already broken a URL in this codebase once.
@@ -177,6 +181,11 @@ class GrowwBackup:
         self._last_request = 0.0
         self._contracts: dict[dt.date, set[str] | None] = {}
         self.requests_made = 0
+        # A refusal on permission -- the account's plan does not include the
+        # data -- holds until someone changes the plan, so asking again every
+        # few seconds only burns requests. Remembered for FORBIDDEN_HOLD.
+        self._forbidden_until = 0.0
+        self._forbidden_reason = ""
         for secret in (credentials.api_key, credentials.totp_secret,
                        credentials.api_secret, credentials.access_token):
             remember_secret(secret)
@@ -191,7 +200,18 @@ class GrowwBackup:
                 "the backup source's access token has expired and no key is configured to renew it"
             )
         if creds.totp_secret:
-            body = {"key_type": "totp", "totp": totp(creds.totp_secret, self.clock())}
+            try:
+                code = totp(creds.totp_secret, self.clock())
+            except (binascii.Error, ValueError) as exc:
+                # Raised as the backup's own error, or it would escape every
+                # handler a backtest has and fail the run outright. The usual
+                # cause: the API secret pasted where the TOTP secret goes.
+                raise BackupUnavailable(
+                    "the backup source's TOTP secret is not a valid authenticator secret "
+                    "(it should be the letters A-Z and digits 2-7 shown with the TOTP QR code; "
+                    "an API secret belongs in the API-secret setting instead)"
+                ) from exc
+            body = {"key_type": "totp", "totp": code}
         else:
             stamp = str(int(self.clock()))
             body = {
@@ -245,6 +265,8 @@ class GrowwBackup:
     def _get(self, path: str, params: dict[str, Any]) -> Any:
         """GET with rate limiting, retries on throttling and server errors,
         and one fresh sign-in when a token turns out to be stale."""
+        if self.clock() < self._forbidden_until:
+            raise BackupUnavailable(self._forbidden_reason)
         renewed = False
         delay = 1.0
         for attempt in range(self.max_retries + 1):
@@ -263,11 +285,23 @@ class GrowwBackup:
                 delay *= 2
                 continue
             self.requests_made += 1
-            if resp.status_code in (401, 403) and not renewed and self.credentials.api_key:
+            # 401 is the token: sign in again, once. 403 is the account: this
+            # plan may not have the data, and a fresh token will not change
+            # that -- re-minting on it spent sign-ins, of which there are only
+            # 150 a day.
+            if resp.status_code == 401 and not renewed and self.credentials.api_key:
                 with self._lock:
                     self._token = None
                 renewed = True
                 continue
+            if resp.status_code == 403:
+                reason = _error_text(_json(resp)) or "HTTP 403"
+                self._forbidden_reason = (
+                    f"the backup source refused access ({reason}); the account's API plan "
+                    "may not include this data"
+                )
+                self._forbidden_until = self.clock() + FORBIDDEN_HOLD
+                raise BackupUnavailable(self._forbidden_reason)
             if resp.status_code == 429 or resp.status_code >= 500:
                 if attempt >= self.max_retries:
                     raise BackupUnavailable(f"the backup source is busy (HTTP {resp.status_code})")

@@ -157,6 +157,33 @@ def test_a_refused_sign_in_is_said_without_naming_anyone():
     assert "backup source" in str(err.value) and not OTHER_VENDORS.search(str(err.value))
 
 
+def test_a_malformed_totp_secret_is_the_backups_own_error_not_a_crash():
+    """An API secret pasted into the TOTP setting raised a raw base32 error,
+    which no backtest handler catches -- the whole run would have failed."""
+    c = client(FakeHttp(), api_key="key-1", totp_secret="p8#Xq!zR0lT9vW$e1Yu&bN3mK*sD4fG%")
+    with pytest.raises(groww.BackupUnavailable) as err:
+        c.index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert "TOTP secret" in str(err.value) and not OTHER_VENDORS.search(str(err.value))
+
+
+def test_a_plan_refusal_is_remembered_and_costs_no_sign_ins():
+    """A 403 is the account's plan, not the token: re-minting on it spent
+    sign-ins (150 a day), and asking again cannot change the answer."""
+    clock = [1_790_000_000.0]
+    http = FakeHttp(candle_status=403)
+    c = groww.GrowwBackup(groww.Credentials(api_key="k", totp_secret="JBSWY3DPEHPK3PXP"), http=http,
+                          rate_per_second=0, sleep=lambda s: None, clock=lambda: clock[0])
+    for _ in range(3):
+        with pytest.raises(groww.BackupUnavailable) as err:
+            c.index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert "plan may not include this data" in str(err.value)
+    assert http.tokens_issued == 1 and len(http.gets) == 1, "one ask, then the refusal is remembered"
+    clock[0] += groww.FORBIDDEN_HOLD + 1
+    with pytest.raises(groww.BackupUnavailable):
+        c.index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert len(http.gets) == 2, "asked again once the hold ran out"
+
+
 def test_throttling_is_retried():
     http = FakeHttp(busy_first=2)
     frame = client(http).index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
