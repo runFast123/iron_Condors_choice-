@@ -1,6 +1,28 @@
 """Shared test setup."""
 
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _test_log_file(tmp_path_factory):
+    """Keep the test suite out of the engine's operational log.
+
+    Any test that starts the API app runs its lifespan, which installs the
+    file handler -- and it went to engine/state/logs/api.log, the file an
+    operator reads during an incident. A simulated "OSError: disk full" and a
+    fake VIX pause from the suite sat among the live engine's own lines, which
+    is exactly the kind of entry that sends someone chasing a problem that
+    does not exist. Pointed at a temporary file before the first test runs.
+    """
+    previous = os.environ.get("ENGINE_LOG")
+    os.environ["ENGINE_LOG"] = str(tmp_path_factory.mktemp("logs") / "api.log")
+    yield
+    if previous is None:
+        os.environ.pop("ENGINE_LOG", None)
+    else:
+        os.environ["ENGINE_LOG"] = previous
 
 
 @pytest.fixture(autouse=True)
