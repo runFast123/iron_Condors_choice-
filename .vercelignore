@@ -1,0 +1,19 @@
+# What a Vercel deploy may upload. An allowlist, so anything new in this
+# folder is private by default.
+#
+# Only the dashboard goes to Vercel. The engine and its database, logs and run
+# state, the confidential vendor documentation, reports and every local secret
+# stay on this machine. Without this file the CLI uploads the whole folder --
+# and did, until 25 Sep 2026.
+/*
+!/web
+!/vercel.json
+
+# Inside the dashboard: test scripts, screenshots and runtime state are not
+# part of the site.
+/web/screenshots
+/web/screenshots-live
+/web/data/live*.json
+/web/verify*.py
+/web/check_tables.py
+/web/*.tsbuildinfo

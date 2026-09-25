@@ -1,0 +1,8 @@
+# For a deploy run from inside web/. Same rule as the repository root's
+# .vercelignore: only what the site needs is uploaded.
+screenshots
+screenshots-live
+data/live*.json
+verify*.py
+check_tables.py
+*.tsbuildinfo
