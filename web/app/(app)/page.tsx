@@ -76,6 +76,8 @@ export default async function Overview() {
           verified={provenance.verified}
           realFraction={m.real_price_fraction}
           backupFraction={provenance.provider?.backup_fraction ?? 0}
+          exchangeFraction={provenance.provider?.exchange_fraction ?? 0}
+          exchange={provenance.exchange}
           note={provenance.note}
           awaiting={provenance.awaiting_connection ?? false}
           hasData={condors.length > 0}

@@ -22,7 +22,9 @@ from engine.data import groww
 from engine.strategy.condor import PriceSource
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-OTHER_VENDORS = re.compile(r"yahoo|yfinance|groww|dhan", re.IGNORECASE)
+# Choice is the only company the dashboard names. The exchange's daily record
+# is "the exchange", never its name or its file's.
+OTHER_VENDORS = re.compile(r"yahoo|yfinance|groww|dhan|nse|nseindia|bhavcopy", re.IGNORECASE)
 
 
 # ======================================================== a fake HTTP server

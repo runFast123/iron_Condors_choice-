@@ -1,5 +1,7 @@
 export const dynamic = "force-dynamic";
 
+import type { ReactNode } from "react";
+
 import { getDataset } from "@/lib/data";
 import { dateTime, num, pct } from "@/lib/format";
 import { AwaitingConnection, Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
@@ -17,12 +19,16 @@ export default async function DataHealthPage() {
   // Results from before the backup existed carry only the combined count.
   const choiceQuotes = p.choice_quotes ?? p.real_quotes;
   const backupQuotes = p.backup_quotes ?? 0;
+  const exchange = provenance.exchange;
+  const exchangeQuotes = p.exchange_quotes ?? 0;
+  const anchoredQuotes = p.anchored_quotes ?? 0;
+  const accuracy = exchange?.accuracy ?? null;
 
   return (
     <>
       <PageHeader
         title="Data Health"
-        subtitle="Choice FinX is the source for every price, historical and live. A backtest turns to its backup source only for what Choice did not supply — an option contract with no usable history, or a trading day with no NIFTY or India VIX bars — and everything it took is listed here. Live runs never use it. A failed fetch is shown as a failure, with the broker's own message, rather than silently becoming an empty result."
+        subtitle="Choice FinX is the source for every price, historical and live. A backtest turns to its backup source only for what Choice did not supply — an option contract with no usable history, or a trading day with no NIFTY or India VIX bars — and everything it took is listed here. Where no real candle exists at all, the model is anchored to the exchange's own daily closing prices for the same contract. Live runs use neither. A failed fetch is shown as a failure, with the broker's own message, rather than silently becoming an empty result."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -52,11 +58,23 @@ export default async function DataHealthPage() {
                 hint={pct(p.backup_fraction ?? 0)}
               />
             )}
+            {exchangeQuotes > 0 && (
+              <Stat
+                label="Real (exchange)"
+                value={num(exchangeQuotes)}
+                tone="pos"
+                hint={`${pct(p.exchange_fraction ?? 0)} closing trades`}
+              />
+            )}
             <Stat
               label="Modeled"
               value={num(p.modeled_quotes)}
               tone={p.modeled_quotes > 0 ? "neg" : "pos"}
-              hint={pct(1 - p.real_fraction)}
+              hint={
+                anchoredQuotes > 0
+                  ? `${pct(1 - p.real_fraction)}, ${pct(p.anchored_fraction ?? 0, 0)} anchored`
+                  : pct(1 - p.real_fraction)
+              }
             />
             <Stat label="Ladder triggers" value={num(triggers.length)} hint="condors fired" />
           </StatGrid>
@@ -108,8 +126,22 @@ export default async function DataHealthPage() {
                   ok={!awaiting && legsTotal > 0 && legsReal === legsTotal}
                   awaiting={awaiting}
                   fromBackup={(provenance.legs_backup ?? 0) > 0}
-                  note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED).`}
+                  note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED), anchored to the exchange's closing prices wherever its record reaches.`}
                 />
+                {exchange && exchange.configured && (
+                  <Row
+                    name="Exchange closing prices"
+                    source="exchange daily record"
+                    ok={!awaiting && exchange.used && (exchange.missing?.length ?? 0) === 0 && !exchange.note}
+                    awaiting={awaiting}
+                    badge={exchange.used ? <Badge tone="brand">EXCHANGE</Badge> : <Badge tone="warn">UNAVAILABLE</Badge>}
+                    note={
+                      exchange.used
+                        ? `The exchange's daily record of every NIFTY option: open, high, low, close and last trade. It covered ${num(exchange.days)} of ${num(exchange.sessions)} sessions. ${num(anchoredQuotes)} modelled lookups were anchored to the previous session's closes for the same contract, and ${num(exchange.clamped_quotes ?? 0)} were held inside that day's real low-high${exchangeQuotes ? `; ${num(exchangeQuotes)} closing bars took the contract's real last trade (badged EXCHANGE)` : ""}.${exchange.vix_only_quotes ? ` ${num(exchange.vix_only_quotes)} lookups had no session to anchor to and used the India VIX model alone.` : ""}`
+                        : `Not used in this run${exchange.note ? `: ${exchange.note}` : ""}. Modelled premiums rest on the India VIX model alone.`
+                    }
+                  />
+                )}
                 {settlement && (
                   <Row
                     name="Expiry settlement"
@@ -117,7 +149,7 @@ export default async function DataHealthPage() {
                     ok={!awaiting && settlement.last_bar.length === 0}
                     awaiting={awaiting}
                     fromBackup={(backup?.settlement_days?.length ?? 0) > 0}
-                    note={`What NSE settles index options against, from Choice's daily candle. ${num(settlement.official_close)} expir${settlement.official_close === 1 ? "y" : "ies"} settled on it${settlement.last_bar.length ? `; ${settlement.last_bar.join(", ")} had no official close and settled at the last bar` : ""}.`}
+                    note={`What the exchange settles index options against, from Choice's daily candle. ${num(settlement.official_close)} expir${settlement.official_close === 1 ? "y" : "ies"} settled on it${settlement.last_bar.length ? `; ${settlement.last_bar.join(", ")} had no official close and settled at the last bar` : ""}.`}
                   />
                 )}
                 <Row
@@ -138,6 +170,54 @@ export default async function DataHealthPage() {
             </table>
           </div>
         </Card>
+
+        {accuracy && (
+          <Card
+            title="Model accuracy"
+            hint={`Every option this run traded, on every session it was held, priced by the model at that day's close from the session before, exactly as the replay prices a bar, and compared with the close the exchange recorded. ${num(accuracy.checks)} checks across ${num(accuracy.contracts)} contracts. The India VIX model is scored on the same points.`}
+            pad={0}
+          >
+            <div className="scroll-x">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th style={{ textAlign: "right" }}>Typical error</th>
+                    <th style={{ textAlign: "right" }}>Average error</th>
+                    <th style={{ textAlign: "right" }}>9 in 10 within</th>
+                    <th style={{ textAlign: "right" }}>Bias</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {([
+                    ["Anchored to the exchange's closes (used)", accuracy.anchored],
+                    ["India VIX and an assumed skew", accuracy.vix_model],
+                  ] as const).map(([label, e]) => (
+                    <tr key={label}>
+                      <td style={{ fontWeight: 600 }}>{label}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{pct(e.median_abs)}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{pct(e.mean_abs)}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{pct(e.p90_abs)}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>
+                        {e.bias >= 0 ? "+" : ""}{pct(e.bias)} {e.bias >= 0 ? "high" : "low"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}
+
+        {exchange && (exchange.notes?.length ?? 0) > 0 && (
+          <Card title="Exchange record" hint="Sessions the exchange's record did not cover, and why.">
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.8, color: "var(--ink-2)" }}>
+              {exchange.notes!.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
         {backup && (backup.used || backup.notes.length > 0) && (
           <Card
@@ -266,6 +346,7 @@ function Row({
   awaiting,
   note,
   fromBackup,
+  badge: override,
 }: {
   name: string;
   source: string;
@@ -275,10 +356,14 @@ function Row({
   /** Some of this series came from the backup source. Read from the source
    *  label when not given. */
   fromBackup?: boolean;
+  /** A badge of its own, for a series that is not Choice's. */
+  badge?: ReactNode;
 }) {
   const backup = fromBackup ?? source.includes("backup");
   const badge = awaiting ? (
     <Badge tone="brand">NOT CONNECTED</Badge>
+  ) : override ? (
+    override
   ) : backup ? (
     <Badge tone="brand">{source.startsWith("backup") ? "BACKUP" : "CHOICE + BACKUP"}</Badge>
   ) : ok ? (

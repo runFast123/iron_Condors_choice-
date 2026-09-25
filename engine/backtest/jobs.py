@@ -24,6 +24,7 @@ import pandas as pd
 
 from engine.backtest.providers import (
     CandlePriceProvider,
+    ExchangeAnchoredPriceProvider,
     FallbackPriceProvider,
     ModelPriceProvider,
 )
@@ -36,7 +37,7 @@ from engine.backtest.runner import (
 )
 from engine.backtest.serialise import empty_bundle, serialise
 from engine.backtest.vix_series import VixAsOf
-from engine.data import groww
+from engine.data import groww, nse_bhavcopy
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE, confirm_derived_expiries, expiry_calendar
 from engine.data.market_calendar import MARKET_CLOSE, MarketCalendar
 from engine.choice.errors import ChoiceAuthError, ChoiceError
@@ -61,14 +62,17 @@ log = logging.getLogger(__name__)
 #        structure) instead of a flat default.
 #   4 -> expiries settle against NIFTY's official close, not the last bar, and
 #        modelled premiums use only the India VIX known at that moment.
-RESULT_VERSION = 4
+#   5 -> modelled premiums anchored to the exchange's previous-day closing
+#        prices for the same contracts; the India VIX model alone priced
+#        out-of-the-money legs about 13% too high on average.
+RESULT_VERSION = 5
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
 #: first, since it is the one every older result is missing.
 RETIRED_BECAUSE = (
-    "expiries now settle against NIFTY's official closing price rather than the last "
-    "five-minute bar, which sat 18 to 61 points away on most 2026 expiries, and modelled "
-    "premiums now use only the India VIX known at the moment they price"
+    "modelled option prices are now anchored to the exchange's own closing prices for the "
+    "same contracts on the previous day; measured against those prices, the India VIX model "
+    "used before priced out-of-the-money legs about 13% too high on average"
 )
 
 # A fitted surface describes the market on the day it was measured. Older than
@@ -330,6 +334,63 @@ class BacktestRunner:
                 "settled at its last bar"
             )
         return OfficialCloses(closes, from_backup)
+
+    def _exchange_closes(
+        self,
+        first_day: dt.date,
+        last_day: dt.date,
+        session_days: list[dt.date],
+        expiries: list[dt.date],
+        notes: list[str],
+    ) -> tuple["nse_bhavcopy.ChainHistory | None", dict[str, Any]]:
+        """The exchange's daily record of NIFTY's options over the run.
+
+        From ten days before the first bar, so the first session has one before
+        it to anchor to. Read from the local cache, and a day not yet cached is
+        downloaded once. A failure costs accuracy, not the run: modelled prices
+        fall back to India VIX alone, and the provenance says so.
+        """
+        archive = nse_bhavcopy.shared_archive()
+        info: dict[str, Any] = {
+            "configured": archive is not None, "used": False, "sessions": len(session_days),
+            "days": 0, "downloaded": 0, "missing": [], "note": None,
+        }
+        if archive is None:
+            return None, info
+        wanted: set[dt.date] = set(session_days)
+        day = first_day - dt.timedelta(days=10)
+        while day <= last_day:
+            if day.weekday() < 5:
+                wanted.add(day)
+            day += dt.timedelta(days=1)
+        before = archive.downloads
+        self._step("exchange", 0.895, "Reading the exchange's daily closing prices")
+
+        def progress(i: int, n: int, when: dt.date) -> None:
+            if not archive.is_cached(when):
+                self._step(
+                    "exchange", 0.895,
+                    f"Downloading the exchange's closing prices, day {i} of {n} ({when})",
+                )
+
+        frames, note = archive.load(sorted(wanted), progress)
+        history = nse_bhavcopy.ChainHistory(frames, expiries=expiries)
+        today = dt.datetime.now(tz=IST).date()
+        # Today's record is published in the evening; its absence is not a gap.
+        missing = [d for d in session_days if not history.has_day(d) and d < today]
+        info.update(
+            used=bool(history), days=sum(1 for d in session_days if history.has_day(d)),
+            downloaded=archive.downloads - before,
+            missing=[d.isoformat() for d in missing[:20]], note=note,
+        )
+        if note:
+            notes.append(f"Exchange closing prices: {note}; the rest of the run used the India VIX model")
+        if missing:
+            notes.append(
+                f"Exchange closing prices: {len(missing)} session(s) had no daily record, so bars "
+                "the day after each were priced on the India VIX model alone"
+            )
+        return (history if history else None), info
 
     def _step(self, stage: str, progress: float, message: str = "") -> None:
         self.job.stage = stage
@@ -668,16 +729,43 @@ class BacktestRunner:
                 "source is configured, so they were modelled"
             )
 
+        # For a moment Choice and the backup have no candle for, the model --
+        # anchored, wherever the exchange's record reaches, to the smile the
+        # market actually traded at the previous session's close.
+        exchange_notes: list[str] = []
+        exchange_history, exchange_info = self._exchange_closes(
+            first_day, last_day, session_days, expiries, exchange_notes,
+        )
+        model = ModelPriceProvider(surface=surface, vix_at=vix_lookup.at)
+        anchored: ExchangeAnchoredPriceProvider | None = None
+        if exchange_history is not None:
+            anchored = ExchangeAnchoredPriceProvider(
+                history=exchange_history, fallback=model, vix_at=vix_lookup.at,
+                daily_bars=resolution == "D",
+            )
+
         self._step("replay", 0.90, "Replaying the ladder")
         provider = FallbackPriceProvider(
             primary=candles,
             secondary=backup_candles if backup_candles.candles else None,
-            fallback=ModelPriceProvider(surface=surface, vix_at=vix_lookup.at),
+            fallback=anchored if anchored is not None else model,
         )
         result = Backtest(params, provider, expiry_for).run(spots, vix_series, settlement)
         if backup_notes:
             # A day neither source had is a jump in the replay; say so.
             result.warnings.extend(backup_notes)
+        if exchange_notes:
+            result.warnings.extend(exchange_notes)
+        # How far the model sat from the exchange's closes on this run's own
+        # legs, day by day -- the number that says how far to trust it.
+        accuracy = (
+            anchored.measure(
+                [(r.expiry, r.strike, r.right, r.first_needed.date()) for r in requirements],
+                last_day,
+            )
+            if anchored is not None else None
+        )
+        anchor_counts = anchored.summary() if anchored is not None else {}
 
         # Which fetched legs were actually priced from their bars. The two
         # were reported as one number, so a leg whose bars never sat near a
@@ -722,11 +810,22 @@ class BacktestRunner:
             spot_source = "backup:NIFTY"
         else:
             spot_source = f"choice:NIFTY + backup ({len(nifty_backup)} day(s))"
+        exchange_used = bool(provider.exchange_quotes)
         if provider.modeled_quotes == 0:
             note_text = (
-                "All prices sourced from Choice FinX." if not backup_used
+                "All prices sourced from Choice FinX." if not (backup_used or exchange_used)
                 else "Every price is a real traded price: from Choice FinX, and where Choice "
-                     "had none, from the backup source -- listed below."
+                     "had none, from the backup source or the exchange's closing record -- "
+                     "listed below."
+            )
+        elif anchor_counts.get("anchored_quotes"):
+            note_text = (
+                f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
+                "the price lookups in this replay came from the model rather than a real "
+                "candle. Wherever the exchange's record reaches, the model is anchored to the "
+                "smile the market actually traded at the previous session's close, carried "
+                "forward by NIFTY and India VIX; elsewhere it is Black-76 from India VIX and "
+                "a strike skew. The breakdown by leg is below."
             )
         else:
             note_text = (
@@ -735,14 +834,19 @@ class BacktestRunner:
                 "candle -- Black-76, driven by India VIX and a strike skew. The breakdown "
                 "by leg is below."
             )
-        if fetched and used_backup:
-            premium_source = "choice:ChartData + backup"
-        elif fetched:
-            premium_source = "choice:ChartData"
-        elif used_backup:
-            premium_source = "backup"
-        else:
-            premium_source = "modeled:black76"
+        # Every source that answered, in the order they are asked; the model
+        # alone when none did.
+        contributed = []
+        if fetched:
+            contributed.append("choice:ChartData")
+        if used_backup:
+            contributed.append("backup")
+        if exchange_used:
+            contributed.append("exchange:closing-trades")
+        if anchor_counts.get("anchored_quotes"):
+            contributed.append("modeled:exchange-anchored")
+            vol_source += " +exchange-anchored"
+        premium_source = " + ".join(contributed) if contributed else "modeled:black76"
         provenance = {
             "spot_source": spot_source,
             "vol_source": vol_source,
@@ -773,8 +877,9 @@ class BacktestRunner:
             # calendar did not know about.
             "expiries_corrected": {k.isoformat(): v.isoformat() for k, v in corrected.items()},
             "expiries_listed": len(expiries) - len(derived_expiries),
-            # "Everything from Choice": no modelled premium and no backup day.
-            "verified": provider.modeled_quotes == 0 and not backup_used,
+            # "Everything from Choice": no modelled premium, no backup day and
+            # no closing trade taken from the exchange's record.
+            "verified": provider.modeled_quotes == 0 and not backup_used and not exchange_used,
             "note": note_text,
             # What came from the backup source, day by day and leg by leg. It
             # is never named: on the dashboard it is "the backup source".
@@ -794,6 +899,15 @@ class BacktestRunner:
             # Legs priced from the backup at least once. Counted apart from the
             # Choice split above, which still says what Choice itself served.
             "legs_backup": len(used_backup),
+            # The exchange's daily record: which sessions it covered, how the
+            # model leaned on it, and how far the model sat from its closes on
+            # this run's own legs. Named neutrally, as "the exchange".
+            "exchange": {
+                **exchange_info,
+                **anchor_counts,
+                "accuracy": accuracy,
+                "notes": exchange_notes,
+            },
             # Which expiries settled against the official close.
             "settlement": {
                 "official_close": len(settled_official),

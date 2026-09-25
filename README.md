@@ -204,7 +204,24 @@ half hour that NSE settles index options on — taken from Choice's daily candle
 bar is not used: on six of the eight 2026 monthly expiries it sat 18–61 points from the official
 figure.
 
-**Modelled premiums** use India VIX as it stood at that moment, from Choice's intraday VIX bars — never
+**Modelled premiums are anchored to the exchange's own closing prices.** Choice serves no history for
+an expired contract, so most of a historical run is priced by a model. `engine/data/nse_bhavcopy.py`
+reads NSE's daily F&O bhavcopy — the open, high, low, close and last trade of every NIFTY option,
+expired or not — once per day into a local cache under `engine/state/exchange/` (never uploaded).
+`engine/pricing/exchange_smile.py` reads the volatility smile the market actually traded at the
+previous session's close: only contracts that traded at least 100 lots, the forward from put-call
+parity, a robust quadratic fit, and each strike's own volatility where it agrees with the fit. A bar is
+priced from that smile carried forward by NIFTY and India VIX at that moment — the previous session
+only, so the model knows nothing a trader did not — then held inside the contract's real low and high
+for the day, which can only move it towards the price that traded. From 15:29 a contract that traded
+that day takes its real last trade instead (`EXCHANGE`). Measured on January–September 2026, the
+India VIX model alone put an out-of-the-money leg a typical 15% from where it traded and 13% too high
+on average; the anchored model is typically within 5–7% with no material bias, and against 52 real
+Choice entry prices in September it was within 4% where the old model was 14–26% out. Every run
+reports the same check on its own legs (Data Health → Model accuracy). `EXCHANGE_CLOSES=off` in
+`.env.engine.local` turns it off.
+
+Modelled premiums use India VIX as it stood at that moment, from Choice's intraday VIX bars — never
 the day's close, which is not known until 15:30.
 
 Every price carries a source tag, surfaced as a badge throughout the UI:
@@ -212,7 +229,9 @@ Every price carries a source tag, surfaced as a badge throughout the UI:
 | Tag | Meaning |
 |---|---|
 | `CHOICE` | A real Choice candle or quote. |
-| `MODELED` | Black-76, using volatility derived from Choice's own India VIX series. |
+| `BACKUP` | A real candle from the backtest's backup source. |
+| `EXCHANGE` | A real closing trade from the exchange's daily record (backtests only, closing bars only). |
+| `MODELED` | Black-76: anchored to the exchange's previous-day closes where they exist, else India VIX and an assumed skew. |
 
 `MODELED` is not a second data vendor — it is a pricing model applied when Choice serves no candles
 for a specific contract. Those legs are badged everywhere and excluded from the verified statistics.

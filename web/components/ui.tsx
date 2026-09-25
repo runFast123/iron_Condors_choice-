@@ -1,5 +1,8 @@
 import type { ReactNode } from "react";
 
+import { pct } from "@/lib/format";
+import type { ExchangeUse } from "@/lib/types";
+
 export function PageHeader({
   title,
   subtitle,
@@ -176,6 +179,8 @@ export function ProvenanceBanner({
   hasData = true,
   legs,
   backupFraction = 0,
+  exchangeFraction = 0,
+  exchange,
 }: {
   verified: boolean;
   realFraction: number;
@@ -196,6 +201,12 @@ export function ProvenanceBanner({
   /** Share of price lookups the backup source answered. Counted inside
    *  realFraction: a backup price is a real traded price, not a model. */
   backupFraction?: number;
+  /** Share answered by a real closing trade from the exchange's record. Also
+   *  inside realFraction. */
+  exchangeFraction?: number;
+  /** How the run used the exchange's record, and how accurate the model was
+   *  against it. */
+  exchange?: ExchangeUse;
 }) {
   if (awaiting) return <AwaitingConnection note={note} />;
 
@@ -212,20 +223,25 @@ export function ProvenanceBanner({
 
   const modeled = 1 - realFraction;
   if (modeled <= 0) {
+    const others = backupFraction + exchangeFraction;
+    const parts = [`${(100 * (1 - others)).toFixed(0)}% from Choice FinX`];
+    if (backupFraction > 0) parts.push(`${(100 * backupFraction).toFixed(0)}% from the backup source`);
+    if (exchangeFraction > 0) parts.push(`${(100 * exchangeFraction).toFixed(0)}% from the exchange's record of closing trades`);
     return (
       <div
         className="card"
         style={{ padding: "10px 14px", display: "flex", gap: 9, alignItems: "center", borderColor: "var(--pos)" }}
       >
-        <Badge tone="pos">{backupFraction > 0 ? "REAL PRICES" : "VERIFIED"}</Badge>
+        <Badge tone="pos">{others > 0 ? "REAL PRICES" : "VERIFIED"}</Badge>
         <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
-          {backupFraction > 0
-            ? `Every option premium is a real traded price: ${(100 * (1 - backupFraction)).toFixed(0)}% from Choice FinX, ${(100 * backupFraction).toFixed(0)}% from the backup source for contracts Choice has no history for.`
+          {others > 0
+            ? `Every option premium is a real traded price: ${parts.join(", ")}, for contracts Choice has no history for.`
             : "All option premiums are real Choice FinX candles."}
         </span>
       </div>
     );
   }
+  const accuracy = exchange?.accuracy ?? null;
   return (
     <div
       className="card"
@@ -270,9 +286,24 @@ export function ProvenanceBanner({
             {legs.backup
               ? ` Of the legs Choice could not price, ${legs.backup} were priced from real candles from the backup source instead.`
               : ""}
-            {legs.backup
+            {legs.backup || accuracy
               ? ""
               : " So far only the expiry that is currently trading has priced reliably from real data; a range inside it is the most trustworthy test."}
+          </p>
+        ) : null}
+        {/* How far the model can be trusted, measured rather than asserted:
+            the same model the replay used, checked every session against the
+            exchange's closing prices for the legs this run traded. */}
+        {accuracy ? (
+          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
+            Where Choice had no candle, the model is anchored to the exchange&rsquo;s closing prices for the
+            same contract the session before, moved by NIFTY and India VIX since. Checked against those closes
+            on this run&rsquo;s own legs &mdash; {accuracy.checks.toLocaleString("en-IN")} checks across{" "}
+            {accuracy.contracts} contracts &mdash; it was typically within{" "}
+            <strong>{pct(accuracy.anchored.median_abs)}</strong>, averaging{" "}
+            {pct(Math.abs(accuracy.anchored.bias))} {accuracy.anchored.bias >= 0 ? "high" : "low"}. The India VIX
+            model alone was typically {pct(accuracy.vix_model.median_abs)} out, averaging{" "}
+            {pct(Math.abs(accuracy.vix_model.bias))} {accuracy.vix_model.bias >= 0 ? "high" : "low"}.
           </p>
         ) : null}
       </div>

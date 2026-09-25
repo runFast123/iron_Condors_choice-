@@ -49,3 +49,17 @@ def _no_backup_source(monkeypatch):
     from engine.data import groww
 
     monkeypatch.setattr(groww, "shared_backup", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_exchange_archive(monkeypatch):
+    """Tests never download the exchange's daily files.
+
+    Every backtest reads the exchange's record for its range, downloading any
+    day not yet cached -- so without this, an ordinary job test would reach the
+    archive and depend on what the machine's cache happened to hold. A test of
+    the exchange data patches in an archive of its own.
+    """
+    from engine.data import nse_bhavcopy
+
+    monkeypatch.setattr(nse_bhavcopy, "shared_archive", lambda: None)

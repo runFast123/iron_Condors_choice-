@@ -258,6 +258,16 @@ export default async function AboutPage() {
               when it settles, the ladder re-anchors, because a long put in September offsets
               nothing in October.
             </li>
+            <li>
+              <strong>Backtest prices:</strong> Choice&rsquo;s own option candles wherever it has them.
+              An expired contract has none, so its price is modelled &mdash; anchored to the
+              exchange&rsquo;s closing prices for that same contract the session before, carried to
+              the moment by NIFTY and India VIX, and held inside the day&rsquo;s real traded range.
+              Only the previous session&rsquo;s figures are read, so the model knows nothing a trader
+              did not. Checked against real prices it is typically within about 6%; the India VIX
+              model it replaced was about 15% out and priced options too high. Each run&rsquo;s
+              Data Health page shows the check on its own legs.
+            </li>
           </ul>
         </Card>
 

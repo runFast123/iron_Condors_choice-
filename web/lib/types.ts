@@ -1,10 +1,54 @@
 /**
  * Where an option premium came from. "choice" is a real Choice candle;
  * "backup" a real candle from the backtest's backup source, for a contract
- * Choice has no history for (backtests only); "modeled" is Black-76, not a
- * source at all. The dashboard never names the backup source.
+ * Choice has no history for (backtests only); "exchange" a real closing trade
+ * from the exchange's daily record, for a backtest bar at the close;
+ * "modeled" is Black-76, not a source at all. The dashboard never names the
+ * backup source.
  */
-export type PriceSource = "choice" | "backup" | "modeled";
+export type PriceSource = "choice" | "backup" | "exchange" | "modeled";
+
+/** Relative errors of a model against the exchange's closing prices. */
+export interface ErrorStats {
+  /** Typical size of the error: half of all checks were within this. */
+  median_abs: number;
+  mean_abs: number;
+  /** Nine in ten checks were within this. */
+  p90_abs: number;
+  /** Average signed error: positive means the model priced too high. */
+  bias: number;
+}
+
+/** How a backtest used the exchange's daily record of NIFTY options. */
+export interface ExchangeUse {
+  configured: boolean;
+  used: boolean;
+  /** Trading sessions in the run, and how many the record covered. */
+  sessions: number;
+  days: number;
+  downloaded?: number;
+  missing?: string[];
+  note?: string | null;
+  /** Modelled lookups anchored to the previous session's closes, and those
+   *  that fell back to the India VIX model alone. */
+  anchored_quotes?: number;
+  vix_only_quotes?: number;
+  /** Modelled prices held inside the contract's real low-high for the day. */
+  clamped_quotes?: number;
+  /** Closing-bar lookups priced at the contract's real last trade. */
+  exchange_quotes?: number;
+  smiles_read?: number;
+  smiles_unreadable?: number;
+  /** The model against the exchange's close, on this run's own legs, every
+   *  session they were held; the India VIX model on the same points. */
+  accuracy?: {
+    contracts: number;
+    checks: number;
+    anchored: ErrorStats;
+    vix_model: ErrorStats;
+  } | null;
+  notes?: string[];
+}
 
 /** What a backtest took from its backup source because Choice had nothing. */
 export interface BackupUse {
@@ -60,11 +104,14 @@ export interface Provenance {
   resolution: string;
   option_resolution?: string;
   generated_at: string;
-  /** `real_quotes` counts every real traded price, Choice's and the backup's;
-   *  the split is absent on results from before the backup existed. */
+  /** `real_quotes` counts every real traded price -- Choice's, the backup's
+   *  and the exchange's closing trades; the split is absent on older results. */
   provider: {
     real_quotes: number; modeled_quotes: number; total_quotes: number; real_fraction: number;
     choice_quotes?: number; backup_quotes?: number; backup_fraction?: number;
+    exchange_quotes?: number; exchange_fraction?: number;
+    anchored_quotes?: number; vix_only_quotes?: number; clamped_quotes?: number;
+    anchored_fraction?: number;
   };
   bars: number;
   range: [string, string];
@@ -100,6 +147,8 @@ export interface Provenance {
   settlement?: { official_close: number; last_bar: string[] };
   /** Null or absent when the run had no VIX limit. */
   vix_gate?: VixGate | null;
+  /** Absent on runs from before the exchange's record was used. */
+  exchange?: ExchangeUse;
 }
 
 export interface Params {

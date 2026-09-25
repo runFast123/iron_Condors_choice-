@@ -1,13 +1,16 @@
 """Option price sources for the backtester.
 
-Three implementations behind one interface, so the runner never has to know
+Four implementations behind one interface, so the runner never has to know
 where a premium came from — but every quote it returns carries its
 :class:`PriceSource`, and that tag follows the fill all the way into the UI.
 
 * :class:`CandlePriceProvider` — real option candles: Choice's (the good
   case), or the backup source's for a contract Choice has no history for.
+* :class:`ExchangeAnchoredPriceProvider` — for a moment neither has a candle
+  for: the smile the market traded at the previous session's close, from the
+  exchange's daily record, carried forward by NIFTY and India VIX.
 * :class:`ModelPriceProvider`  — Black-76 from India VIX plus a skew, used
-  only when neither has data for that moment.
+  only when there is no exchange record to anchor to either.
 * :class:`FallbackPriceProvider` — Choice first, the backup second, the model
   last, and a count of how often each answered.
 """
@@ -15,12 +18,22 @@ where a premium came from — but every quote it returns carries its
 from __future__ import annotations
 
 import datetime as dt
+import math
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 import pandas as pd
 
+from engine.config import IST
+from engine.data.nse_bhavcopy import ChainHistory, ContractDay
 from engine.pricing.black76 import forward_price, greeks
+from engine.pricing.exchange_smile import (
+    SESSION_CLOSE,
+    ExchangeSmile,
+    build_smile,
+    carried_vol,
+    years_to_expiry,
+)
 from engine.pricing.iv_surface import IVSurface
 from engine.strategy.condor import PriceSource
 
@@ -164,6 +177,185 @@ class ModelPriceProvider:
         )
 
 
+# ------------------------------------------------------- exchange-anchored
+
+#: From this time a contract that traded that day is priced at its real last
+#: trade: the bar stamped 15:29 is the session's last, and its NIFTY close is
+#: the 15:30 price the last trade belongs with.
+LAST_TRADE_FROM = dt.time(15, 29)
+
+
+@dataclass
+class ExchangeAnchoredPriceProvider:
+    """The model, anchored to the exchange's own prices for the same contract.
+
+    For a moment on day D, for a contract Choice has no candle for:
+
+    * from 15:29 -- or on a daily bar, which is the close -- a contract that
+      traded on D is priced at its real closing trade from the exchange's
+      record. Tagged EXCHANGE: a real price, not a model.
+    * otherwise at the smile the market traded at the previous session's
+      close, carried to this moment by NIFTY and India VIX. Only that
+      session's figures are read (engine.pricing.exchange_smile). MODELED.
+    * with no previous session to read -- a gap in the record, or an expiry
+      not yet listed -- the India VIX model this wraps. MODELED.
+
+    A modelled price for a contract that traded on D is then kept inside D's
+    real low and high. Every price the contract traded at that day lies in
+    that range, so the bound can only move a price towards the truth, never
+    away from it.
+    """
+
+    history: ChainHistory
+    fallback: ModelPriceProvider
+    vix_at: Callable[[dt.datetime], float | None] | None = None
+    rate: float = 0.065
+    clamp: bool = True
+    daily_bars: bool = False
+    #: An anchor older than this says nothing about today.
+    max_anchor_gap: dt.timedelta = dt.timedelta(days=7)
+    anchored: int = 0
+    vix_only: int = 0
+    clamped: int = 0
+    exchange_prices: int = 0
+    _smiles: dict[tuple[dt.date, dt.date], ExchangeSmile | None] = field(default_factory=dict)
+
+    def smile_before(self, day: dt.date, expiry: dt.date) -> ExchangeSmile | None:
+        """The smile `expiry` closed with in the last session before `day`."""
+        anchor = self.history.previous_day(day)
+        if anchor is None or day - anchor > self.max_anchor_gap:
+            return None
+        key = (anchor, expiry)
+        if key not in self._smiles:
+            vix = None
+            if self.vix_at is not None:
+                vix = self.vix_at(dt.datetime.combine(anchor, SESSION_CLOSE, tzinfo=IST))
+            self._smiles[key] = build_smile(
+                self.history.chain(anchor, expiry), anchor, expiry,
+                self.history.underlying(anchor),
+                future=self.history.future(anchor, expiry), vix=vix, rate=self.rate,
+            )
+        return self._smiles[key]
+
+    def model_price(self, request: PriceRequest) -> tuple[float, float | None, float | None, bool] | None:
+        """(price, iv, delta, anchored) from the models alone -- no day range,
+        no closing trade. None when neither model can price the request."""
+        smile = self.smile_before(request.when.date(), request.expiry)
+        if smile is None:
+            quote = self.fallback.quote(request)
+            if quote is None:
+                return None
+            return quote.price, quote.iv, quote.delta, False
+        years = years_to_expiry(request.when, request.expiry)
+        forward = request.spot * math.exp(smile.carry * years)
+        vix_now = self.vix_at(request.when) if self.vix_at is not None else None
+        vol = carried_vol(smile, float(request.strike), forward, vix_now)
+        g = greeks(forward, float(request.strike), years, vol, self.rate, request.right)
+        return max(self.fallback.min_price, g.price), vol, g.delta, True
+
+    def quote(self, request: PriceRequest) -> Quote | None:
+        day = request.when.date()
+        today: ContractDay | None = self.history.contract(
+            day, request.expiry, float(request.strike), request.right
+        )
+        if today is not None and not today.traded:
+            today = None
+        if today is not None:
+            closing = today.close if self.daily_bars else today.last
+            at_close = self.daily_bars or request.when.time() >= LAST_TRADE_FROM
+            if at_close and closing:
+                self.exchange_prices += 1
+                return Quote(price=float(closing), source=PriceSource.EXCHANGE)
+
+        priced = self.model_price(request)
+        if priced is None:
+            return None
+        price, iv, delta, anchored = priced
+        if anchored:
+            self.anchored += 1
+        else:
+            self.vix_only += 1
+        if self.clamp and today is not None and 0 < today.low <= today.high:
+            bounded = min(max(price, today.low), today.high)
+            if bounded != price:
+                self.clamped += 1
+                price = bounded
+        return Quote(price=price, source=PriceSource.MODELED, iv=iv, delta=delta)
+
+    def summary(self) -> dict[str, int]:
+        return {
+            "anchored_quotes": self.anchored,
+            "vix_only_quotes": self.vix_only,
+            "clamped_quotes": self.clamped,
+            "exchange_quotes": self.exchange_prices,
+            "smiles_read": sum(1 for s in self._smiles.values() if s is not None),
+            "smiles_unreadable": sum(1 for s in self._smiles.values() if s is None),
+        }
+
+    def measure(
+        self,
+        legs: Iterable[tuple[dt.date, float, str, dt.date]],
+        last_day: dt.date,
+    ) -> dict | None:
+        """How far the model sat from the exchange's close, on this run's legs.
+
+        For every leg a run traded and every session it was held (entry day to
+        the day before expiry), the model prices the leg at that day's close
+        from the previous session alone -- exactly as it prices a bar -- and is
+        compared with the close the exchange recorded. The India VIX model is
+        scored on the same points, so the two can be read side by side.
+
+        `legs` is (expiry, strike, right, first day needed). None when there
+        was nothing to compare: no leg that traded on a day with an anchor.
+        """
+        anchored_errors: list[float] = []
+        vix_errors: list[float] = []
+        contracts: set[tuple[dt.date, float, str]] = set()
+        for expiry, strike, right, first_day in legs:
+            for day in self.history.days:
+                if day < first_day or day >= expiry or day > last_day:
+                    continue
+                real = self.history.contract(day, expiry, float(strike), right)
+                spot = self.history.underlying(day)
+                if real is None or not real.traded or not spot:
+                    continue
+                request = PriceRequest(
+                    expiry=expiry, strike=float(strike), right=right,
+                    when=dt.datetime.combine(day, SESSION_CLOSE, tzinfo=IST), spot=spot,
+                )
+                priced = self.model_price(request)
+                if priced is None or not priced[3]:
+                    continue
+                plain = self.fallback.quote(request)
+                if plain is None:
+                    continue
+                anchored_errors.append(priced[0] / real.close - 1.0)
+                vix_errors.append(plain.price / real.close - 1.0)
+                contracts.add((expiry, float(strike), right))
+        if not anchored_errors:
+            return None
+        return {
+            "contracts": len(contracts),
+            "checks": len(anchored_errors),
+            "anchored": _error_stats(anchored_errors),
+            "vix_model": _error_stats(vix_errors),
+        }
+
+
+def _error_stats(errors: list[float]) -> dict[str, float]:
+    """Typical, average and 90th-percentile size of relative errors, and their
+    mean (the bias: positive means the model priced too high)."""
+    sizes = sorted(abs(e) for e in errors)
+    middle = len(sizes) // 2
+    median = sizes[middle] if len(sizes) % 2 else 0.5 * (sizes[middle - 1] + sizes[middle])
+    return {
+        "median_abs": round(median, 4),
+        "mean_abs": round(sum(sizes) / len(sizes), 4),
+        "p90_abs": round(sizes[int(0.9 * (len(sizes) - 1))], 4),
+        "bias": round(sum(errors) / len(errors), 4),
+    }
+
+
 # ---------------------------------------------------------------- fallback
 
 
@@ -172,9 +364,10 @@ class FallbackPriceProvider:
     """Real data where it exists, modeled where it does not.
 
     Choice first (`primary`), then the backup source's candles (`secondary`,
-    optional), then the model. Keeps a count of each so the dashboard can
-    state plainly what fraction of a backtest rests on real premiums and how
-    much of that came from the backup.
+    optional), then the fallback -- the model, or the exchange-anchored
+    provider, which can itself answer with a real closing trade. Keeps a count
+    of each so the dashboard can state plainly what fraction of a backtest
+    rests on real premiums and where they came from.
     """
 
     primary: PriceProvider
@@ -182,6 +375,7 @@ class FallbackPriceProvider:
     secondary: PriceProvider | None = None
     choice_quotes: int = 0
     backup_quotes: int = 0
+    exchange_quotes: int = 0
     modeled_quotes: int = 0
 
     def quote(self, request: PriceRequest) -> Quote | None:
@@ -196,13 +390,18 @@ class FallbackPriceProvider:
                 return found
         modeled = self.fallback.quote(request)
         if modeled is not None:
-            self.modeled_quotes += 1
+            # Counted by what the quote is, not by which slot answered: the
+            # exchange-anchored fallback prices a closing bar at a real trade.
+            if modeled.source is PriceSource.EXCHANGE:
+                self.exchange_quotes += 1
+            else:
+                self.modeled_quotes += 1
         return modeled
 
     @property
     def real_quotes(self) -> int:
         """Quotes from a real traded price, whichever source served it."""
-        return self.choice_quotes + self.backup_quotes
+        return self.choice_quotes + self.backup_quotes + self.exchange_quotes
 
     @property
     def total_quotes(self) -> int:
@@ -213,12 +412,24 @@ class FallbackPriceProvider:
         return self.real_quotes / self.total_quotes if self.total_quotes else 0.0
 
     def summary(self) -> dict[str, float | int]:
-        return {
+        out: dict[str, float | int] = {
             "real_quotes": self.real_quotes,
             "choice_quotes": self.choice_quotes,
             "backup_quotes": self.backup_quotes,
+            "exchange_quotes": self.exchange_quotes,
             "modeled_quotes": self.modeled_quotes,
             "total_quotes": self.total_quotes,
             "real_fraction": self.real_fraction,
             "backup_fraction": self.backup_quotes / self.total_quotes if self.total_quotes else 0.0,
+            "exchange_fraction": self.exchange_quotes / self.total_quotes if self.total_quotes else 0.0,
         }
+        detail = getattr(self.fallback, "summary", None)
+        if callable(detail):
+            anchored = detail()
+            out["anchored_quotes"] = int(anchored.get("anchored_quotes", 0))
+            out["vix_only_quotes"] = int(anchored.get("vix_only_quotes", 0))
+            out["clamped_quotes"] = int(anchored.get("clamped_quotes", 0))
+            out["anchored_fraction"] = (
+                out["anchored_quotes"] / self.modeled_quotes if self.modeled_quotes else 0.0
+            )
+        return out

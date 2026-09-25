@@ -547,9 +547,18 @@ class Backtest:
         )
 
         if result.metrics.modeled_quotes:
+            anchored = int(provider_summary.get("anchored_quotes", 0))
+            how = (
+                "Black-76, anchored to the exchange's previous-day closing prices"
+                if anchored and anchored == result.metrics.modeled_quotes
+                else "Black-76, partly anchored to the exchange's previous-day closing prices "
+                     "and otherwise from India VIX"
+                if anchored
+                else "Black-76 from India VIX"
+            )
             result.warnings.append(
                 f"{100 * (1 - result.metrics.real_price_fraction):.1f}% of quotes were MODELED "
-                "(Black-76 from India VIX), not real Choice premiums."
+                f"({how}), not real traded premiums."
             )
         if result.rolls:
             result.warnings.append(
