@@ -72,11 +72,15 @@ class FakeMarket:
         self.master = master or FakeMaster()
         self.option_calls = 0
 
-    def nifty(self, start, end, resolution):
+    def nifty(self, start, end, resolution, strict=True):
         return self._spot
 
     def vix_by_date(self, start, end):
         return self._vix
+
+    def india_vix(self, start, end, resolution, strict=True):
+        """Intraday VIX, for the entry rule: `vix_bars` if given, else none."""
+        return getattr(self, "vix_bars", pd.DataFrame())
 
     def option_candles(
         self, underlying, expiry, strike, right, start, end, resolution, instruments=None
@@ -206,7 +210,7 @@ def test_an_unexpected_exception_is_captured_with_its_type():
 
 def test_a_broker_error_keeps_choices_own_wording():
     class Refusing(FakeMarket):
-        def nifty(self, start, end, resolution):
+        def nifty(self, start, end, resolution, strict=True):
             raise ChoiceError("Token not subscribed")
 
     job = run_job(market=Refusing())

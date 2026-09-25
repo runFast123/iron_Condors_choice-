@@ -28,6 +28,7 @@ from engine.backtest.providers import (
     ModelPriceProvider,
 )
 from engine.backtest.serialise import empty_bundle, serialise
+from engine.backtest.vix_series import VixAsOf
 from engine.backtest.runner import (
     Backtest,
     BacktestParams,
@@ -133,11 +134,36 @@ def build(
 
     log.info("Option legs: %d with Choice data, %d without", fetched, missing)
 
+    # India VIX as it stood at each bar, not the day's close -- a close is not
+    # known until 15:30, so pricing an intraday entry off it looks ahead. The
+    # close still backs up a day with no intraday bars, from the next session.
+    try:
+        vix_bars = market.india_vix(start, end, resolution, strict=False)
+    except ChoiceError as exc:
+        log.warning("No intraday India VIX (%s); modelling off daily closes only", exc)
+        vix_bars = None
+    vix_lookup = VixAsOf(
+        resolution,
+        bars=[] if vix_bars is None else [
+            (row.ts.to_pydatetime(), float(row.close), "choice") for row in vix_bars.itertuples()
+        ],
+        daily=[(day, value, "choice") for day, value in vix_map.items()],
+    )
+
+    # Expiries settle against NIFTY's official close -- Choice's daily candle
+    # -- not the last bar of the day, which can sit tens of points away.
+    try:
+        daily = nifty if resolution == "D" else market.nifty(start, end, "D", strict=False)
+        settlement = {row.ts.date(): float(row.close) for row in daily.itertuples()}
+    except ChoiceError as exc:
+        log.warning("No daily NIFTY closes (%s); expiries settle at their last bar", exc)
+        settlement = {}
+
     provider = FallbackPriceProvider(
         primary=candles,
-        fallback=ModelPriceProvider(surface=surface, vix_by_date=vix_map or None),
+        fallback=ModelPriceProvider(surface=surface, vix_at=vix_lookup.at),
     )
-    result = Backtest(params, provider, expiry_for).run(spots)
+    result = Backtest(params, provider, expiry_for).run(spots, settlement=settlement)
 
     coverage = market.coverage_summary()
     provenance = {

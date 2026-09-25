@@ -20,6 +20,8 @@ import traceback
 from dataclasses import dataclass, field
 from typing import Any
 
+import pandas as pd
+
 from engine.backtest.providers import (
     CandlePriceProvider,
     FallbackPriceProvider,
@@ -33,15 +35,18 @@ from engine.backtest.runner import (
     weekly_expiry_resolver,
 )
 from engine.backtest.serialise import empty_bundle, serialise
+from engine.backtest.vix_series import VixAsOf
+from engine.data import groww
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE, confirm_derived_expiries, expiry_calendar
-from engine.choice.errors import ChoiceError
+from engine.data.market_calendar import MARKET_CLOSE, MarketCalendar
+from engine.choice.errors import ChoiceAuthError, ChoiceError
 from engine.choice.instruments import HistoricalInstruments
 from engine.config import IST
-from engine.data.market import NIFTY, ChoiceMarketData
+from engine.data.market import INDIA_VIX, NIFTY, ChoiceMarketData
 from engine.pricing.costs import CostModel
 from engine.pricing.iv_surface import IVSurface, from_vix
 from engine.store.db import Store
-from engine.strategy.condor import StrategyConfig
+from engine.strategy.condor import PriceSource, StrategyConfig
 from engine.strategy.hic import HicConfig
 
 log = logging.getLogger(__name__)
@@ -52,7 +57,19 @@ log = logging.getLogger(__name__)
 #   2 -> expiries derived for historical ranges; before this every condor in a
 #        past range carried the nearest *currently listed* expiry, which priced
 #        weeklies as half-year options and understated max loss about threefold.
-RESULT_VERSION = 3
+#   3 -> the modelled IV surface fitted to Choice's live chain (skew and term
+#        structure) instead of a flat default.
+#   4 -> expiries settle against NIFTY's official close, not the last bar, and
+#        modelled premiums use only the India VIX known at that moment.
+RESULT_VERSION = 4
+
+#: Why results older than RESULT_VERSION are no longer shown -- the newest fix
+#: first, since it is the one every older result is missing.
+RETIRED_BECAUSE = (
+    "expiries now settle against NIFTY's official closing price rather than the last "
+    "five-minute bar, which sat 18 to 61 points away on most 2026 expiries, and modelled "
+    "premiums now use only the India VIX known at the moment they price"
+)
 
 # A fitted surface describes the market on the day it was measured. Older than
 # this and the shape has moved enough that the flat default is more honest.
@@ -110,6 +127,8 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         strike_step=market.master.strike_step(NIFTY, listed[0]) if listed else 50.0,
         take_profit_pct=p.get("take_profit"),
         stop_loss_mult=p.get("stop_loss"),
+        # The VIX rule applies to both strategies, unlike the entry filters.
+        max_entry_vix=p.get("max_entry_vix"),
     )
     wanted = str(p.get("strategy") or "ladder")
     if wanted != "hic":
@@ -146,6 +165,91 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
     )
 
 
+def expected_sessions(start: dt.date, end: dt.date, now: dt.datetime | None = None) -> set[dt.date]:
+    """The weekdays in a range the shipped calendar says should have traded.
+
+    Only a first cut: the calendar lists the fixed-date holidays and nothing
+    movable, so the caller narrows it with Choice's own record of which days
+    traded wherever it has one. Today counts only once the session is over.
+    """
+    calendar = MarketCalendar.load()
+    now = now or dt.datetime.now(tz=IST)
+    days: set[dt.date] = set()
+    day = start
+    while day <= end:
+        finished = day < now.date() or (day == now.date() and now.time() >= MARKET_CLOSE)
+        if finished and calendar.is_trading_day(day):
+            days.add(day)
+        day += dt.timedelta(days=1)
+    return days
+
+
+def _fetch_with_backup(
+    fetch_choice, name: str, days_needed: set[dt.date], resolution: str,
+    backup: "groww.GrowwBackup | None",
+) -> tuple[pd.DataFrame, list[dt.date], str | None, str | None]:
+    """A series from Choice, with the backup source filling any needed day
+    Choice skipped.
+
+    Returns the frame, the days taken from the backup, a note on what neither
+    could cover, and Choice's own error if it refused outright. An expired
+    login is not a gap in the data and is raised as it is.
+    """
+    choice_error: str | None = None
+    try:
+        frame = fetch_choice()
+    except ChoiceAuthError:
+        raise
+    except ChoiceError as exc:
+        choice_error = str(exc)
+        log.warning("Choice returned no %s: %s; trying the backup source", name, exc)
+        frame = pd.DataFrame(columns=groww.COLUMNS)
+    if frame is None:
+        frame = pd.DataFrame(columns=groww.COLUMNS)
+    if backup is None:
+        have = set(frame["ts"].dt.date) if not frame.empty else set()
+        missing = [d for d in days_needed if d not in have]
+        note = (f"{len(missing)} day(s) missing from Choice; no backup source is configured"
+                if missing else None)
+        return frame, [], note, choice_error
+    merged, taken, note = backup.fill_missing_days(frame, name, days_needed, resolution)
+    return merged, taken, note, choice_error
+
+
+def _choice_falls_short(
+    key: tuple[dt.date, float, str],
+    first_needed: dt.datetime,
+    spans: dict,
+    run_end: dt.date,
+    staleness: dt.timedelta,
+) -> bool:
+    """Whether Choice's bars for a leg leave part of its life unpriced.
+
+    No bars at all, bars that start after the leg was first needed, or bars
+    that stop well before it stops mattering. Any of those is a stretch the
+    model would otherwise fill, so it is worth asking the backup about.
+    """
+    span = spans.get(key)
+    if span is None:
+        return True
+    _, first_bar, last_bar, _ = span
+    if first_bar is None or last_bar is None:
+        return True
+    if first_bar > first_needed + staleness:
+        return True
+    expiry = key[0]
+    needed_until = dt.datetime.combine(min(expiry, run_end), dt.time(15, 0), tzinfo=IST)
+    return last_bar < needed_until - dt.timedelta(days=1)
+
+
+class OfficialCloses(dict):
+    """NIFTY's official close by day, and which of them came from the backup."""
+
+    def __init__(self, closes: dict[dt.date, float] | None = None, backup_days=()) -> None:
+        super().__init__(closes or {})
+        self.backup_days: list[dt.date] = sorted(backup_days)
+
+
 class BacktestRunner:
     """Runs one backtest for one user on a worker thread."""
 
@@ -172,6 +276,60 @@ class BacktestRunner:
         except Exception:                           # noqa: BLE001
             log.exception("Could not read the stored IV calibration")
             return None
+
+    def _official_closes(
+        self,
+        start: dt.date,
+        end: dt.date,
+        resolution: str,
+        nifty: pd.DataFrame,
+        expiries: list[dt.date],
+        backup: "groww.GrowwBackup | None",
+        notes: list[str],
+    ) -> OfficialCloses:
+        """NIFTY's official close on each expiry in the range.
+
+        Choice's daily candle carries it -- it matched the exchange's close on
+        every monthly expiry of 2026 -- so a daily run already holds it in its
+        own bars and an intraday run fetches the daily series once. The backup
+        is asked only for an expiry Choice has no daily bar for.
+        """
+        wanted = set(expiries)
+        if not wanted:
+            return OfficialCloses()
+        if resolution == "D":
+            daily = nifty
+        else:
+            self._step("settlement", 0.175, "Fetching NIFTY's official closes for settlement")
+            try:
+                daily = self.market.nifty(start, end, "D", strict=False)
+            except ChoiceAuthError:
+                raise
+            except ChoiceError as exc:
+                notes.append(f"Settlement: Choice refused NIFTY's daily closes ({exc})")
+                daily = None
+        closes: dict[dt.date, float] = {}
+        if daily is not None and not daily.empty:
+            for row in daily.itertuples():
+                day = row.ts.date()
+                if day in wanted and float(row.close) > 0:
+                    closes[day] = float(row.close)
+        missing = sorted(wanted - set(closes))
+        from_backup: list[dt.date] = []
+        if missing and backup is not None:
+            found, note = backup.daily_closes(NIFTY, missing)
+            closes.update(found)
+            from_backup = sorted(found)
+            if note:
+                notes.append(f"Settlement: {note}")
+        if not closes:
+            # The replay names each expiry that settled on its last bar, but
+            # only when it was given some closes to compare against.
+            notes.append(
+                "Settlement: no official NIFTY close was available, so every expiry "
+                "settled at its last bar"
+            )
+        return OfficialCloses(closes, from_backup)
 
     def _step(self, stage: str, progress: float, message: str = "") -> None:
         self.job.stage = stage
@@ -211,19 +369,66 @@ class BacktestRunner:
         # Where this run's fetch reports begin; the list belongs to the session.
         report_mark = len(getattr(market, "reports", []) or [])
         self._step("spot", 0.05, f"Fetching NIFTY {start} to {end}")
-        nifty = market.nifty(start, end, resolution)
+        # Choice first. The backup source is asked only about what Choice did
+        # not supply: a trading day with no NIFTY or VIX bars, and -- below --
+        # an option contract with no usable history.
+        #
+        # Which days traded comes from Choice's own daily VIX where it has
+        # one: the shipped calendar lists only the fixed-date holidays, so on
+        # its own it would send every Holi and Good Friday to the backup and
+        # then report them missing from both.
+        backup = groww.shared_backup()
+        backup_notes: list[str] = []
+        choice_vix = dict(market.vix_by_date(start, end))
+        sessions = expected_sessions(start, end)
+        if choice_vix:
+            sessions = {d for d in sessions if d in choice_vix}
+        nifty, nifty_backup, note, choice_error = _fetch_with_backup(
+            lambda: market.nifty(start, end, resolution, strict=False),
+            NIFTY, sessions, resolution, backup,
+        )
+        if choice_error:
+            backup_notes.append(f"NIFTY: Choice refused the request ({choice_error})")
+        if note:
+            backup_notes.append(f"NIFTY: {note}")
         if nifty.empty:
             raise ChoiceError(
-                "Choice returned no NIFTY spot data for this range. "
-                "Try a shorter range or a daily resolution."
+                "Choice returned no NIFTY spot data for this range"
+                + (f" ({choice_error})" if choice_error else "")
+                + (f", and the backup source could not fill it: {note}" if note else "")
+                + ". Try a shorter range or a daily resolution."
             )
         spots = spots_from_frame(nifty)
+        session_days = sorted({when.date() for when, _ in spots})
 
-        self._step("vix", 0.12, "Fetching India VIX")
-        vix_map = market.vix_by_date(start, end)
+        self._step("vix", 0.12, "Checking India VIX")
+        vix_map = dict(choice_vix)
+        vix_daily_backup: list[dt.date] = []
+        without_close = [d for d in session_days if d not in vix_map]
+        if without_close:
+            closes, note = (
+                backup.daily_closes(INDIA_VIX, without_close) if backup is not None
+                else ({}, "no backup source is configured")
+            )
+            vix_map.update(closes)
+            vix_daily_backup = sorted(closes)
+            left = len(without_close) - len(closes)
+            if left:
+                backup_notes.append(
+                    f"India VIX: {left} day(s) with no daily close from Choice or the backup source"
+                    + (f" ({note})" if note else "")
+                )
         if vix_map:
-            surface = from_vix(list(vix_map.values())[-1])
-            vol_source = "choice:INDIAVIX"
+            # The latest day's level, not the last one added: backup days are
+            # added after Choice's and can sit anywhere in the range.
+            surface = from_vix(vix_map[max(vix_map)])
+            choice_days = len(vix_map) - len(vix_daily_backup)
+            if not vix_daily_backup:
+                vol_source = "choice:INDIAVIX"
+            elif choice_days:
+                vol_source = f"choice:INDIAVIX + backup ({len(vix_daily_backup)} day(s))"
+            else:
+                vol_source = "backup:INDIAVIX"
         else:
             surface = IVSurface(atm_vol=DEFAULT_ATM_VOL)
             vol_source = f"default:{DEFAULT_ATM_VOL:.0%}"
@@ -307,10 +512,52 @@ class BacktestRunner:
         )
         expiry_for = weekly_expiry_resolver(expiries, min_dte=1)
 
+        # India VIX as it stood at each bar, for the premium model and the
+        # entry rule alike. A daily close would price a 10:00 entry -- and
+        # decide whether to open it -- on a number not known until 15:30.
+        # Daily closes back up a day with no intraday bars, from that day's
+        # close onwards only.
+        self._step("vix", 0.17, "Fetching India VIX bars")
+        vix_bars, vix_intraday_backup, note, choice_error = _fetch_with_backup(
+            lambda: market.india_vix(start, end, resolution, strict=False),
+            INDIA_VIX, set(session_days), resolution, backup,
+        )
+        if choice_error:
+            backup_notes.append(f"India VIX bars: Choice refused the request ({choice_error})")
+        if note:
+            backup_notes.append(f"India VIX bars: {note}")
+        bars_from_backup = set(vix_intraday_backup)
+        closes_from_backup = set(vix_daily_backup)
+        vix_lookup = VixAsOf(
+            resolution,
+            bars=(
+                (row.ts.to_pydatetime(), float(row.close),
+                 "backup" if row.ts.date() in bars_from_backup else "choice")
+                for row in vix_bars.itertuples()
+            ),
+            daily=(
+                (day, value, "backup" if day in closes_from_backup else "choice")
+                for day, value in vix_map.items()
+            ),
+        )
+        vix_series: list[float | None] | None = None
+        vix_readings: dict[str, int] = {}
+        if params.strategy.max_entry_vix is not None:
+            aligned = vix_lookup.align([when for when, _ in spots])
+            vix_series, vix_readings = aligned.values, aligned.counts
+
+        # What NSE settles against: NIFTY's official close on each expiry.
+        # Choice's daily candle carries it; the backup is asked only for an
+        # expiry Choice has no daily bar for.
+        settlement = self._official_closes(
+            start, end, resolution, nifty,
+            [e for e in expiries if first_day <= e <= last_day], backup, backup_notes,
+        )
+
         # Pass 1 is cheap and tells us exactly which legs to fetch, instead of
         # pulling the entire option chain.
         self._step("plan", 0.18, "Planning which option legs are needed")
-        _, requirements = discover_requirements(spots, params, expiry_for)
+        _, requirements = discover_requirements(spots, params, expiry_for, vix_series)
 
         candles = CandlePriceProvider()
         fetched = 0
@@ -375,12 +622,62 @@ class BacktestRunner:
                 "[%s] %d of %d legs had no Choice premium; %d scrip master(s) consulted",
                 job.job_id, len(missing), total, instruments.downloads,
             )
+        # The backup source, for every leg Choice's history leaves unpriced --
+        # above all an expired contract, which Choice answers with nothing.
+        backup_candles = CandlePriceProvider(source=PriceSource.BACKUP)
+        backup_found: list[str] = []
+        short = [
+            req for req in requirements
+            if _choice_falls_short(
+                (req.expiry, float(req.strike), req.right), req.first_needed, spans, end,
+                candles.max_staleness,
+            )
+        ]
+        if short and backup is not None:
+            failures = 0
+            last_error = ""
+            for i, req in enumerate(short, 1):
+                self._step(
+                    "backup", 0.86 + 0.03 * (i / len(short)),
+                    f"Fetching option {i} of {len(short)} from the backup source "
+                    f"({req.strike:g} {req.right} {req.expiry})",
+                )
+                try:
+                    frame = backup.option_candles(
+                        req.expiry, req.strike, req.right,
+                        req.first_needed.date() - dt.timedelta(days=1), end,
+                        p.get("option_resolution") or resolution,
+                    )
+                except groww.BackupUnavailable as exc:
+                    failures += 1
+                    last_error = str(exc)
+                    if failures >= 3 and not backup_found:
+                        # Three refusals before a single success is a sign-in
+                        # or plan problem, not a missing contract; asking about
+                        # the rest would only repeat it.
+                        break
+                    continue
+                if not frame.empty:
+                    backup_candles.add(req.expiry, req.strike, req.right, frame)
+                    backup_found.append(f"{req.expiry} {req.strike:g}{req.right}")
+            if last_error:
+                backup_notes.append(f"Option legs: the backup source failed on {failures} leg(s) ({last_error})")
+        elif short:
+            backup_notes.append(
+                f"Option legs: {len(short)} leg(s) had no usable Choice history and no backup "
+                "source is configured, so they were modelled"
+            )
+
         self._step("replay", 0.90, "Replaying the ladder")
         provider = FallbackPriceProvider(
             primary=candles,
-            fallback=ModelPriceProvider(surface=surface, vix_by_date=vix_map or None),
+            secondary=backup_candles if backup_candles.candles else None,
+            fallback=ModelPriceProvider(surface=surface, vix_at=vix_lookup.at),
         )
-        result = Backtest(params, provider, expiry_for).run(spots)
+        result = Backtest(params, provider, expiry_for).run(spots, vix_series, settlement)
+        if backup_notes:
+            # A day neither source had is a jump in the replay; say so.
+            result.warnings.extend(backup_notes)
 
         # Which fetched legs were actually priced from their bars. The two
         # were reported as one number, so a leg whose bars never sat near a
@@ -413,12 +710,45 @@ class BacktestRunner:
             )
 
         self._step("serialise", 0.97, "Building the dashboard dataset")
+        used_backup = sorted(k for k, n in backup_candles.hits_by_key.items() if n > 0)
+        settled_official = sorted(e for e in settlement if e <= last_day)
+        backup_used = bool(
+            nifty_backup or vix_daily_backup or vix_intraday_backup or used_backup
+            or settlement.backup_days
+        )
+        if not nifty_backup:
+            spot_source = "choice:NIFTY"
+        elif len(nifty_backup) >= len(session_days):
+            spot_source = "backup:NIFTY"
+        else:
+            spot_source = f"choice:NIFTY + backup ({len(nifty_backup)} day(s))"
+        if provider.modeled_quotes == 0:
+            note_text = (
+                "All prices sourced from Choice FinX." if not backup_used
+                else "Every price is a real traded price: from Choice FinX, and where Choice "
+                     "had none, from the backup source -- listed below."
+            )
+        else:
+            note_text = (
+                f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
+                "the price lookups in this replay came from the model rather than a real "
+                "candle -- Black-76, driven by India VIX and a strike skew. The breakdown "
+                "by leg is below."
+            )
+        if fetched and used_backup:
+            premium_source = "choice:ChartData + backup"
+        elif fetched:
+            premium_source = "choice:ChartData"
+        elif used_backup:
+            premium_source = "backup"
+        else:
+            premium_source = "modeled:black76"
         provenance = {
-            "spot_source": "choice:NIFTY",
+            "spot_source": spot_source,
             "vol_source": vol_source,
             "term_exponent": term_exponent,
             "iv_calibration": calibration,
-            "premium_source": "choice:ChartData" if fetched else "modeled:black76",
+            "premium_source": premium_source,
             # Why a leg is modelled, split by cause, because the three are
             # different problems: one is fixed by a shorter range, one by a
             # correct expiry, and one cannot be fixed at all.
@@ -443,16 +773,39 @@ class BacktestRunner:
             # calendar did not know about.
             "expiries_corrected": {k.isoformat(): v.isoformat() for k, v in corrected.items()},
             "expiries_listed": len(expiries) - len(derived_expiries),
-            "verified": provider.modeled_quotes == 0,
-            "note": (
-                "All prices sourced from Choice FinX."
-                if provider.modeled_quotes == 0
-                else (
-                    f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
-                    "the price lookups in this replay came from the model rather than a real "
-                    "Choice candle -- Black-76, driven by Choice-sourced India VIX and a strike "
-                    "skew. The breakdown by leg is below."
-                )
+            # "Everything from Choice": no modelled premium and no backup day.
+            "verified": provider.modeled_quotes == 0 and not backup_used,
+            "note": note_text,
+            # What came from the backup source, day by day and leg by leg. It
+            # is never named: on the dashboard it is "the backup source".
+            "backup": {
+                "provider": "backup",
+                "configured": backup is not None,
+                "used": backup_used,
+                "nifty_days": [d.isoformat() for d in nifty_backup],
+                "vix_bar_days": [d.isoformat() for d in vix_intraday_backup],
+                "vix_close_days": [d.isoformat() for d in vix_daily_backup],
+                "settlement_days": [d.isoformat() for d in settlement.backup_days],
+                "option_legs_asked": len(short) if backup is not None else 0,
+                "option_legs_found": len(backup_found),
+                "option_legs_used": len(used_backup),
+                "notes": backup_notes,
+            },
+            # Legs priced from the backup at least once. Counted apart from the
+            # Choice split above, which still says what Choice itself served.
+            "legs_backup": len(used_backup),
+            # Which expiries settled against the official close.
+            "settlement": {
+                "official_close": len(settled_official),
+                "last_bar": sorted(
+                    e.isoformat() for e in {c.expiry for c in result.condors}
+                    if e <= last_day and e not in settlement
+                ),
+            },
+            # How the VIX rule shaped the run; absent when the run had no limit.
+            "vix_gate": (
+                {**result.vix_gate, "readings": vix_readings, "resolution": resolution}
+                if result.vix_gate else None
             ),
             "resolution": resolution,
             "generated_at": dt.datetime.now(tz=IST).isoformat(),
@@ -544,8 +897,7 @@ class JobStore:
                 # with how it was computed. Saying so beats showing it.
                 return empty_bundle(
                     "Your last backtest was produced before a correctness fix and is no longer "
-                    "shown: historical condors were given the nearest expiry still listed today, "
-                    "so weeklies were priced as six-month options. Run it again for real numbers.",
+                    f"shown: {RETIRED_BECAUSE}. Run it again for corrected numbers.",
                     awaiting_connection=False,
                 )
             return empty_bundle(

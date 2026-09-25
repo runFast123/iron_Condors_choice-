@@ -6,8 +6,11 @@ Backtest and forward-test a laddered NIFTY iron-condor strategy on Choice FinX d
 order-placement path does not exist in the codebase, so there is nothing to arm, disarm or
 misconfigure. Choice is used strictly read-only: sign-in, scrip master, candles and quotes.
 
-**Choice FinX is the only data source** — historical and live. There is no third-party market-data
-vendor anywhere in this project.
+**Choice FinX is the data source** — historical and live. The one exception is a backtest backup:
+a second broker's historical API, asked only for what Choice cannot supply — option contracts with
+no usable Choice history (above all expired ones) and days with no NIFTY or India VIX bars. Everything
+it supplies is listed on the run's Data Health page, live runs never use it, and the dashboard never
+names it.
 
 **Multi-user:** each person signs in with their own Choice credentials. There is no master API key,
 and no user can see another's session, positions or logs.
@@ -37,6 +40,13 @@ Rules confirmed and implemented:
   the same ladder a gradual decline would.
 - **Exits.** Hold to expiry by default, with optional per-rung take-profit (% of credit) and
   stop-loss (× credit).
+- **VIX rule** (ladder and HIC; on at 15 for every new run and backtest, editable, clearable). No
+  new position opens while India VIX is above the limit; open positions are untouched. When VIX is
+  back below it, the ladder carries on from the current price: the level NIFTY is at opens, levels
+  beyond it open as they are reached, and the levels passed in between are skipped rather than all
+  opened at once. A month that starts while VIX is high places its anchor when VIX first drops
+  below the limit. A reading exactly on the limit changes nothing; no reading counts as too high.
+  Runs started before the rule existed keep trading without it.
 
 ### Why the legs cancel
 
@@ -103,8 +113,9 @@ so **no Choice call can originate from Vercel**. Hence the split:
 [Vercel]  Next.js app (auth, UI, server routes)
                 │  X-Engine-Key + Bearer token
                 ▼
-[Your static IP]  FastAPI engine ──HTTPS/WSS──▶  [Choice FinX API]   ← the only source
+[Your static IP]  FastAPI engine ──HTTPS/WSS──▶  [Choice FinX API]   ← every live price
                    one Choice session per signed-in user
+                   (backtests only: a backup source for what Choice cannot supply)
 ```
 
 Vercel never talks to Choice — its egress IPs are dynamic and would be rejected. It calls the
@@ -119,7 +130,8 @@ engine/
   pricing/      Black-76, IV surface, Indian F&O cost model
   strategy/     ladder trigger, condor construction, netting
   backtest/     two-pass runner, price providers, metrics
-  data/         market data — Choice only (spot, India VIX, options, live quotes)
+  data/         market data — Choice (spot, India VIX, options, live quotes); groww.py is the
+                backtest-only backup source
   tools/        doctor (connectivity diagnostic), seed (dataset builder)
 web/            Next.js 15 dashboard
 ```
@@ -167,7 +179,7 @@ than forking it, and fixes the following in `engine/choice/`:
 
 ---
 
-## Data sources — Choice only
+## Data sources — Choice, with one backtest backup
 
 | Series | Choice source |
 |---|---|
@@ -176,6 +188,24 @@ than forking it, and fixes the following in `engine/choice/`:
 | Option premiums | per-leg option tokens → `api/OpenGraph/ChartData` |
 | Expiries, strikes, lot size | the daily scrip master CSV |
 | Live quotes | `api/OpenAPI/MultipleTouchline` + the FIX3.0 streaming feed |
+
+**Backup (backtests only).** `engine/data/groww.py` wraps a second broker's backtesting API, which
+serves exact contracts — expired ones included — back to 2020. A backtest asks it for an option leg
+only when Choice's history for that leg is missing or incomplete, and for NIFTY or India VIX only on a
+trading day Choice returned no bars for. Choice always wins where it has a price. Backup bars are
+restamped at bar close the way Choice stamps its candles, so none can look known before it closed.
+Every leg and day it supplied is named in the run's provenance and on the Data Health page (as "the
+backup source" — the dashboard names no provider but Choice), a run that used any is not marked
+verified, and live runs never touch it. Configure it with the `BACKUP_DATA_*` settings in
+`.env.engine.local` (see `.env.example`); left blank, those legs are modelled as before.
+
+**Settlement.** Expiries settle against NIFTY's official closing price — the average of the final
+half hour that NSE settles index options on — taken from Choice's daily candle. The last five-minute
+bar is not used: on six of the eight 2026 monthly expiries it sat 18–61 points from the official
+figure.
+
+**Modelled premiums** use India VIX as it stood at that moment, from Choice's intraday VIX bars — never
+the day's close, which is not known until 15:30.
 
 Every price carries a source tag, surfaced as a badge throughout the UI:
 

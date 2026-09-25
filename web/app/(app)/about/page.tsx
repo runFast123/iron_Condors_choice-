@@ -236,6 +236,16 @@ export default async function AboutPage() {
               so an overnight move builds the same ladder a gradual move would.
             </li>
             <li>
+              <strong>The VIX rule, both strategies:</strong> no new position opens while India VIX
+              is above the run&rsquo;s limit (15 unless changed); open positions are not touched.
+              When VIX is back below it, the ladder carries on from wherever NIFTY is: the level
+              NIFTY is at opens, levels beyond it open as they are reached, and the levels passed
+              in between are skipped rather than opened all at once. A month that starts while VIX
+              is high places its anchor &mdash; and, for HIC, its core band &mdash; only when VIX
+              first drops below the limit. A reading exactly on the limit changes nothing; no
+              reading at all counts as too high.
+            </li>
+            <li>
               <strong>Caps:</strong> positions are bounded by <code>max_condors</code> (e.g. 20),
               and the ladder takes optional per-side caps (<code>max_down</code>,{" "}
               <code>max_up</code>) on top. HIC derives its own from the band and the spread counts.
@@ -271,6 +281,7 @@ export default async function AboutPage() {
                   ["Anchor mode", params.anchor_mode],
                   ["Skip late entries", params.min_entry_dte == null ? "Off" : `Under ${params.min_entry_dte} days to expiry`],
                   ["Minimum credit", params.min_credit_ratio == null ? "Off" : `${pct(params.min_credit_ratio)} of the wing`],
+                  ["Pause new positions above India VIX", params.max_entry_vix == null ? "Off" : String(params.max_entry_vix)],
                   ["Take profit", params.take_profit_pct == null ? "Off - held to expiry" : pct(params.take_profit_pct) + " of credit"],
                   ["Stop loss", params.stop_loss_mult == null ? "Off - held to expiry" : `${params.stop_loss_mult}x credit`],
                 ].map(([k, v]) => (

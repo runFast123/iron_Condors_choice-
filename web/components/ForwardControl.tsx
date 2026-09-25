@@ -92,6 +92,9 @@ export function ForwardControl({
   // Ladder-only entry filters. "" is off, the default.
   const [minDte, setMinDte] = useState<number | "">("");
   const [minCredit, setMinCredit] = useState<number | "">("");
+  // The VIX rule, both strategies: no new positions while India VIX is above
+  // this. On at 15 for a new run; cleared ("") switches it off.
+  const [maxVix, setMaxVix] = useState<number | "">(15);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -278,6 +281,9 @@ export function ForwardControl({
         step: 100,
         poll_seconds: 10,
         expiry_cadence: cadence,
+        // Null, not omitted, when cleared: an omitted field takes the
+        // engine's default of 15, which is the opposite of "off".
+        max_entry_vix: maxVix === "" ? null : Number(maxVix),
         ...(strategy === "hic"
           ? {
               full_band_steps: bandSteps,
@@ -346,6 +352,25 @@ export function ForwardControl({
    * how a number gets trusted more than it deserves.
    */
   const notes: { key: string; tone: "warn" | "info"; body: ReactNode }[] = [];
+  // First, because it explains why nothing new is opening -- which otherwise
+  // looks exactly like a run that has stopped working.
+  const vix = state?.vix;
+  if (vix?.limit != null && vix.paused) {
+    notes.push({
+      key: "vix-paused",
+      tone: "warn",
+      body: (
+        <>
+          <strong>New positions paused.</strong>{" "}
+          {vix.problem
+            ? `There is no usable India VIX reading (${vix.problem}), and the rule does not trade blind.`
+            : `India VIX is ${vix.value != null ? vix.value.toFixed(2) : "—"}, above this run's limit of ${vix.limit}.`}{" "}
+          Open positions are unaffected. Entries resume once VIX is back below {vix.limit}, from
+          wherever NIFTY is then{state?.ladder.anchor == null ? " — this month's anchor is placed at that moment" : ""}.
+        </>
+      ),
+    });
+  }
   if (unmarked > 0) {
     const allUnmarked = unmarked === (state?.pnl.open_condors ?? 0);
     notes.push({
@@ -713,6 +738,24 @@ export function ForwardControl({
                 />
               </label>
 
+              <label style={FIELD}>
+                Pause above VIX
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={0.5}
+                  value={maxVix}
+                  placeholder="Off"
+                  onChange={(e) => setMaxVix(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ width: 90 }}
+                />
+                <span style={{ ...HINT, maxWidth: 170 }}>
+                  No new positions while India VIX is above this. Clear to switch off.
+                </span>
+              </label>
+
               {strategy !== "hic" && (
                 <>
                   <label style={FIELD}>
@@ -927,6 +970,14 @@ export function ForwardControl({
                   label="Next up"
                   value={state?.ladder.next_up != null ? num(state.ladder.next_up) : "—"}
                   hint={shapeHint(state?.ladder.next_up_kind)}
+                />
+              )}
+              {state?.vix?.limit != null && (
+                <Metric
+                  label={state.vix.paused ? "India VIX (paused)" : "India VIX"}
+                  value={state.vix.value != null ? state.vix.value.toFixed(2) : "—"}
+                  tone={state.vix.paused ? "neg" : undefined}
+                  hint={`limit ${state.vix.limit}`}
                 />
               )}
               <Metric label="Self-hedged" value={pct(state?.netting.offset_ratio ?? 0)} />

@@ -217,8 +217,10 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                                       {legPnl == null ? "--" : inr(legPnl, { sign: true })}
                                     </td>
                                     <td>
-                                      <Badge tone={leg.source === "choice" ? "pos" : "warn"}>
-                                        {leg.source === "choice" ? "CHOICE" : "MODELED"}
+                                      <Badge
+                                        tone={leg.source === "choice" ? "pos" : leg.source === "backup" ? "brand" : "warn"}
+                                      >
+                                        {leg.source === "choice" ? "CHOICE" : leg.source === "backup" ? "BACKUP" : "MODELED"}
                                       </Badge>
                                     </td>
                                   </tr>

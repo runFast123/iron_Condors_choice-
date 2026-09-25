@@ -174,6 +174,9 @@ class RunBacktestRequest(BaseModel):
     # Ladder entry filters. Ignored for HIC. Off unless set.
     min_entry_dte: int | None = Field(default=None, ge=0, le=45)
     min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
+    # No new positions while India VIX is above this; both strategies. On at
+    # 15 unless the request says otherwise -- null switches it off.
+    max_entry_vix: float | None = Field(default=15.0, gt=0, le=100)
     roll: bool = True
     # Weekly or monthly contracts.
     expiry_cadence: str = Field(default="monthly", pattern="^(weekly|monthly)$")
@@ -301,6 +304,10 @@ class StartForwardRequest(BaseModel):
     # Ladder entry filters. Ignored for HIC. Off unless set.
     min_entry_dte: int | None = Field(default=None, ge=0, le=45)
     min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
+    # No new positions while India VIX is above this; both strategies. On at
+    # 15 for every new run unless the request says otherwise -- null switches
+    # it off. Runs already trading keep the rules they started with.
+    max_entry_vix: float | None = Field(default=15.0, gt=0, le=100)
 
 
 # ----------------------------------------------------------------- dependencies
@@ -898,6 +905,7 @@ def _strategy_config(
         strike_step=strike_step,
         take_profit_pct=body.take_profit,
         stop_loss_mult=body.stop_loss,
+        max_entry_vix=body.max_entry_vix,
     )
     if body.strategy == LADDER:
         return StrategyConfig(

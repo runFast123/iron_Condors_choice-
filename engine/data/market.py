@@ -1,9 +1,15 @@
 """Market data — Choice FinX only.
 
 This is the single entry point for every price the engine consumes, historical
-and live. There is deliberately no third-party fallback: Choice is the only
-permitted source, so a gap in Choice data surfaces as an explicit error rather
-than being quietly papered over with a different vendor's numbers.
+and live, and it serves Choice's data and nothing else. There is no third-party
+fallback in here, so a gap in Choice data surfaces as a gap rather than being
+quietly papered over with a different vendor's numbers.
+
+The one backup that exists lives outside this class, in
+:mod:`engine.data.groww`, and only a backtest reaches for it: for an option
+contract Choice has no usable history for, or a trading day Choice returned no
+NIFTY or India VIX bars for, it asks the backup source, and every price it
+takes is counted in that run's provenance. Live runs never see it.
 
 Everything routes through :class:`~engine.choice.history.HistoryClient`, which
 means every fetch inherits its chunking, retries, epoch calibration and typed
@@ -58,6 +64,10 @@ _ASK_KEYS = ("BestAskPrice", "AskPrice", "Ask", "SellPrice", "BestSellPrice", "B
 # its own previous tick.
 QUOTE_TTL = 3.0
 QUOTE_CACHE_MAX = 4_000
+
+# How long an India VIX reading may be reused by the entry rule. VIX moves in
+# hundredths over minutes; the rule compares it with a whole number.
+VIX_QUOTE_TTL = 60.0
 
 # How long to remember that the touchline does not serve a token.
 #
@@ -306,28 +316,50 @@ class ChoiceMarketData:
     ) -> pd.DataFrame:
         return self.candles(self.master.index(name), start, end, resolution, strict=strict)
 
-    def nifty(self, start, end, resolution: str = "D") -> pd.DataFrame:
-        """The underlying series the ladder runs on."""
-        return self.index_candles(NIFTY, start, end, resolution)
+    def nifty(self, start, end, resolution: str = "D", *, strict: bool = True) -> pd.DataFrame:
+        """The underlying series the ladder runs on.
 
-    def india_vix(self, start, end, resolution: str = "D") -> pd.DataFrame:
-        """India VIX, used as the at-the-money volatility level."""
-        return self.index_candles(INDIA_VIX, start, end, resolution)
+        `strict=False` keeps whatever windows Choice did serve when others
+        failed, for a caller that can say which days are missing.
+        """
+        return self.index_candles(NIFTY, start, end, resolution, strict=strict)
+
+    def india_vix(self, start, end, resolution: str = "D", *, strict: bool = True) -> pd.DataFrame:
+        """India VIX: the at-the-money volatility level, and the entry rule's input."""
+        return self.index_candles(INDIA_VIX, start, end, resolution, strict=strict)
 
     def vix_by_date(self, start, end) -> dict[dt.date, float]:
         """Daily India VIX closes keyed by date.
 
         Returns an empty mapping if Choice has no VIX series, rather than
-        substituting a constant: the caller decides whether to proceed.
+        substituting a constant: the caller decides whether to proceed. Keeps
+        the days Choice did serve when part of the range failed, since one bad
+        window used to cost every day of the run its VIX.
         """
         try:
-            frame = self.india_vix(start, end, "D")
+            frame = self.india_vix(start, end, "D", strict=False)
         except (ChoiceError, ChoiceInstrumentError) as exc:
             log.warning("India VIX unavailable from Choice: %s", exc)
             return {}
         if frame.empty:
             return {}
         return {row.ts.date(): float(row.close) for row in frame.itertuples()}
+
+    def india_vix_now(self) -> tuple[float, dt.datetime | None]:
+        """India VIX as it stands, and when that reading printed.
+
+        For the entry rule, which needs the level, not the last second of it:
+        a reading up to a minute old is reused, so every run a user has open
+        shares one fetch a minute instead of making one per tick each. The
+        index is not served by the live book, so this is normally the close
+        of the latest one-minute candle -- the timestamp says how fresh.
+        Raises ChoiceError when Choice has nothing.
+        """
+        contract = self.master.index(INDIA_VIX)
+        quote = self.quotes([contract], max_age=VIX_QUOTE_TTL).get(contract.token)
+        if quote is None or not quote.ltp > 0:
+            raise ChoiceNoDataError("Choice returned no India VIX reading")
+        return float(quote.ltp), quote.as_of
 
     def listed_expiries_near(self, day: dt.date) -> list[dt.date]:
         """NIFTY expiries in the scrip master Choice published a few days before `day`.

@@ -175,6 +175,7 @@ export function ProvenanceBanner({
   awaiting = false,
   hasData = true,
   legs,
+  backupFraction = 0,
 }: {
   verified: boolean;
   realFraction: number;
@@ -189,7 +190,12 @@ export function ProvenanceBanner({
     unused?: number;
     unresolved?: number;
     emptyExpiries?: string[];
+    /** Priced from the backup source at least once. */
+    backup?: number;
   };
+  /** Share of price lookups the backup source answered. Counted inside
+   *  realFraction: a backup price is a real traded price, not a model. */
+  backupFraction?: number;
 }) {
   if (awaiting) return <AwaitingConnection note={note} />;
 
@@ -211,9 +217,11 @@ export function ProvenanceBanner({
         className="card"
         style={{ padding: "10px 14px", display: "flex", gap: 9, alignItems: "center", borderColor: "var(--pos)" }}
       >
-        <Badge tone="pos">VERIFIED</Badge>
+        <Badge tone="pos">{backupFraction > 0 ? "REAL PRICES" : "VERIFIED"}</Badge>
         <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
-          All option premiums are real Choice FinX candles.
+          {backupFraction > 0
+            ? `Every option premium is a real traded price: ${(100 * (1 - backupFraction)).toFixed(0)}% from Choice FinX, ${(100 * backupFraction).toFixed(0)}% from the backup source for contracts Choice has no history for.`
+            : "All option premiums are real Choice FinX candles."}
         </span>
       </div>
     );
@@ -259,8 +267,12 @@ export function ProvenanceBanner({
                 }.`
               : ""}
             {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
-            {" "}So far only the expiry that is currently trading has priced reliably from
-            real data; a range inside it is the most trustworthy test.
+            {legs.backup
+              ? ` Of the legs Choice could not price, ${legs.backup} were priced from real candles from the backup source instead.`
+              : ""}
+            {legs.backup
+              ? ""
+              : " So far only the expiry that is currently trading has priced reliably from real data; a range inside it is the most trustworthy test."}
           </p>
         ) : null}
       </div>
@@ -271,8 +283,9 @@ export function ProvenanceBanner({
 /**
  * Shown when Choice has not been connected.
  *
- * Choice is the only permitted data source, so with no session there is
- * genuinely nothing to display. Showing an empty state — and the exact steps
+ * Choice is this project's data source -- the backup source only fills what
+ * a backtest could not get from Choice, and a backtest needs Choice anyway --
+ * so with no session there is genuinely nothing to display. Showing an empty state — and the exact steps
  * to fix it — is the honest alternative to filling the page with numbers from
  * a source this project is not allowed to use.
  */
@@ -296,7 +309,7 @@ export function AwaitingConnection({ note }: { note?: string }) {
           <h2 style={{ margin: 0, fontSize: 14.5, fontWeight: 700 }}>Awaiting Choice FinX connection</h2>
           <p style={{ margin: "5px 0 0", fontSize: 12.5, color: "var(--ink-muted)", maxWidth: "84ch", lineHeight: 1.6 }}>
             {note ??
-              "Choice is the only permitted data source for this project, so there is nothing to display until credentials are configured."}
+              "Choice FinX is this project's data source, so there is nothing to display until credentials are configured."}
           </p>
         </div>
       </div>

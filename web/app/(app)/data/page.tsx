@@ -11,12 +11,18 @@ export default async function DataHealthPage() {
   const failures = provenance.failures ?? [];
   const legsTotal = provenance.legs_requested ?? 0;
   const legsReal = provenance.legs_with_choice_data ?? 0;
+  const backup = provenance.backup;
+  const gate = provenance.vix_gate;
+  const settlement = provenance.settlement;
+  // Results from before the backup existed carry only the combined count.
+  const choiceQuotes = p.choice_quotes ?? p.real_quotes;
+  const backupQuotes = p.backup_quotes ?? 0;
 
   return (
     <>
       <PageHeader
         title="Data Health"
-        subtitle="Choice FinX is the only data source this project uses, for both historical and live prices. A failed fetch is shown here as a failure, with the broker's own message, rather than silently becoming an empty result."
+        subtitle="Choice FinX is the source for every price, historical and live. A backtest turns to its backup source only for what Choice did not supply — an option contract with no usable history, or a trading day with no NIFTY or India VIX bars — and everything it took is listed here. Live runs never use it. A failed fetch is shown as a failure, with the broker's own message, rather than silently becoming an empty result."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -34,10 +40,18 @@ export default async function DataHealthPage() {
             <Stat label="Quotes" value={num(p.total_quotes)} hint="premium lookups" />
             <Stat
               label="Real (Choice)"
-              value={num(p.real_quotes)}
-              tone={p.real_quotes > 0 ? "pos" : "neg"}
-              hint={pct(p.real_fraction)}
+              value={num(choiceQuotes)}
+              tone={choiceQuotes > 0 ? "pos" : "neg"}
+              hint={pct(p.total_quotes ? choiceQuotes / p.total_quotes : 0)}
             />
+            {backupQuotes > 0 && (
+              <Stat
+                label="Real (backup)"
+                value={num(backupQuotes)}
+                tone="pos"
+                hint={pct(p.backup_fraction ?? 0)}
+              />
+            )}
             <Stat
               label="Modeled"
               value={num(p.modeled_quotes)}
@@ -50,7 +64,7 @@ export default async function DataHealthPage() {
 
         <Card
           title="Sources"
-          hint="Every series below is served by Choice FinX. There is no third-party data vendor in this project."
+          hint="Every series below is served by Choice FinX, except where a badge says BACKUP: the backtest's backup source, used only where Choice had nothing."
           pad={0}
         >
           <div className="scroll-x">
@@ -69,22 +83,43 @@ export default async function DataHealthPage() {
                   source={provenance.spot_source}
                   ok={!awaiting}
                   awaiting={awaiting}
-                  note="Index token resolved from the scrip master, candles via api/OpenGraph/ChartData."
+                  note="Index token resolved from the scrip master, candles via api/OpenGraph/ChartData. A trading day Choice returned no bars for is taken from the backup source and listed below."
                 />
                 <Row
                   name="India VIX"
                   source={provenance.vol_source}
                   ok={!awaiting && provenance.vol_source.startsWith("choice")}
                   awaiting={awaiting}
-                  note="Drives the at-the-money volatility level. Falls back to a flat default only if Choice has no INDIAVIX series."
+                  note="Sets the at-the-money volatility of every modelled premium, read as it stood at that moment rather than at the day's close. A day Choice has no data for is taken from the backup source; a flat default is used only if neither has a series."
                 />
+                {gate && (
+                  <Row
+                    name="India VIX, entry rule"
+                    source={`INDIAVIX ${gate.resolution === "D" ? "daily" : `${gate.resolution}-min`} bars`}
+                    ok={!awaiting && (gate.readings.backup ?? 0) === 0 && gate.bars_without_vix === 0}
+                    awaiting={awaiting}
+                    fromBackup={(gate.readings.backup ?? 0) > 0}
+                    note={`No new positions while VIX was above ${gate.limit}: paused on ${pct(gate.paused_fraction)} of bars (${num(gate.paused_bars)} of ${num(gate.bars)}) in ${num(gate.spells)} spell${gate.spells === 1 ? "" : "s"}; ${num(gate.levels_passed)} level${gate.levels_passed === 1 ? "" : "s"} passed while paused.${gate.bars_without_vix ? ` ${num(gate.bars_without_vix)} bars had no reading and could not open anything.` : ""}`}
+                  />
+                )}
                 <Row
                   name="Option premiums"
                   source={provenance.premium_source}
                   ok={!awaiting && legsTotal > 0 && legsReal === legsTotal}
                   awaiting={awaiting}
-                  note="Historical candles per option leg. Any leg Choice cannot serve is modeled with Black-76 and badged MODELED."
+                  fromBackup={(provenance.legs_backup ?? 0) > 0}
+                  note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED).`}
                 />
+                {settlement && (
+                  <Row
+                    name="Expiry settlement"
+                    source="NIFTY official close"
+                    ok={!awaiting && settlement.last_bar.length === 0}
+                    awaiting={awaiting}
+                    fromBackup={(backup?.settlement_days?.length ?? 0) > 0}
+                    note={`What NSE settles index options against, from Choice's daily candle. ${num(settlement.official_close)} expir${settlement.official_close === 1 ? "y" : "ies"} settled on it${settlement.last_bar.length ? `; ${settlement.last_bar.join(", ")} had no official close and settled at the last bar` : ""}.`}
+                  />
+                )}
                 <Row
                   name="Expiries & strikes"
                   source={provenance.expiry_source ?? "choice:scripmaster"}
@@ -103,6 +138,37 @@ export default async function DataHealthPage() {
             </table>
           </div>
         </Card>
+
+        {backup && (backup.used || backup.notes.length > 0) && (
+          <Card
+            title="Backup data"
+            hint="What Choice did not supply, and what filled it. Everything here is a real traded price; nothing from the backup source is ever used in a live run."
+          >
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, lineHeight: 1.8, color: "var(--ink-2)" }}>
+              {(backup.option_legs_used ?? 0) > 0 && (
+                <li>
+                  Option legs priced from the backup source: {num(backup.option_legs_used ?? 0)} (of{" "}
+                  {num(backup.option_legs_asked ?? 0)} Choice had no usable history for)
+                </li>
+              )}
+              {backup.nifty_days.length > 0 && (
+                <li>NIFTY from the backup source on {backup.nifty_days.length} day(s): {backup.nifty_days.join(", ")}</li>
+              )}
+              {backup.vix_bar_days.length > 0 && (
+                <li>India VIX bars from the backup source on {backup.vix_bar_days.length} day(s): {backup.vix_bar_days.join(", ")}</li>
+              )}
+              {backup.vix_close_days.length > 0 && (
+                <li>India VIX closes from the backup source on {backup.vix_close_days.length} day(s): {backup.vix_close_days.join(", ")}</li>
+              )}
+              {(backup.settlement_days?.length ?? 0) > 0 && (
+                <li>Official closes from the backup source for expiry {backup.settlement_days!.join(", ")}</li>
+              )}
+              {backup.notes.map((n, i) => (
+                <li key={i}>{n}</li>
+              ))}
+            </ul>
+          </Card>
+        )}
 
         {failures.length > 0 && (
           <Card
@@ -199,15 +265,22 @@ function Row({
   ok,
   awaiting,
   note,
+  fromBackup,
 }: {
   name: string;
   source: string;
   ok: boolean;
   awaiting: boolean;
   note: string;
+  /** Some of this series came from the backup source. Read from the source
+   *  label when not given. */
+  fromBackup?: boolean;
 }) {
+  const backup = fromBackup ?? source.includes("backup");
   const badge = awaiting ? (
     <Badge tone="brand">NOT CONNECTED</Badge>
+  ) : backup ? (
+    <Badge tone="brand">{source.startsWith("backup") ? "BACKUP" : "CHOICE + BACKUP"}</Badge>
   ) : ok ? (
     <Badge tone="pos">CHOICE</Badge>
   ) : (

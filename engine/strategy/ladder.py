@@ -23,7 +23,9 @@ from dataclasses import dataclass, field
 
 from engine.strategy.condor import ANCHOR_MODES, AnchorMode, StrategyConfig
 
-__all__ = ["ANCHOR_MODES", "AnchorMode", "Ladder", "LadderTrigger", "simulate_levels"]
+__all__ = [
+    "ANCHOR_MODES", "AnchorMode", "Ladder", "LadderTrigger", "PassedLevel", "simulate_levels",
+]
 
 # Guards level arithmetic against float division landing a hair off an exact
 # multiple (e.g. spot 23900 -> 238.99999999999997 before rounding).
@@ -41,6 +43,20 @@ class LadderTrigger:
     # Which way the ladder was going. "gap-fill" happens on both sides, so the
     # reason alone cannot tell you, and P&L is attributed by this.
     side: str = "down"  # "anchor" | "down" | "up"
+
+
+@dataclass(frozen=True)
+class PassedLevel:
+    """A level the market went past while new entries were paused.
+
+    Not a trigger: nothing was opened, and this level will not open later in
+    the campaign. Recorded so a thinner ladder can be told from a broken one.
+    """
+
+    level: float
+    time: dt.datetime       # when entries resumed and the level was passed over
+    spot: float
+    side: str               # "down" | "up"
 
 
 @dataclass
@@ -65,6 +81,12 @@ class Ladder:
     high_level: float | None = None
     fired_levels: set[int] = field(default_factory=set)
     triggers: list[LadderTrigger] = field(default_factory=list)
+    # Whether new entries are held back -- India VIX above the run's limit.
+    # Persisted, because what resuming does depends on whether a pause came
+    # before it, and a restart in the middle of one must not forget it.
+    paused: bool = False
+    # Levels passed over on resuming, this campaign. Informational only.
+    passed: list[PassedLevel] = field(default_factory=list)
 
     # --------------------------------------------------------------- helpers
 
@@ -189,13 +211,28 @@ class Ladder:
         nxt = self.next_up_level
         return None if nxt is None else nxt - spot
 
-    def on_price(self, spot: float, when: dt.datetime) -> list[LadderTrigger]:
+    def on_price(
+        self, spot: float, when: dt.datetime, *, entries_allowed: bool = True
+    ) -> list[LadderTrigger]:
         """Feed one observation; return the levels that should fire now.
 
         Returns an empty list on the overwhelming majority of bars.
+
+        ``entries_allowed`` False pauses the ladder: nothing fires, and nothing
+        moves -- not the bounds, and not the anchor of a campaign that has not
+        placed one yet, which therefore waits and is placed at the first price
+        entries are allowed on. The first price after a pause resumes from
+        where the market is; see ``_resume``.
         """
         if spot is None or not math.isfinite(spot):
             return []
+
+        if not entries_allowed:
+            self.paused = True
+            return []
+        if self.paused:
+            self.paused = False
+            self._resume(spot, when)
 
         fired: list[LadderTrigger] = []
 
@@ -219,6 +256,49 @@ class Ladder:
         if direction in ("up", "both"):
             fired += self._scan_up(spot, when)
         return fired
+
+    def _resume(self, spot: float, when: dt.datetime) -> None:
+        """Carry on from the current price after a pause.
+
+        A paused ladder is not fed, so its bounds still sit where the pause
+        found them. Fed the current price as it stands, a ladder the market has
+        left behind would treat every level in between as a gap and open them
+        all on this one bar, at this one price -- piling up exactly the risk
+        the pause was holding back.
+
+        So each bound is first brought to within one step of the price. The
+        level the market is at then opens on this bar, as it would for any
+        one-step move; the levels beyond it open when the market reaches them;
+        and the levels between the old bound and the price are passed over.
+        Levels the market crossed during the pause and has since come back
+        above (for the down side) stay available, because the bound never
+        moved past them.
+
+        A campaign with no anchor yet has nothing to move: the next price
+        anchors it.
+        """
+        if self.anchor is None:
+            return
+        direction = self.config.direction
+        if direction in ("down", "both") and self.last_level is not None:
+            rebased = min(self.last_level, self._trigger_level(spot) + self.step)
+            top, bottom = self._to_units(self.last_level) - 1, self._to_units(rebased)
+            for units in range(top, bottom - 1, -1):
+                self._pass(units, when, spot, "down")
+            self.last_level = rebased
+        if direction in ("up", "both") and self.high_level is not None:
+            rebased = max(self.high_level, self._up_trigger_level(spot) - self.step)
+            bottom, top = self._to_units(self.high_level) + 1, self._to_units(rebased)
+            for units in range(bottom, top + 1):
+                self._pass(units, when, spot, "up")
+            self.high_level = rebased
+
+    def _pass(self, units: int, when: dt.datetime, spot: float, side: str) -> None:
+        if units in self.fired_levels:
+            return
+        self.passed.append(
+            PassedLevel(level=self._from_units(units), time=when, spot=spot, side=side)
+        )
 
     def _scan_down(self, spot: float, when: dt.datetime) -> list[LadderTrigger]:
         """Unchanged from the down-only ladder, byte for byte in behaviour."""
@@ -350,6 +430,12 @@ class Ladder:
         self.high_level = None
         self.fired_levels.clear()
         self.triggers.clear()
+        self.passed.clear()
+        # `paused` is kept. It is the VIX rule's state, not the campaign's: a
+        # spell that runs through an expiry is one spell, and a reading of
+        # exactly the limit on the new campaign's first bar must leave a paused
+        # ladder paused. It cannot reopen anything -- a campaign with no anchor
+        # has no bounds for a resume to move.
 
     # --------------------------------------------------------- persistence
 
@@ -365,6 +451,7 @@ class Ladder:
             "last_level": self.last_level,
             "high_level": self.high_level,
             "fired_levels": sorted(self.fired_levels),
+            "paused": self.paused,
         }
 
     def load_state(self, raw: dict) -> None:
@@ -376,6 +463,8 @@ class Ladder:
             # fired, so the anchor is the bound.
             self.high_level = self.anchor
         self.fired_levels = set(raw.get("fired_levels") or [])
+        # Absent on state written before the VIX rule, which never paused.
+        self.paused = bool(raw.get("paused", False))
 
 
 def simulate_levels(

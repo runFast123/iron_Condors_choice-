@@ -13,6 +13,7 @@ the two wings never both pay out.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Iterable, Literal, Sequence
@@ -51,10 +52,16 @@ class CondorStatus(str, Enum):
 
 
 class PriceSource(str, Enum):
-    """Where a price came from. Choice is the only external data source."""
+    """Where a price came from.
+
+    Choice is the source. BACKUP is a real traded price from the backtest's
+    backup source, used only where Choice has no history for a contract --
+    never on a live run. MODELED is not a source at all but Black-76.
+    """
 
     CHOICE = "choice"       # a real Choice FinX candle or quote
-    MODELED = "modeled"     # Black-76, from Choice-sourced India VIX
+    BACKUP = "backup"       # a real candle from the backtest's backup source
+    MODELED = "modeled"     # Black-76, from India VIX
 
 
 @dataclass(frozen=True)
@@ -105,6 +112,15 @@ class StrategyConfig:
     # costs. 0.5 is "max loss must not exceed the credit".
     min_credit_ratio: float | None = None
 
+    # No new positions while India VIX is above this; they resume once it is
+    # back below. Unlike the two filters above it applies to HIC as well: it
+    # says when the strategy trades at all, not which rung is worth opening.
+    #
+    # None here, so a run saved before the rule existed resumes without it --
+    # a rule appearing mid-campaign would make it a different strategy from
+    # the one it started as. New runs and backtests get 15 from the API.
+    max_entry_vix: float | None = None
+
     #: HIC's core condors are part of its band structure and are never
     #: filtered; HicConfig turns this off.
     entry_filters_apply: ClassVar[bool] = True
@@ -128,6 +144,8 @@ class StrategyConfig:
             raise ValueError("min_entry_dte cannot be negative")
         if self.min_credit_ratio is not None and not 0 < self.min_credit_ratio < 1:
             raise ValueError("min_credit_ratio must be between 0 and 1")
+        if self.max_entry_vix is not None and not 0 < self.max_entry_vix <= 100:
+            raise ValueError("max_entry_vix must be above 0 and at most 100")
 
     @property
     def effective_anchor_mode(self) -> AnchorMode:
@@ -375,6 +393,31 @@ class PositionUnit:
         self.exit_time = when
         self.exit_reason = reason
         self.exit_costs = costs
+
+
+def vix_allows_entries(vix: float | None, limit: float | None, paused: bool) -> bool:
+    """The VIX rule: no new positions while India VIX is above `limit`.
+
+    Above the limit pauses, below it resumes, and a reading exactly on the
+    line changes nothing -- it is neither above nor below, so a paused ladder
+    stays paused and a trading one keeps trading. That is the rule as stated,
+    and it is why the previous state is an argument.
+
+    With no reading to go on, entries pause. The rule exists to keep the
+    strategy out of volatile markets, and not knowing is not evidence of calm.
+
+    One function for the backtest's two passes and the forward runner, so all
+    three pause and resume on exactly the same readings.
+    """
+    if limit is None:
+        return True
+    if vix is None or not math.isfinite(vix) or vix <= 0:
+        return False
+    if vix > limit:
+        return False
+    if vix < limit:
+        return True
+    return not paused
 
 
 def entry_refusal(unit: "PositionUnit", entry_date: dt.date, config: StrategyConfig) -> str | None:

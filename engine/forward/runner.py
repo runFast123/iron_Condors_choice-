@@ -54,6 +54,7 @@ from engine.strategy.condor import (
     entry_refusal,
     net_positions,
     netting_summary,
+    vix_allows_entries,
 )
 from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
 from engine.strategy.vertical import VerticalSpread
@@ -73,6 +74,17 @@ TICK_PRUNE_EVERY = 500
 # A real iron condor collects a meaningful fraction of its wing width -- tens
 # of percent for a weekly. Below this the premiums are wrong, not merely thin.
 MIN_CREDIT_FRACTION = 0.02
+
+# An India VIX reading older than this is not a reading of now. It arrives as
+# the close of the latest one-minute candle, so in session it is normally a
+# minute or two old; past this the feed has stalled, and the VIX rule pauses
+# entries rather than trade on a stale number.
+VIX_MAX_AGE = dt.timedelta(minutes=15)
+
+# When NIFTY's official close for the day can be read as final. The exchange
+# publishes it after 15:30; a settlement read at the bell could catch a
+# provisional daily candle, so expiry day waits until this before settling.
+OFFICIAL_CLOSE_READY = dt.time(16, 0)
 
 
 class UnsupportedStateVersion(ValueError):
@@ -191,6 +203,15 @@ def _strategy_from_state(
 
 class ForwardRunner:
     """Runs the ladder against live Choice prices."""
+
+    # The VIX rule's last reading, when it printed, and why there was no usable
+    # one when there was not -- shown on the dashboard, because a run that has
+    # stopped opening positions must say why. Class-level defaults: they are
+    # only ever replaced, never mutated, and a runner put together without
+    # __init__ (several tests build one that way) still has them.
+    last_vix: float | None = None
+    last_vix_as_of: dt.datetime | None = None
+    vix_problem: str | None = None
 
     def __init__(
         self,
@@ -728,22 +749,29 @@ class ForwardRunner:
     def _settlement_spot(self, now: dt.datetime, spot: float) -> tuple[float | None, str]:
         """The index level to settle against, and where it came from.
 
-        On expiry day, the last spot observed. NSE settles index options
-        against the average of the final half hour, which is not something a
-        tick stream reproduces, so a paper run approximates either way and the
-        event log says so rather than implying an exchange figure.
+        NSE settles index options against NIFTY's official closing price -- an
+        average of the final half hour -- and Choice's daily candle carries
+        exactly that figure: it matched the exchange's close to the paisa on
+        every monthly expiry of 2026. So that is the settlement, always.
 
-        Past expiry day -- the engine was down over a settlement, or the run
-        was suspended across one -- today's spot is a *different day's* number
-        and would book a P&L that never happened. The daily candle for the
-        expiry is the honest source; if it cannot be fetched nothing settles,
-        because leaving positions open and visibly unsettled is recoverable
-        and booking a fiction is not.
+        Not the last level a tick saw. On six of those eight expiries the last
+        five-minute bar sat 18 to 61 points from the official close -- enough
+        to put a strike on the wrong side of the money -- and a spot read on a
+        later day is a different day's number altogether.
+
+        On expiry day the official figure is published after the close, so
+        until OFFICIAL_CLOSE_READY this waits rather than read a candle that
+        may still be provisional. A run is not normally ticking then anyway;
+        it settles on the next morning's first tick. If the close cannot be
+        fetched nothing settles, because leaving positions open and visibly
+        unsettled is recoverable and booking a fiction is not.
         """
         if self.expiry is None:
             return None, ""
-        if now.date() <= self.expiry:
-            return spot, "the last observed index level"
+        if now.date() < self.expiry or (
+            now.date() == self.expiry and now.time() < OFFICIAL_CLOSE_READY
+        ):
+            return None, ""
         try:
             frame = self.market.nifty(self.expiry - dt.timedelta(days=10), self.expiry)
         except ChoiceError as exc:
@@ -755,7 +783,7 @@ class ForwardRunner:
         for row in reversed(list(frame.itertuples())):
             ts = row.ts.to_pydatetime() if hasattr(row.ts, "to_pydatetime") else row.ts
             if ts.date() == self.expiry:
-                return float(row.close), f"the NIFTY close on {self.expiry:%d-%b-%Y}"
+                return float(row.close), f"the official NIFTY close on {self.expiry:%d-%b-%Y}"
         self.emit(
             "warn", "Cannot settle: the expiry date is missing from the NIFTY series",
             expiry=self.expiry.isoformat(),
@@ -838,6 +866,56 @@ class ForwardRunner:
             "Ladder re-anchored for the next expiry, because offsetting only "
             "works within one",
         )
+
+    # ------------------------------------------------------------ VIX rule
+
+    def _read_vix(self, now: dt.datetime) -> tuple[float | None, dt.datetime | None, str | None]:
+        """This tick's India VIX, when it printed, and why it is unusable if it is."""
+        getter = getattr(self.market, "india_vix_now", None)
+        if getter is None:
+            return None, None, "this market connection cannot read India VIX"
+        try:
+            value, as_of = getter()
+        except ChoiceError as exc:
+            return None, None, f"India VIX unavailable ({exc})"
+        if as_of is not None and now - as_of > VIX_MAX_AGE:
+            minutes = int((now - as_of).total_seconds() // 60)
+            return value, as_of, (
+                f"the latest India VIX reading printed at {as_of:%H:%M}, "
+                f"{minutes} minutes ago, which is too old to go on"
+            )
+        return value, as_of, None
+
+    def _vix_allows_entries(self, now: dt.datetime) -> bool:
+        """The VIX rule for this tick, saying so in the log when it changes.
+
+        The same decision the backtest makes on every bar: no new positions
+        while India VIX is above the run's limit, or while there is no usable
+        reading to judge it by. Open positions are not touched either way.
+        """
+        limit = self.strategy.max_entry_vix
+        if limit is None:
+            return True
+        value, as_of, problem = self._read_vix(now)
+        self.last_vix, self.last_vix_as_of, self.vix_problem = value, as_of, problem
+        was_paused = self.ladder.paused
+        allowed = vix_allows_entries(None if problem else value, limit, was_paused)
+        if not allowed and not was_paused:
+            if problem:
+                self.emit("warn", f"New positions paused: {problem}", limit=limit)
+            else:
+                self.emit(
+                    "info",
+                    f"New positions paused: India VIX {value:.2f} is above {limit:g}",
+                    vix=round(value, 2), limit=limit,
+                )
+        elif allowed and was_paused:
+            self.emit(
+                "info",
+                f"New positions resumed: India VIX {value:.2f} is below {limit:g}",
+                vix=round(value, 2), limit=limit,
+            )
+        return allowed
 
     def _pnl_total_locked(self) -> tuple[float, tuple[int, ...]]:
         """Total P&L as the dashboard shows it, and what is missing from it."""
@@ -925,6 +1003,12 @@ class ForwardRunner:
         # against contracts that no longer trade.
         if self.expiry is not None and self._expiry_is_settled(now):
             self._settle_and_roll(now, spot)
+            if self.expiry is not None:
+                # Settlement is waiting -- for the official close, or for a
+                # candle Choice could not serve. Either way the contract has
+                # stopped trading, and a rung opened now would be opened on
+                # it; the old path went on firing into the dead expiry.
+                return
 
         if self.expiry is None:
             try:
@@ -946,7 +1030,18 @@ class ForwardRunner:
                 return
             self.emit("info", f"Trading expiry {self.expiry:%d-%b-%Y}", expiry=self.expiry.isoformat())
 
-        for trigger in self.ladder.on_price(spot, now):
+        allowed = self._vix_allows_entries(now)
+        passed_before = len(self.ladder.passed)
+        fresh = self.ladder.on_price(spot, now, entries_allowed=allowed)
+        passed = self.ladder.passed[passed_before:]
+        if passed:
+            self.emit(
+                "info",
+                "Passed over " + ", ".join(f"{p.level:,.0f}" for p in passed)
+                + " while new positions were paused; not opened",
+                levels=[p.level for p in passed],
+            )
+        for trigger in fresh:
             # The ladder enforces the same cap when it decides whether to fire,
             # so this is a backstop -- but it must read the *run's* limit, not a
             # global one, or a run configured for 30 would silently drop 10.
@@ -1046,6 +1141,15 @@ class ForwardRunner:
                 "stale": self.spot_is_stale,
                 # When the spot printed, as against when we read it.
                 "as_of": self.last_spot_ts.isoformat() if self.last_spot_ts else None,
+            },
+            # The VIX rule. `limit` None means the run has no rule -- runs
+            # started before it existed keep trading as they always did.
+            "vix": {
+                "limit": self.strategy.max_entry_vix,
+                "value": round(self.last_vix, 2) if self.last_vix is not None else None,
+                "as_of": self.last_vix_as_of.isoformat() if self.last_vix_as_of else None,
+                "paused": self.ladder.paused,
+                "problem": self.vix_problem,
             },
             "ladder": {
                 "anchor": self.ladder.anchor,
@@ -1347,6 +1451,10 @@ class ForwardRunner:
             # overnight looking perfectly settled.
             "last_mtm": {str(k): v for k, v in self.last_mtm.items()},
             "last_marks": {str(k): v for k, v in self.last_marks.items()},
+            # So a resumed run can say why it is paused before its first tick.
+            "last_vix": self.last_vix,
+            "last_vix_as_of": self.last_vix_as_of.isoformat() if self.last_vix_as_of else None,
+            "vix_problem": self.vix_problem,
             "condors": [self._condor_state(c) for c in self.condors],
             "fills": [asdict(f) for f in self.fills],
             "events": [asdict(e) for e in self.events],
@@ -1415,6 +1523,14 @@ class ForwardRunner:
             except (TypeError, ValueError):
                 continue
         runner.stopped_reason = state.get("stopped_reason")
+        try:
+            runner.last_vix = (
+                float(state["last_vix"]) if state.get("last_vix") is not None else None
+            )
+        except (TypeError, ValueError):
+            runner.last_vix = None
+        runner.last_vix_as_of = _parse_dt(state.get("last_vix_as_of"))
+        runner.vix_problem = state.get("vix_problem")
         runner.legs_on_real_depth = int(state.get("legs_on_real_depth") or 0)
         runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)
         runner.total_slippage = float(state.get("total_slippage") or 0.0)

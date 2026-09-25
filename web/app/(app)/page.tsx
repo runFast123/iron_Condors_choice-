@@ -75,6 +75,7 @@ export default async function Overview() {
         <ProvenanceBanner
           verified={provenance.verified}
           realFraction={m.real_price_fraction}
+          backupFraction={provenance.provider?.backup_fraction ?? 0}
           note={provenance.note}
           awaiting={provenance.awaiting_connection ?? false}
           hasData={condors.length > 0}
@@ -85,6 +86,7 @@ export default async function Overview() {
             unused: provenance.legs_unused,
             unresolved: provenance.legs_unresolved,
             emptyExpiries: provenance.empty_expiries,
+            backup: provenance.legs_backup,
           }}
         />
 

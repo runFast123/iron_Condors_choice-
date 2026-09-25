@@ -20,7 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -42,6 +42,7 @@ from engine.strategy.condor import (
     entry_refusal,
     net_positions,
     netting_summary,
+    vix_allows_entries,
 )
 from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
 from engine.strategy.ladder import AnchorMode, Ladder, LadderTrigger
@@ -121,6 +122,8 @@ class BacktestResult:
     warnings: list[str] = field(default_factory=list)
     # (when, expiry left behind, expiry rolled into)
     rolls: list[tuple[dt.datetime, dt.date, dt.date]] = field(default_factory=list)
+    # How the VIX rule shaped the run. Empty when the strategy has no limit.
+    vix_gate: dict = field(default_factory=dict)
 
     @property
     def campaigns(self) -> int:
@@ -163,6 +166,30 @@ class BacktestResult:
         return rows
 
 
+def _vix_limit(
+    params: BacktestParams,
+    spots: Sequence[tuple[dt.datetime, float]],
+    vix: Sequence[float | None] | None,
+) -> float | None:
+    """The run's VIX limit, once it is certain there is a reading per bar.
+
+    Refused rather than run without one. A strategy that pauses on VIX,
+    replayed with no VIX, would either never trade (no reading pauses) or
+    trade as if the rule did not exist -- and both would look like a result.
+    """
+    limit = params.strategy.max_entry_vix
+    if limit is None:
+        return None
+    if vix is None:
+        raise ValueError(
+            f"This strategy pauses new positions while India VIX is above {limit:g}, "
+            "so the backtest needs a VIX reading for every bar and none was supplied."
+        )
+    if len(vix) != len(spots):
+        raise ValueError(f"{len(vix)} VIX readings for {len(spots)} bars; they must pair one to one.")
+    return limit
+
+
 # --------------------------------------------------------------------- pass 1
 
 
@@ -170,8 +197,15 @@ def discover_requirements(
     spots: Sequence[tuple[dt.datetime, float]],
     params: BacktestParams,
     expiry_for: ExpiryResolver,
+    vix: Sequence[float | None] | None = None,
 ) -> tuple[list[LadderTrigger], list[LegRequirement]]:
-    """Pass 1: run the ladder on spot alone and collect the legs it will need."""
+    """Pass 1: run the ladder on spot alone and collect the legs it will need.
+
+    The VIX rule applies here exactly as it does in pass 2: a pause changes
+    where the ladder later fires, not only whether, so leaving it out would
+    fetch the wrong legs.
+    """
+    limit = _vix_limit(params, spots, vix)
     ladder = Ladder(
         config=params.strategy,
         anchor_mode=params.anchor_mode,
@@ -181,7 +215,7 @@ def discover_requirements(
     triggers: list[LadderTrigger] = []
     campaign_expiry: dt.date | None = None
 
-    for when, spot in spots:
+    for i, (when, spot) in enumerate(spots):
         try:
             expiry = expiry_for(when.date())
         except ValueError:
@@ -198,7 +232,8 @@ def discover_requirements(
                 ladder.reset()
             campaign_expiry = expiry
 
-        for trigger in ladder.on_price(spot, when):
+        allowed = True if limit is None else vix_allows_entries(vix[i], limit, ladder.paused)
+        for trigger in ladder.on_price(spot, when, entries_allowed=allowed):
             triggers.append(trigger)
             for leg in _legs_for(trigger.level, ladder, params.strategy):
                 requirement = LegRequirement(expiry, leg.strike, leg.right, when)
@@ -259,15 +294,32 @@ class Backtest:
 
     # -- main loop ---------------------------------------------------------
 
-    def run(self, spots: Sequence[tuple[dt.datetime, float]]) -> BacktestResult:
+    def run(
+        self,
+        spots: Sequence[tuple[dt.datetime, float]],
+        vix: Sequence[float | None] | None = None,
+        settlement: Mapping[dt.date, float] | None = None,
+    ) -> BacktestResult:
+        """Replay `spots`.
+
+        `vix` is one India VIX reading per bar, required when the strategy has
+        a VIX limit and ignored when it has none. `settlement` is NIFTY's
+        official close by day -- what NSE settles index options against. An
+        expiry missing from it settles at its last bar instead, and is named
+        in the warnings: that bar can sit tens of points from the official
+        figure, which is an average of the final half hour.
+        """
         params = self.params
         result = BacktestResult(params=params)
+        self._settlement = dict(settlement or {})
+        self._settled_on_last_bar: set[dt.date] = set()
 
         if not spots:
             result.warnings.append("No spot data in the requested range; nothing to backtest.")
             return result
 
-        triggers, requirements = discover_requirements(spots, params, self.expiry_for)
+        limit = _vix_limit(params, spots, vix)
+        triggers, requirements = discover_requirements(spots, params, self.expiry_for, vix)
         result.triggers = triggers
         result.requirements = requirements
         ladder = Ladder(
@@ -294,7 +346,11 @@ class Backtest:
 
         expiry_exhausted = False
 
-        for when, spot in spots:
+        # What the VIX rule did: bars it held entries back on, how many
+        # separate spells that made, and the readings it had to go without.
+        gated_bars = paused_bars = spells = no_reading = 0
+
+        for i, (when, spot) in enumerate(spots):
             try:
                 expiry = self.expiry_for(when.date())
             except ValueError as exc:
@@ -332,8 +388,28 @@ class Backtest:
                         result.rolls.append((when, campaign_expiry, expiry))
                     campaign_expiry = expiry
 
-            # 1. Open new rungs.
-            for trigger in (ladder.on_price(spot, when) if expiry is not None else ()):
+            # 1. Open new rungs -- unless the VIX rule is holding entries back.
+            fresh: list[LadderTrigger] = []
+            if expiry is not None:
+                allowed = True
+                if limit is not None:
+                    was_paused = ladder.paused
+                    allowed = vix_allows_entries(vix[i], limit, was_paused)
+                    gated_bars += 1
+                    if not allowed:
+                        paused_bars += 1
+                        spells += int(not was_paused)
+                        no_reading += int(vix[i] is None)
+                passed_before = len(ladder.passed)
+                fresh = ladder.on_price(spot, when, entries_allowed=allowed)
+                for passed in ladder.passed[passed_before:]:
+                    # Said, not silent: a ladder thinned by the rule must be
+                    # distinguishable from one that broke.
+                    result.skipped.append(
+                        (when, passed.level,
+                         f"passed while India VIX was above {limit:g}; not opened")
+                    )
+            for trigger in fresh:
                 try:
                     legs = _legs_for(trigger.level, ladder, params.strategy)
                 except ValueError as exc:
@@ -380,7 +456,7 @@ class Backtest:
                 if not condor.is_open:
                     continue
                 if self._is_settlement(condor, when, last_bar_of_day):
-                    self._settle(condor, when, spot, params)
+                    self._settle(condor, when, self._settlement_price(condor.expiry, spot), params)
                     realised.append(condor.realised_pnl())
                     cumulative_realised += condor.realised_pnl()
                     holding_days.append((when - condor.entry_time).total_seconds() / 86_400)
@@ -480,13 +556,65 @@ class Backtest:
                 f"Rolled through {len(result.rolls) + 1} expiry campaigns; the ladder re-anchors "
                 "at each new expiry because offsetting only works within one."
             )
-        if result.skipped:
+        # One line per cause. They used to share a single count blamed on
+        # missing prices, which was already wrong once the entry filters could
+        # refuse a rung, and would be wrong by hundreds with the VIX rule.
+        no_price = sum(1 for s in result.skipped if s[2] == "no price for one or more legs")
+        filtered = sum(1 for s in result.skipped if s[2].startswith("entry filter"))
+        passed_levels = sum(1 for s in result.skipped if "India VIX" in s[2])
+        other = len(result.skipped) - no_price - filtered - passed_levels
+        if no_price:
             result.warnings.append(
-                f"{len(result.skipped)} ladder trigger(s) were skipped because no price was available."
+                f"{no_price} ladder trigger(s) were skipped because no price was available."
             )
+        if filtered:
+            result.warnings.append(f"{filtered} ladder trigger(s) were refused by an entry filter.")
+        if other:
+            result.warnings.append(f"{other} ladder trigger(s) could not be built as a position.")
+        if self._settled_on_last_bar and self._settlement:
+            # Only worth saying when official closes were supplied at all: a
+            # caller with none has asked for last-bar settlement throughout.
+            days = ", ".join(f"{d:%d %b %Y}" for d in sorted(self._settled_on_last_bar))
+            result.warnings.append(
+                f"No official NIFTY close for expiry {days}; settled at the last bar of the day instead."
+            )
+        if limit is not None:
+            result.vix_gate = {
+                "limit": limit,
+                "bars": gated_bars,
+                "paused_bars": paused_bars,
+                "paused_fraction": paused_bars / gated_bars if gated_bars else 0.0,
+                "spells": spells,
+                "levels_passed": passed_levels,
+                "bars_without_vix": no_reading,
+            }
+            if paused_bars:
+                result.warnings.append(
+                    f"New positions were paused on {paused_bars:,} of {gated_bars:,} bars "
+                    f"({paused_bars / gated_bars:.0%}) because India VIX was above {limit:g}, "
+                    f"in {spells} spell(s); {passed_levels} level(s) were passed while paused."
+                )
+            if no_reading:
+                result.warnings.append(
+                    f"{no_reading} bar(s) had no India VIX reading, so no position could open on them."
+                )
         return result
 
     # -- settlement --------------------------------------------------------
+
+    def _settlement_price(self, expiry: dt.date, last_spot: float) -> float:
+        """What an expiry settles against: NSE's official close for the day.
+
+        Not the last bar. The official close is an average of the final half
+        hour, and on six of the eight monthly expiries of 2026 it sat 18 to 61
+        points from the last five-minute bar -- enough to move a strike in or
+        out of the money.
+        """
+        official = self._settlement.get(expiry)
+        if official is not None and official > 0:
+            return float(official)
+        self._settled_on_last_bar.add(expiry)
+        return last_spot
 
     def _is_settlement(
         self, condor: Condor, when: dt.datetime, last_bar_of_day: dict[dt.date, dt.datetime]

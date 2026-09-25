@@ -44,6 +44,9 @@ export function RunBacktest({
   // Ladder-only entry filters. "" is off, which is the default.
   const [minDte, setMinDte] = useState<number | "">("");
   const [minCredit, setMinCredit] = useState<number | "">("");
+  // The VIX rule, both strategies: no new positions while India VIX is above
+  // this. On at 15; cleared ("") switches it off.
+  const [maxVix, setMaxVix] = useState<number | "">(15);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -114,6 +117,9 @@ export function RunBacktest({
           roll: true,
           expiry_cadence: cadence,
           strategy,
+          // Null, not omitted, when cleared: an omitted field takes the
+          // engine's default of 15, which is the opposite of "off".
+          max_entry_vix: maxVix === "" ? null : Number(maxVix),
           // HIC derives direction and both caps from its band and spreads, and
           // is symmetric by construction. The ladder's own settings used to be
           // sent to it anyway -- including an untouched Max up of 10 behind a
@@ -354,6 +360,22 @@ export function RunBacktest({
                   onChange={(e) => setLots(Math.max(1, Number(e.target.value)))}
                   className="auth-input"
                   style={{ marginTop: 5, width: 70 }}
+                />
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Pause above VIX
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={0.5}
+                  value={maxVix}
+                  placeholder="Off"
+                  onChange={(e) => setMaxVix(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, width: 90 }}
+                  title="No new positions while India VIX is above this; they resume once it is back below. Open positions are not touched. Clear it to switch the rule off."
                 />
               </label>
 

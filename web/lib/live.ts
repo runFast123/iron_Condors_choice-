@@ -110,6 +110,17 @@ export interface LiveState {
     /** When that spot printed, as against when the engine read it. */
     as_of?: string | null;
   };
+  /** The VIX rule. `limit` null: this run has no rule (started before it
+   *  existed, or with it cleared). Absent from engines that predate it. */
+  vix?: {
+    limit: number | null;
+    value: number | null;
+    as_of: string | null;
+    /** True while new positions are held back. */
+    paused: boolean;
+    /** Why there is no usable reading, when there is not. */
+    problem: string | null;
+  };
   ladder: {
     anchor: number | null;
     last_level: number | null;

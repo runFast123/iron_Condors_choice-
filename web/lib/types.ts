@@ -1,5 +1,44 @@
-/** Choice is the only external data source. "modeled" is Black-76, not a vendor. */
-export type PriceSource = "choice" | "modeled";
+/**
+ * Where an option premium came from. "choice" is a real Choice candle;
+ * "backup" a real candle from the backtest's backup source, for a contract
+ * Choice has no history for (backtests only); "modeled" is Black-76, not a
+ * source at all. The dashboard never names the backup source.
+ */
+export type PriceSource = "choice" | "backup" | "modeled";
+
+/** What a backtest took from its backup source because Choice had nothing. */
+export interface BackupUse {
+  provider: "backup";
+  /** Whether the engine has a backup source configured at all. */
+  configured?: boolean;
+  used: boolean;
+  nifty_days: string[];
+  /** Intraday VIX bars, for the entry rule and the model. */
+  vix_bar_days: string[];
+  /** Daily VIX closes, for the model's fallback. */
+  vix_close_days: string[];
+  /** Official closes an expiry settled against. */
+  settlement_days?: string[];
+  option_legs_asked?: number;
+  option_legs_found?: number;
+  option_legs_used?: number;
+  /** What neither Choice nor the backup could cover. */
+  notes: string[];
+}
+
+/** What the VIX rule did over a backtest. */
+export interface VixGate {
+  limit: number;
+  bars: number;
+  paused_bars: number;
+  paused_fraction: number;
+  spells: number;
+  levels_passed: number;
+  bars_without_vix: number;
+  /** Bars per VIX source: "choice", "backup", "choice:close", "none", ... */
+  readings: Record<string, number>;
+  resolution: string;
+}
 
 export interface CoverageFailure {
   token: string;
@@ -21,7 +60,12 @@ export interface Provenance {
   resolution: string;
   option_resolution?: string;
   generated_at: string;
-  provider: { real_quotes: number; modeled_quotes: number; total_quotes: number; real_fraction: number };
+  /** `real_quotes` counts every real traded price, Choice's and the backup's;
+   *  the split is absent on results from before the backup existed. */
+  provider: {
+    real_quotes: number; modeled_quotes: number; total_quotes: number; real_fraction: number;
+    choice_quotes?: number; backup_quotes?: number; backup_fraction?: number;
+  };
   bars: number;
   range: [string, string];
   legs_requested?: number;
@@ -47,6 +91,15 @@ export interface Provenance {
   coverage?: Record<string, number>;
   failures?: CoverageFailure[];
   lot_size?: number;
+  /** Absent on runs from before the backup source existed. */
+  backup?: BackupUse;
+  /** Legs priced from the backup source at least once. */
+  legs_backup?: number;
+  /** How many expiries settled against NIFTY's official close, and which
+   *  fell back to their last bar. */
+  settlement?: { official_close: number; last_bar: string[] };
+  /** Null or absent when the run had no VIX limit. */
+  vix_gate?: VixGate | null;
 }
 
 export interface Params {
@@ -64,6 +117,9 @@ export interface Params {
   /** Ladder entry filters. Null when off. */
   min_entry_dte?: number | null;
   min_credit_ratio?: number | null;
+  /** No new positions while India VIX is above this. Null (or absent, on
+   *  results from before the rule) when off. Both strategies. */
+  max_entry_vix?: number | null;
   max_down?: number | null;
   max_up?: number | null;
   anchor_mode: string;
