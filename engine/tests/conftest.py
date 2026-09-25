@@ -34,12 +34,14 @@ def _fresh_login_ledger():
     # Memory only: a test must never write the engine's real ledger file. And
     # no night rule, or every login test would fail when run before 08:00;
     # the rule has tests of its own on a ledger that keeps it.
-    rule = LOGIN_LEDGER.first_automatic_login
+    rule, days = LOGIN_LEDGER.first_automatic_login, LOGIN_LEDGER.trading_days_only
     LOGIN_LEDGER.bind(None)
     LOGIN_LEDGER.first_automatic_login = None
+    LOGIN_LEDGER.trading_days_only = False
     yield
     LOGIN_LEDGER.bind(None)
     LOGIN_LEDGER.first_automatic_login = rule
+    LOGIN_LEDGER.trading_days_only = days
 
 
 @pytest.fixture(autouse=True)

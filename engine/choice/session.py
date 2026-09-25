@@ -160,13 +160,19 @@ class _LoginLedger:
     """
 
     def __init__(self, path: Path | None = None, *,
-                 first_automatic_login: dt.time | None = FIRST_AUTOMATIC_LOGIN) -> None:
+                 first_automatic_login: dt.time | None = FIRST_AUTOMATIC_LOGIN,
+                 trading_days_only: bool = True) -> None:
         self._lock = threading.Lock()
         self._last: dict[str, dt.datetime] = {}
         self._automatic: dict[str, tuple[dt.date, int]] = {}
         self._path = path
         self._warned = False
         self.first_automatic_login = first_automatic_login
+        # No automatic login on a day the market is shut: an engine restarted
+        # on a Saturday renewed Friday's session -- an OTP for a day nothing
+        # can trade. A person's own sign-in is never refused.
+        self.trading_days_only = trading_days_only
+        self._calendar: Any = None
 
     def bind(self, path: Path | None) -> None:
         """Keep the ledger at `path` from now on (None: memory only). What it
@@ -237,7 +243,22 @@ class _LoginLedger:
         except OSError as exc:
             log.warning("Could not save the Choice login ledger %s: %s", self._path, exc)
 
+    def _is_trading_day(self, day: dt.date) -> bool:
+        if not self.trading_days_only:
+            return True
+        if self._calendar is None:
+            from engine.data.market_calendar import MarketCalendar   # local: session.py loads first
+
+            self._calendar = MarketCalendar.load()
+        return bool(self._calendar.is_trading_day(day))
+
     def _refusal_locked(self, account: str, now: dt.datetime) -> ChoiceAuthError | None:
+        if not self._is_trading_day(now.date()):
+            return ChoiceAuthError(
+                "The market is shut today, so the engine will not log in to Choice by itself "
+                "(every login texts you an OTP). It renews the session on the next trading "
+                "morning; signing in on the dashboard renews it now (one OTP)."
+            )
         if self.first_automatic_login is not None and now.time() < self.first_automatic_login:
             return ChoiceAuthError(
                 f"Automatic Choice logins wait until {self.first_automatic_login:%H:%M}, so an "

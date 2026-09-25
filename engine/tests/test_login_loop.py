@@ -312,13 +312,15 @@ def test_the_ledger_survives_an_engine_restart(tmp_path):
     with pytest.raises(ChoiceAuthError) as caught:
         third.check_automatic("X1", now=now + 3 * RELOGIN_COOLDOWN)
     assert "times today" in str(caught.value)
-    third.check_automatic("X1", now=now + dt.timedelta(days=1))
+    # 25 Sep 2026 is a Friday: the next allowance is Monday's.
+    third.check_automatic("X1", now=now + dt.timedelta(days=3))
 
 
 def test_an_unreadable_ledger_is_not_fatal(tmp_path):
     path = tmp_path / "choice_logins.json"
     path.write_text("{not json", encoding="utf-8")
-    ledger = _LoginLedger(path)
+    # The wall clock decides nothing here: no night or closed-day rule.
+    ledger = _LoginLedger(path, first_automatic_login=None, trading_days_only=False)
     ledger.check_automatic("X1")
     ledger.record("X1", automatic=True)
     assert _LoginLedger(path).automatic_today("X1") == 1
@@ -545,3 +547,15 @@ def test_a_refused_session_is_not_swallowed_as_a_missing_candle():
     contract = type("C", (), {"token": 26000})()
     with pytest.raises(ChoiceSessionRejected):
         market.last_traded([contract])
+
+
+def test_no_automatic_login_on_a_day_the_market_is_shut(tmp_path):
+    """Restarted on a Saturday, the engine renewed Friday's session: an OTP for
+    a day nothing can trade. It waits for the next trading morning."""
+    ledger = _LoginLedger(tmp_path / "logins.json", first_automatic_login=None)
+    saturday, monday = dt.datetime(2026, 9, 26, 10, 0), dt.datetime(2026, 9, 28, 10, 0)
+    with pytest.raises(ChoiceAuthError) as caught:
+        ledger.claim_automatic("X1", now=saturday)
+    assert "market is shut" in str(caught.value)
+    ledger.claim_automatic("X1", now=monday)
+    ledger.record("X2", automatic=False, now=saturday)          # a person may always sign in
