@@ -210,16 +210,19 @@ reads NSE's daily F&O bhavcopy — the open, high, low, close and last trade of 
 expired or not — once per day into a local cache under `engine/state/exchange/` (never uploaded).
 `engine/pricing/exchange_smile.py` reads the volatility smile the market actually traded at the
 previous session's close: only contracts that traded at least 100 lots, the forward from put-call
-parity, a robust quadratic fit, and each strike's own volatility where it agrees with the fit. A bar is
-priced from that smile carried forward by NIFTY and India VIX at that moment — the previous session
-only, so the model knows nothing a trader did not — then held inside the contract's real low and high
-for the day, which can only move it towards the price that traded. From 15:29 a contract that traded
-that day takes its real last trade instead (`EXCHANGE`). Measured on January–September 2026, the
-India VIX model alone put an out-of-the-money leg a typical 15% from where it traded and 13% too high
-on average; the anchored model is typically within 5–7% with no material bias, and against 52 real
-Choice entry prices in September it was within 4% where the old model was 14–26% out. Every run
-reports the same check on its own legs (Data Health → Model accuracy). `EXCHANGE_CLOSES=off` in
-`.env.engine.local` turns it off.
+parity (its carry bounded), a robust quadratic fit, and each strike's own volatility where it agrees
+with the fit. A bar is priced from that smile carried forward by NIFTY and India VIX at that moment —
+the previous session only, so the model knows nothing a trader did not — on a trading clock where a
+weekend day or holiday counts 0.15 of a session (on calendar time, Friday's smile carried to Monday
+underpriced legs near expiry by up to three quarters). A contract that traded in size that day
+(100 lots, 20 trades) is then held inside its real low and high, which can only move the price towards
+one that traded, and from 15:29 takes its real last trade instead (`EXCHANGE`). Measured on
+January–September 2026, the India VIX model alone put an out-of-the-money leg a typical 15% from
+where it traded and 13% too high on average; the anchored model is typically within 5–7% with no
+material bias, and against 52 real Choice entry prices in September it was within 4% where the old
+model was 16–26% out. Every run reports the same check on its own legs (Data Health → Model
+accuracy). Weekly and monthly bars, which span many sessions, stay on the India VIX model.
+`EXCHANGE_CLOSES=off` in `.env.engine.local` turns it off.
 
 Modelled premiums use India VIX as it stood at that moment, from Choice's intraday VIX bars — never
 the day's close, which is not known until 15:30.

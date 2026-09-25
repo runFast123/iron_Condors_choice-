@@ -364,7 +364,10 @@ export function ForwardControl({
           <strong>New positions paused.</strong>{" "}
           {vix.problem
             ? `There is no usable India VIX reading (${vix.problem}), and the rule does not trade blind.`
-            : `India VIX is ${vix.value != null ? vix.value.toFixed(2) : "—"}, above this run's limit of ${vix.limit}.`}{" "}
+            : vix.value != null && vix.value <= vix.limit
+              // A reading exactly on the limit keeps a paused run paused.
+              ? `India VIX is ${vix.value.toFixed(2)}, not yet below this run's limit of ${vix.limit}.`
+              : `India VIX is ${vix.value != null ? vix.value.toFixed(2) : "—"}, above this run's limit of ${vix.limit}.`}{" "}
           Open positions are unaffected. Entries resume once VIX is back below {vix.limit}, from
           wherever NIFTY is then{state?.ladder.anchor == null ? " — this month's anchor is placed at that moment" : ""}.
         </>

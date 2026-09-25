@@ -247,11 +247,20 @@ def _choice_falls_short(
 
 
 class OfficialCloses(dict):
-    """NIFTY's official close by day, and which of them came from the backup."""
+    """NIFTY's official close on each expiry, and which came from the backup.
 
-    def __init__(self, closes: dict[dt.date, float] | None = None, backup_days=()) -> None:
+    `every_day` is Choice's official close for every session of the range,
+    for whatever else needs a day's close -- the exchange's older files carry
+    no underlying price of their own.
+    """
+
+    def __init__(
+        self, closes: dict[dt.date, float] | None = None, backup_days=(),
+        every_day: dict[dt.date, float] | None = None,
+    ) -> None:
         super().__init__(closes or {})
         self.backup_days: list[dt.date] = sorted(backup_days)
+        self.every_day: dict[dt.date, float] = dict(every_day or {})
 
 
 class BacktestRunner:
@@ -313,11 +322,14 @@ class BacktestRunner:
                 notes.append(f"Settlement: Choice refused NIFTY's daily closes ({exc})")
                 daily = None
         closes: dict[dt.date, float] = {}
+        every_day: dict[dt.date, float] = {}
         if daily is not None and not daily.empty:
             for row in daily.itertuples():
                 day = row.ts.date()
-                if day in wanted and float(row.close) > 0:
-                    closes[day] = float(row.close)
+                if float(row.close) > 0:
+                    every_day[day] = float(row.close)
+                    if day in wanted:
+                        closes[day] = float(row.close)
         missing = sorted(wanted - set(closes))
         from_backup: list[dt.date] = []
         if missing and backup is not None:
@@ -333,7 +345,7 @@ class BacktestRunner:
                 "Settlement: no official NIFTY close was available, so every expiry "
                 "settled at its last bar"
             )
-        return OfficialCloses(closes, from_backup)
+        return OfficialCloses(closes, from_backup, every_day)
 
     def _exchange_closes(
         self,
@@ -342,6 +354,7 @@ class BacktestRunner:
         session_days: list[dt.date],
         expiries: list[dt.date],
         notes: list[str],
+        underlying: dict[dt.date, float] | None = None,
     ) -> tuple["nse_bhavcopy.ChainHistory | None", dict[str, Any]]:
         """The exchange's daily record of NIFTY's options over the run.
 
@@ -350,6 +363,28 @@ class BacktestRunner:
         downloaded once. A failure costs accuracy, not the run: modelled prices
         fall back to India VIX alone, and the provenance says so.
         """
+        try:
+            return self._load_exchange_closes(first_day, last_day, session_days, expiries, notes, underlying)
+        except Exception as exc:                        # noqa: BLE001 - never the run's failure
+            log.exception("[%s] Exchange closing prices failed", self.job.job_id)
+            notes.append(
+                f"Exchange closing prices: could not be read ({type(exc).__name__}); the run "
+                "used the India VIX model"
+            )
+            return None, {
+                "configured": True, "used": False, "sessions": len(session_days), "days": 0,
+                "downloaded": 0, "missing": [], "note": f"failed ({type(exc).__name__})",
+            }
+
+    def _load_exchange_closes(
+        self,
+        first_day: dt.date,
+        last_day: dt.date,
+        session_days: list[dt.date],
+        expiries: list[dt.date],
+        notes: list[str],
+        underlying: dict[dt.date, float] | None,
+    ) -> tuple["nse_bhavcopy.ChainHistory | None", dict[str, Any]]:
         archive = nse_bhavcopy.shared_archive()
         info: dict[str, Any] = {
             "configured": archive is not None, "used": False, "sessions": len(session_days),
@@ -373,8 +408,8 @@ class BacktestRunner:
                     f"Downloading the exchange's closing prices, day {i} of {n} ({when})",
                 )
 
-        frames, note = archive.load(sorted(wanted), progress)
-        history = nse_bhavcopy.ChainHistory(frames, expiries=expiries)
+        frames, note = archive.load(sorted(wanted), progress, sessions=session_days)
+        history = nse_bhavcopy.ChainHistory(frames, expiries=expiries, underlying=underlying)
         today = dt.datetime.now(tz=IST).date()
         # Today's record is published in the evening; its absence is not a gap.
         missing = [d for d in session_days if not history.has_day(d) and d < today]
@@ -387,8 +422,9 @@ class BacktestRunner:
             notes.append(f"Exchange closing prices: {note}; the rest of the run used the India VIX model")
         if missing:
             notes.append(
-                f"Exchange closing prices: {len(missing)} session(s) had no daily record, so bars "
-                "the day after each were priced on the India VIX model alone"
+                f"Exchange closing prices: {len(missing)} session(s) had no daily record; the "
+                "sessions after them were anchored to the last one before the gap, or priced on "
+                "the India VIX model alone where that was over a week old"
             )
         return (history if history else None), info
 
@@ -733,9 +769,19 @@ class BacktestRunner:
         # anchored, wherever the exchange's record reaches, to the smile the
         # market actually traded at the previous session's close.
         exchange_notes: list[str] = []
-        exchange_history, exchange_info = self._exchange_closes(
-            first_day, last_day, session_days, expiries, exchange_notes,
-        )
+        if resolution in ("W", "M"):
+            # A weekly or monthly bar spans many sessions: no one day's range
+            # or closing trade belongs to it, so the India VIX model prices it.
+            exchange_history, exchange_info = None, {
+                "configured": nse_bhavcopy.shared_archive() is not None, "used": False,
+                "sessions": len(session_days), "days": 0, "downloaded": 0, "missing": [],
+                "note": "not used for weekly or monthly bars",
+            }
+        else:
+            exchange_history, exchange_info = self._exchange_closes(
+                first_day, last_day, session_days, expiries, exchange_notes,
+                underlying=settlement.every_day,
+            )
         model = ModelPriceProvider(surface=surface, vix_at=vix_lookup.at)
         anchored: ExchangeAnchoredPriceProvider | None = None
         if exchange_history is not None:

@@ -41,12 +41,24 @@ import datetime as dt
 import math
 import statistics
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Callable, Mapping
 
 import numpy as np
 
 from engine.pricing.black76 import implied_vol
 from engine.pricing.iv_surface import MAX_IV, MIN_IV
+
+#: How much of a trading day's variance a weekend day or holiday carries.
+#: Measured on the exchange's 2026 record: with calendar time (1.0) Friday's
+#: smile carried to Monday underpriced out-of-the-money legs 18% on average,
+#: and those one or two days from expiry by 75%; at 0.15 the first was about
+#: 4% and the whole of it priced best.
+NON_TRADING_WEIGHT = 0.15
+#: Bounds on the annual carry read from spot and the options' own forward. The
+#: official close is a time-weighted average and the options' closes are
+#: volume-weighted ones, so near expiry the two can sit tens of points apart,
+#: and divided by a day or two that read as a carry of -290% a year.
+CARRY_MIN, CARRY_MAX = -0.05, 0.15
 
 #: Lots a contract must have traded on the day for its close to shape the smile.
 MIN_VOLUME = 100
@@ -68,6 +80,57 @@ def years_to_expiry(when: dt.datetime, expiry: dt.date) -> float:
     """Calendar years from `when` to the 15:30 close on expiry day."""
     close = dt.datetime.combine(expiry, SESSION_CLOSE, tzinfo=when.tzinfo)
     return max(0.0, (close - when).total_seconds() / 86_400.0) / 365.0
+
+
+class TradingClock:
+    """Time to expiry counted in trading days, weekends and holidays light.
+
+    Implied volatility read on calendar time takes a weekend for two trading
+    days. Measured on Friday -- four calendar days to a Tuesday expiry, two of
+    them shut -- and applied on Monday's single day, it priced short-dated legs
+    at a fraction of their value. Here a session counts as a day and a day the
+    market is shut counts NON_TRADING_WEIGHT of one, hour by hour.
+
+    `is_session` says which days trade; `weight` is what the others count.
+    """
+
+    def __init__(self, is_session: Callable[[dt.date], bool], weight: float = NON_TRADING_WEIGHT) -> None:
+        self.is_session = is_session
+        self.weight = weight
+        self._span: dict[tuple[dt.date, dt.date], float] = {}
+
+    def _day(self, day: dt.date) -> float:
+        return 1.0 if self.is_session(day) else self.weight
+
+    def _whole_days(self, first: dt.date, stop: dt.date) -> float:
+        """Weighted days from `first` up to, not including, `stop`."""
+        key = (first, stop)
+        if key not in self._span:
+            total, day = 0.0, first
+            while day < stop:
+                total += self._day(day)
+                day += dt.timedelta(days=1)
+            self._span[key] = total
+        return self._span[key]
+
+    def days(self, when: dt.datetime, expiry: dt.date) -> float:
+        """Weighted days from `when` to the 15:30 close on expiry day."""
+        close = dt.datetime.combine(expiry, SESSION_CLOSE, tzinfo=when.tzinfo)
+        if close <= when:
+            return 0.0
+        if when.date() == expiry:
+            return self._day(expiry) * (close - when).total_seconds() / 86_400.0
+        midnight = dt.datetime.combine(when.date() + dt.timedelta(days=1), dt.time(0), tzinfo=when.tzinfo)
+        head = self._day(when.date()) * (midnight - when).total_seconds() / 86_400.0
+        tail = self._day(expiry) * (close - dt.datetime.combine(expiry, dt.time(0), tzinfo=when.tzinfo)).total_seconds() / 86_400.0
+        return head + self._whole_days(when.date() + dt.timedelta(days=1), expiry) + tail
+
+    def ratio(self, when: dt.datetime, expiry: dt.date) -> float | None:
+        """Weighted days over calendar days to expiry; None at expiry."""
+        calendar = years_to_expiry(when, expiry) * 365.0
+        if calendar <= 0:
+            return None
+        return self.days(when, expiry) / calendar
 
 
 def _weighted_quadratic(xs, ys, ws) -> tuple[float, float, float]:
@@ -94,13 +157,17 @@ class ExchangeSmile:
     vix: float | None = None       # India VIX at that close
     points: int = 0                # strikes the fit rests on
     forward_source: str = "parity"
+    # Trading-clock days over calendar days to expiry at that close (see
+    # TradingClock); None when the smile was read on calendar time alone.
+    time_ratio: float | None = None
 
     @property
     def carry(self) -> float:
-        """Annualised carry the forward implied, spot to forward."""
+        """Annualised carry the forward implied, spot to forward -- bounded,
+        because near expiry a few points of noise divide by a tiny tenor."""
         if self.years <= 0 or self.spot <= 0:
             return 0.0
-        return math.log(self.forward / self.spot) / self.years
+        return min(CARRY_MAX, max(CARRY_MIN, math.log(self.forward / self.spot) / self.years))
 
     def fitted(self, strike: float, forward: float | None = None) -> float:
         """The fitted smile at a strike, for a forward (the anchor's if None).
@@ -134,6 +201,7 @@ def build_smile(
     vix: float | None = None,
     rate: float = 0.065,
     min_volume: int = MIN_VOLUME,
+    clock: TradingClock | None = None,
 ) -> ExchangeSmile | None:
     """The smile of `expiry` at `day`'s close, or None when it cannot be read.
 
@@ -207,15 +275,25 @@ def build_smile(
         day=day, expiry=expiry, spot=float(spot), forward=float(forward), years=years,
         coef=coef, x_lo=min(used), x_hi=max(used), own=own, vix=vix,
         points=len(keep), forward_source=source,
+        time_ratio=clock.ratio(dt.datetime.combine(day, SESSION_CLOSE), expiry) if clock else None,
     )
 
 
 def carried_vol(
-    smile: ExchangeSmile, strike: float, forward_now: float, vix_now: float | None
+    smile: ExchangeSmile,
+    strike: float,
+    forward_now: float,
+    vix_now: float | None,
+    time_ratio_now: float | None = None,
 ) -> float:
     """The volatility to price `strike` at, now: the smile carried to today's
-    forward and scaled by how far India VIX has moved since its close."""
+    forward, scaled by how far India VIX has moved since its close, and -- on a
+    trading clock -- by how the weekends and holidays left to expiry have
+    changed their share of the time. The result is a calendar-time volatility,
+    for Black-76 with calendar years."""
     vol = smile.vol(strike, forward_now)
     if vix_now and smile.vix:
         vol *= vix_now / smile.vix
+    if time_ratio_now and smile.time_ratio:
+        vol *= math.sqrt(time_ratio_now / smile.time_ratio)
     return min(MAX_IV, max(MIN_IV, vol))

@@ -85,8 +85,14 @@ class Ladder:
     # Persisted, because what resuming does depends on whether a pause came
     # before it, and a restart in the middle of one must not forget it.
     paused: bool = False
-    # Levels passed over on resuming, this campaign. Informational only.
+    # Levels passed over on resuming, this campaign: the record of each, and
+    # the set of their units. The set counts toward the per-side caps, because
+    # a level passed over is a rung of depth the campaign has used -- counted
+    # only by what fired, a ladder resumed after a pause went on to fire
+    # deeper than its caps allow, and HIC opened more debit spreads than its
+    # max_put_spreads / max_call_spreads, at depths its configuration excludes.
     passed: list[PassedLevel] = field(default_factory=list)
+    passed_levels: set[int] = field(default_factory=set)
 
     # --------------------------------------------------------------- helpers
 
@@ -294,8 +300,9 @@ class Ladder:
             self.high_level = rebased
 
     def _pass(self, units: int, when: dt.datetime, spot: float, side: str) -> None:
-        if units in self.fired_levels:
+        if units in self.fired_levels or units in self.passed_levels:
             return
+        self.passed_levels.add(units)
         self.passed.append(
             PassedLevel(level=self._from_units(units), time=when, spot=spot, side=side)
         )
@@ -394,14 +401,15 @@ class Ladder:
 
     @property
     def down_count(self) -> int:
-        """Rungs fired below the anchor. The anchor itself counts as neither."""
+        """Rungs used below the anchor: fired, or passed over while paused.
+        The anchor itself counts as neither."""
         at = self._anchor_units
-        return 0 if at is None else sum(1 for u in self.fired_levels if u < at)
+        return 0 if at is None else sum(1 for u in self.fired_levels | self.passed_levels if u < at)
 
     @property
     def up_count(self) -> int:
         at = self._anchor_units
-        return 0 if at is None else sum(1 for u in self.fired_levels if u > at)
+        return 0 if at is None else sum(1 for u in self.fired_levels | self.passed_levels if u > at)
 
     # ------------------------------------------------------------- inspection
 
@@ -431,6 +439,7 @@ class Ladder:
         self.fired_levels.clear()
         self.triggers.clear()
         self.passed.clear()
+        self.passed_levels.clear()
         # `paused` is kept. It is the VIX rule's state, not the campaign's: a
         # spell that runs through an expiry is one spell, and a reading of
         # exactly the limit on the new campaign's first bar must leave a paused
@@ -451,6 +460,7 @@ class Ladder:
             "last_level": self.last_level,
             "high_level": self.high_level,
             "fired_levels": sorted(self.fired_levels),
+            "passed_levels": sorted(self.passed_levels),
             "paused": self.paused,
         }
 
@@ -463,7 +473,8 @@ class Ladder:
             # fired, so the anchor is the bound.
             self.high_level = self.anchor
         self.fired_levels = set(raw.get("fired_levels") or [])
-        # Absent on state written before the VIX rule, which never paused.
+        # Both absent on state written before the VIX rule, which never paused.
+        self.passed_levels = set(raw.get("passed_levels") or [])
         self.paused = bool(raw.get("paused", False))
 
 

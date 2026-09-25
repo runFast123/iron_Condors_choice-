@@ -14,7 +14,7 @@ import datetime as dt
 import pytest
 
 from engine.strategy.condor import (
-    CALL, PUT, Condor, FilledLeg, Leg, Side, StrategyConfig, UnitKind, entry_refusal,
+    CALL, PUT, Condor, FilledLeg, Leg, Side, StrategyConfig, entry_refusal,
 )
 from engine.strategy.hic import HicConfig
 

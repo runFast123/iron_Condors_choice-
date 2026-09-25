@@ -42,7 +42,15 @@ from engine.data.nse_bhavcopy import (
     udiff_url,
 )
 from engine.pricing.black76 import price as black76
-from engine.pricing.exchange_smile import build_smile, carried_vol, years_to_expiry
+from engine.pricing.exchange_smile import (
+    CARRY_MAX,
+    CARRY_MIN,
+    NON_TRADING_WEIGHT,
+    TradingClock,
+    build_smile,
+    carried_vol,
+    years_to_expiry,
+)
 from engine.pricing.iv_surface import from_vix
 from engine.strategy.condor import PriceSource
 
@@ -245,10 +253,15 @@ def test_a_future_day_is_never_requested(tmp_path):
     assert http.calls == []
 
 
-def test_a_page_instead_of_a_zip_is_not_a_file(tmp_path):
+def test_a_page_instead_of_a_zip_is_refused_not_a_holiday(tmp_path):
+    """A 200 with a page in it is the archive saying no. Taken for a missing
+    file, it was remembered as a holiday and the day was never asked for again."""
     day = dt.date(2026, 3, 27)
     http = FakeHttp({udiff_url(day): Response(200, b"<html>maintenance</html>")})
-    assert make_archive(tmp_path, http).day(day) is None
+    archive = make_archive(tmp_path, http)
+    with pytest.raises(ExchangeDataUnavailable):
+        archive.day(day)
+    assert not archive.is_cached(day)
 
 
 def test_an_old_day_falls_back_to_the_legacy_file(tmp_path):
@@ -499,7 +512,8 @@ def test_accuracy_is_measured_on_the_runs_own_legs():
     days = [dt.date(2026, 4, n) for n in (1, 2, 6, 7, 8)]
     history = ChainHistory({d: market_day(d, 23_000 + 40 * i) for i, d in enumerate(days)},
                            expiries=[EXPIRY])
-    provider = anchored(history, vix=vix_constant(16.0))
+    # The synthetic market is priced on calendar time, so it is measured on it.
+    provider = anchored(history, vix=vix_constant(16.0), clock=TradingClock(lambda day: True))
     report = provider.measure([(EXPIRY, 22_600.0, "PE", days[0]), (EXPIRY, 23_400.0, "CE", days[0])],
                               last_day=days[-1])
     assert report["contracts"] == 2 and report["checks"] == 8     # four anchored days each
@@ -524,7 +538,7 @@ class FakeArchive:
         self.downloads = 0
         self.asked: list[dt.date] = []
 
-    def load(self, days, progress=None):
+    def load(self, days, progress=None, **kw):
         days = list(days)
         self.asked = days
         return {d: f for d, f in self.frames.items() if d in set(days)}, self.note
@@ -606,5 +620,151 @@ def test_a_run_on_the_exchanges_record_names_no_source(monkeypatch):
     job = job_with_archive(monkeypatch, FakeArchive("build"))
     assert job.status == "done", job.error
     payload = json.dumps({"result": job.result, "public": job.public()}, default=str)
-    found = re.search(r"nse|nseindia|bhavcopy|groww|yahoo|dhan", payload, re.IGNORECASE)
+    found = re.search(r"\bnse\b|nseindia|bhavcopy|groww|yahoo|dhan", payload, re.IGNORECASE)
     assert found is None, found
+
+
+
+# ================================================================ after review
+
+
+def test_an_unreadable_file_costs_its_day_and_is_never_a_holiday(tmp_path):
+    day, next_day = dt.date(2026, 3, 27), dt.date(2026, 3, 30)
+    http = FakeHttp({udiff_url(day): Response(200, b"PK garbage, not a zip"),
+                     udiff_url(next_day): Response(200, zipped(udiff_frame()))})
+    archive = make_archive(tmp_path, http)
+    frames, note = archive.load([day, next_day])
+    assert next_day in frames, "one bad file does not stop the others"
+    assert day not in frames and not archive.is_cached(day)
+    assert note and "could not be read" in note
+
+
+def test_a_trading_day_is_never_remembered_as_shut(tmp_path):
+    day = dt.date(2026, 3, 27)
+    archive = make_archive(tmp_path, FakeHttp())
+    assert archive.day(day, session=True) is None
+    assert not archive.is_cached(day), "the run's own bars say it traded"
+    # A marker left by an older build is dropped for a known session.
+    marker = tmp_path / "2026" / "20260327.closed"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    http = FakeHttp({udiff_url(day): Response(200, zipped(udiff_frame()))})
+    archive = make_archive(tmp_path, http)
+    assert archive.day(day, session=True) is not None
+
+
+def test_a_damaged_cache_file_is_set_aside_and_fetched_again(tmp_path):
+    day = dt.date(2026, 3, 27)
+    path = tmp_path / "2026" / "20260327.csv.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"")                                      # empty: pandas cannot read it
+    http = FakeHttp({udiff_url(day): Response(200, zipped(udiff_frame()))})
+    frame = make_archive(tmp_path, http).day(day)
+    assert frame is not None and len(http.calls) == 1
+    assert (tmp_path / "2026" / "20260327.csv.gz.bad").exists()
+
+
+def test_a_failed_cache_write_still_returns_the_day(tmp_path, monkeypatch):
+    day = dt.date(2026, 3, 27)
+    http = FakeHttp({udiff_url(day): Response(200, zipped(udiff_frame()))})
+    archive = make_archive(tmp_path, http)
+
+    def locked(*_a, **_k):
+        raise PermissionError("held by another process")
+
+    monkeypatch.setattr(nse_bhavcopy.os, "replace", locked)
+    assert archive.day(day) is not None
+
+
+def test_an_unreachable_archive_is_not_asked_again_at_once(tmp_path):
+    first, second = dt.date(2026, 3, 26), dt.date(2026, 3, 27)
+    http = FakeHttp({udiff_url(first): Response(403), udiff_url(second): Response(403)})
+    archive = make_archive(tmp_path, http)
+    with pytest.raises(ExchangeDataUnavailable):
+        archive.day(first)
+    with pytest.raises(ExchangeDataUnavailable):
+        archive.day(second)
+    assert http.calls == [udiff_url(first)], "held: the second day is not asked for"
+
+
+def test_nothing_the_archive_does_can_fail_a_load(tmp_path, monkeypatch):
+    archive = make_archive(tmp_path, FakeHttp())
+
+    def broken(day, *, session=False):
+        raise RuntimeError("something unforeseen")
+
+    monkeypatch.setattr(archive, "day", broken)
+    frames, note = archive.load([dt.date(2026, 3, 27)])
+    assert frames == {} and note and "failed" in note
+
+
+def test_a_thin_contract_is_not_evidence_of_the_close_or_the_range():
+    """One lot, one trade: its 'last' can be hours old and its range is one
+    print. Used as the closing price or as bounds, it was not the market."""
+    frame = market_day(D1, 23_050)
+    thin = (frame["strike"] == 22_600) & (frame["right"] == "PE")
+    frame.loc[thin, "volume"] = 1
+    frame.loc[thin, "trades"] = 1
+    provider = anchored(ChainHistory({D0: market_day(D0, 23_000), D1: frame}, expiries=[EXPIRY]))
+    at_close = provider.quote(request(D1, dt.time(15, 29, 59), 22_600, "PE", 23_050))
+    assert at_close.source is PriceSource.MODELED
+    assert provider.clamped == 0
+
+
+def test_the_trading_clock_counts_a_weekend_lightly():
+    sessions = lambda day: day.weekday() < 5                    # noqa: E731
+    clock = TradingClock(sessions, weight=NON_TRADING_WEIGHT)
+    friday = dt.datetime(2026, 4, 3, 15, 30, tzinfo=IST)
+    monday = dt.datetime(2026, 4, 6, 15, 30, tzinfo=IST)
+    tuesday_expiry = dt.date(2026, 4, 7)
+    assert clock.days(friday, tuesday_expiry) == pytest.approx(2 + 2 * NON_TRADING_WEIGHT)
+    assert clock.days(monday, tuesday_expiry) == pytest.approx(1.0)
+    assert clock.ratio(monday, tuesday_expiry) == pytest.approx(1.0)
+    assert clock.ratio(friday, tuesday_expiry) == pytest.approx((2 + 2 * NON_TRADING_WEIGHT) / 4)
+    assert clock.days(dt.datetime(2026, 4, 7, 9, 30, tzinfo=IST), tuesday_expiry) == pytest.approx(6 / 24)
+
+
+def test_fridays_smile_is_not_spent_on_the_weekend():
+    """Carried from Friday to Monday on calendar time, a short-dated leg lost
+    most of its volatility to two days the market was shut."""
+    friday, monday, expiry = dt.date(2026, 4, 3), dt.date(2026, 4, 6), dt.date(2026, 4, 7)
+    history = ChainHistory({friday: market_day(friday, 23_000, expiries=(expiry,))}, expiries=[expiry])
+    req = request(monday, dt.time(15, 0), 22_900, "PE", 23_000, expiry=expiry)
+    trading = anchored(history, clock=TradingClock(lambda d: d.weekday() < 5))
+    calendar = anchored(history, clock=TradingClock(lambda d: True))
+    assert trading.model_price(req)[0] > calendar.model_price(req)[0] * 1.15
+
+
+def test_the_carry_is_bounded():
+    smile = smile_of(market_day(D0, 23_000, carry=0.8))           # an absurd 80% a year
+    assert CARRY_MIN <= smile.carry <= CARRY_MAX
+
+
+def test_weekly_and_monthly_bars_are_not_priced_from_one_days_record(monkeypatch):
+    from engine.backtest.jobs import BacktestJob, BacktestRunner
+    from engine.tests.test_jobs import FakeMarket, params
+
+    archive = FakeArchive({})
+    monkeypatch.setattr(nse_bhavcopy, "shared_archive", lambda: archive)
+    job = BacktestJob(job_id="w-1", user_id="u1", params=params(resolution="W"))
+    BacktestRunner(FakeMarket(), job).run()
+    assert job.status == "done", job.error
+    assert job.result["provenance"]["exchange"]["used"] is False
+    assert archive.asked == [], "not even read"
+
+
+def test_an_exchange_failure_never_fails_the_run(monkeypatch):
+    class Exploding(FakeArchive):
+        def load(self, days, progress=None, **kw):
+            raise RuntimeError("disk on fire")
+
+    job = job_with_archive(monkeypatch, Exploding({}))
+    assert job.status == "done", job.error
+    assert any("could not be read" in w for w in job.result["warnings"])
+
+
+def test_older_files_take_their_underlying_from_choices_closes():
+    frame = market_day(D0, 23_000)
+    frame["underlying"] = math.nan                             # the legacy format has none
+    history = ChainHistory({D0: frame}, underlying={D0: 23_000.0})
+    assert history.underlying(D0) == 23_000.0

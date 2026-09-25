@@ -226,7 +226,6 @@ def test_a_surface_is_judged_on_the_credit_because_leg_errors_cancel():
     of four premiums, so equal-and-opposite leg errors vanish from any per-leg
     score while destroying the thing the strategy earns.
     """
-    import datetime as dt
 
     from engine.pricing.black76 import implied_vol
     from engine.pricing.iv_surface import IVSurface, VolPoint, better_of, credit_error, rms_error

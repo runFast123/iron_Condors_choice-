@@ -385,11 +385,22 @@ def test_open_positions_are_untouched_by_a_pause():
     assert len(r.condors) == 1 and r.condors[0].is_open
 
 
-def test_no_reading_pauses_with_the_reason():
+def test_no_reading_holds_still_then_pauses_with_the_reason():
+    """A missing reading first holds the run still -- nothing opens and the
+    ladder is left where it was -- and only a spell of VIX_WAIT_LIMIT turns
+    into the rule's pause, with the reason given."""
+    from engine.forward.runner import VIX_WAIT_LIMIT
+
     r = fwd(VixMarket(fails=True), max_entry_vix=15.0)
     r.tick()
     assert r.condors == []
     assert r.snapshot()["vix"]["problem"].startswith("India VIX unavailable")
+    assert not r.ladder.paused, "a missing reading is not yet a pause"
+    assert not any("paused" in e.message for e in r.events)
+
+    r._vix_missing_since = r._vix_missing_since - VIX_WAIT_LIMIT - dt.timedelta(seconds=1)
+    r.tick()
+    assert r.condors == [] and r.ladder.paused
     assert any(e.level == "warn" and "paused" in e.message for e in r.events)
 
 
@@ -484,3 +495,46 @@ def test_both_strategies_carry_the_limit(strategy):
 
     p = {"strategy": strategy, "step": 100.0, "lots": 1, "max_condors": 20, "max_entry_vix": 17.0}
     assert _strategy_for(p, 65, [dt.date(2026, 10, 27)], M).max_entry_vix == 17.0
+
+
+
+def test_an_opening_gap_before_vix_prints_opens_what_the_backtest_opens():
+    """The first tick at 09:15 can come before India VIX has printed. Taken as
+    a pause, the resume a few seconds later passed over every level the gap
+    had crossed, with VIX at 12; the backtest, which reads the VIX of the bar's
+    own interval, opened them all. Held still, the run sees the gap once."""
+    market = VixMarket(fails=True)
+    r = fwd(market, max_entry_vix=15.0)
+    r.tick()                                   # no reading yet: holds still
+    assert r.condors == [] and not r.ladder.passed
+
+    market.fails, market.vix = False, 12.0     # VIX prints, well below the limit
+    r.tick()
+    assert r.condors, "the gap's levels open as they would without the rule"
+    assert not r.ladder.passed
+
+
+
+def test_levels_passed_while_paused_use_up_the_side_cap():
+    """HIC caps its spreads as a count of rungs per side. Levels passed over
+    while paused were not counted, so after a resume it fired deeper: three
+    put spreads where two are allowed, at depths the configuration excludes."""
+    ladder = Ladder(config=StrategyConfig(anchor_mode="floor", direction="both", max_down=3, max_up=3))
+    feed(ladder, [24_000])
+    feed(ladder, [23_750, 23_450], allowed=False, start=1)
+    fired = feed(ladder, [23_450, 23_350, 23_250, 23_150], start=3)
+    down = [lv for lv, side in fired if side == "down"]
+    assert all(24_000 - lv <= 300 for lv in down), f"fired beyond the cap's depth: {down}"
+    assert [p.level for p in ladder.passed] == [23_900.0, 23_800.0, 23_700.0, 23_600.0]
+
+
+def test_passed_levels_survive_a_restart():
+    config = StrategyConfig(anchor_mode="floor", direction="both", max_down=3, max_up=3)
+    ladder = Ladder(config=config)
+    feed(ladder, [24_000])
+    feed(ladder, [23_750, 23_450], allowed=False, start=1)
+    feed(ladder, [23_450], start=3)
+    restored = Ladder(config=config)
+    restored.load_state(ladder.dump_state())
+    assert restored.passed_levels == ladder.passed_levels and restored.passed_levels
+    assert restored.down_count == ladder.down_count

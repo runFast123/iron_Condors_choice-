@@ -208,3 +208,27 @@ def test_settlement_survives_a_restart():
     assert revived.realised == pytest.approx(realised)
     assert all(c.status is CondorStatus.EXPIRED for c in revived.condors)
     assert revived.expiry is None
+
+
+
+def test_settlement_asks_past_the_expiry_day_and_warns_once():
+    """A date-only end is midnight at the start of expiry day, so whether the
+    day's own candle came back depended on Choice's boundary; and a failing
+    settlement repeated its warning on every tick."""
+    from engine.forward.runner import OFFICIAL_CLOSE_READY
+
+    asked = []
+
+    class Recording(MarketWithHistory):
+        def nifty(self, start, end, resolution="D"):
+            asked.append(end)
+            raise ChoiceError("no data")
+
+    r = ForwardRunner(market=Recording(master=FakeMaster()), strategy=cfg(step=100.0))  # type: ignore[arg-type]
+    r.expiry = EXPIRY
+    after = dt.datetime.combine(EXPIRY, OFFICIAL_CLOSE_READY, tzinfo=IST) + dt.timedelta(minutes=5)
+    for _ in range(5):
+        assert r._settlement_spot(after, 23_000.0) == (None, "")
+    assert asked[0] > EXPIRY
+    warnings = [e for e in r.events if e.level == "warn" and "Cannot settle" in e.message]
+    assert len(warnings) == 1

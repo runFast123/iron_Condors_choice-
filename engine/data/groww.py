@@ -37,6 +37,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 import struct
 import threading
 import time
@@ -232,20 +233,27 @@ class GrowwBackup:
         token = _find(data, "token") or _find(data, "access_token")
         if resp.status_code >= 400 or not token:
             reason = _error_text(data) or f"HTTP {resp.status_code}"
-            raise BackupUnavailable(
+            message = (
                 f"the backup source refused to sign in ({reason})"
                 + ("; a key signed in with its secret must be approved each day" if not creds.totp_secret else "")
             )
+            # Held like a refusal of data. Not held, every request of every
+            # backtest asked to sign in again -- fifteen attempts over two runs,
+            # against a limit of 150 a day -- and got the same answer.
+            self._hold(message)
+            raise BackupUnavailable(message)
         remember_secret(token)
         self._token = str(token)
-        expiry = _find(data, "expiry")
-        try:
-            self._token_expires = pd.Timestamp(expiry).timestamp() if expiry else _next_six_am(self.clock())
-        except (TypeError, ValueError):
-            self._token_expires = _next_six_am(self.clock())
+        self._token_expires = _expiry_seconds(_find(data, "expiry"), self.clock())
         log.info("Signed in to the backup source (Groww); token valid until %s",
                  dt.datetime.fromtimestamp(self._token_expires, tz=IST).isoformat())
         return self._token
+
+    def _hold(self, reason: str) -> None:
+        """Answer every request with `reason` for FORBIDDEN_HOLD: the refusals
+        held this way are ones asking again cannot change."""
+        self._forbidden_reason = reason
+        self._forbidden_until = self.clock() + FORBIDDEN_HOLD
 
     def _bearer(self) -> str:
         with self._lock:
@@ -294,13 +302,20 @@ class GrowwBackup:
                     self._token = None
                 renewed = True
                 continue
+            if resp.status_code == 401:
+                # Refused on a token minted moments ago: a fresh one will not
+                # fix it, and the one-retry limit starts again on every request.
+                self._hold(
+                    f"the backup source refused a freshly signed-in request "
+                    f"({_error_text(_json(resp)) or 'HTTP 401'})"
+                )
+                raise BackupUnavailable(self._forbidden_reason)
             if resp.status_code == 403:
                 reason = _error_text(_json(resp)) or "HTTP 403"
-                self._forbidden_reason = (
+                self._hold(
                     f"the backup source refused access ({reason}); the account's API plan "
                     "may not include this data"
                 )
-                self._forbidden_until = self.clock() + FORBIDDEN_HOLD
                 raise BackupUnavailable(self._forbidden_reason)
             if resp.status_code == 429 or resp.status_code >= 500:
                 if attempt >= self.max_retries:
@@ -524,12 +539,41 @@ def _find(data: Any, key: str) -> Any:
 
 
 def _error_text(data: Any) -> str:
+    """The provider's own words, which reach the dashboard's notes -- so with
+    its name taken out: the dashboard names no company but Choice."""
     if not isinstance(data, dict):
         return ""
     error = data.get("error")
     if isinstance(error, dict):
-        return str(error.get("message") or error.get("code") or "").strip()
-    return str(data.get("message") or error or "").strip()
+        text = str(error.get("message") or error.get("code") or "").strip()
+    else:
+        text = str(data.get("message") or error or "").strip()
+    return _PROVIDER_NAME.sub("the backup source", text)
+
+
+_PROVIDER_NAME = re.compile(r"groww(?:\.in)?", re.IGNORECASE)
+
+
+def _expiry_seconds(expiry: Any, now: float) -> float:
+    """When a token lapses, in epoch seconds.
+
+    A timestamp with no zone is IST, where the provider lives -- read as UTC
+    it kept a token five and a half hours past its 06:00 lapse -- and a bare
+    number is epoch seconds or milliseconds, never nanoseconds. Anything
+    unreadable falls back to the documented six the next morning.
+    """
+    if expiry in (None, ""):
+        return _next_six_am(now)
+    try:
+        if isinstance(expiry, (int, float)) or str(expiry).strip().isdigit():
+            value = float(expiry)
+            return value / 1000.0 if value > 1e11 else value
+        stamp = pd.Timestamp(expiry)
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize(IST)
+        return stamp.timestamp()
+    except (TypeError, ValueError):
+        return _next_six_am(now)
 
 
 # ---------------------------------------------------------------- shared

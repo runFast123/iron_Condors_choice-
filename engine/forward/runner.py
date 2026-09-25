@@ -80,6 +80,11 @@ MIN_CREDIT_FRACTION = 0.02
 # minute or two old; past this the feed has stalled, and the VIX rule pauses
 # entries rather than trade on a stale number.
 VIX_MAX_AGE = dt.timedelta(minutes=15)
+#: How long a run holds still, waiting for a usable India VIX reading, before
+#: the rule's "no reading pauses" applies. Covers the open -- the first tick
+#: at 09:15 can come before the day's first VIX print -- and a single failed
+#: request, neither of which says anything about volatility.
+VIX_WAIT_LIMIT = dt.timedelta(minutes=30)
 
 # When NIFTY's official close for the day can be read as final. The exchange
 # publishes it after 15:30; a settlement read at the bell could catch a
@@ -212,6 +217,11 @@ class ForwardRunner:
     last_vix: float | None = None
     last_vix_as_of: dt.datetime | None = None
     vix_problem: str | None = None
+    # Since when the run has had no usable reading, while it waits for one.
+    _vix_missing_since: dt.datetime | None = None
+    # Expiries a "Cannot settle" warning has been given for, so a settlement
+    # that keeps failing says so once instead of on every tick.
+    _settle_warned: frozenset = frozenset()
 
     def __init__(
         self,
@@ -773,22 +783,30 @@ class ForwardRunner:
         ):
             return None, ""
         try:
-            frame = self.market.nifty(self.expiry - dt.timedelta(days=10), self.expiry)
-        except ChoiceError as exc:
-            self.emit(
-                "warn", "Cannot settle: no NIFTY close for the expiry",
-                expiry=self.expiry.isoformat(), error=str(exc),
+            # To the day after, not to the expiry itself: a date-only end is
+            # midnight at the start of expiry day, so whether that day's own
+            # candle came back depended on how Choice treats the boundary.
+            frame = self.market.nifty(
+                self.expiry - dt.timedelta(days=10), self.expiry + dt.timedelta(days=1)
             )
+        except ChoiceError as exc:
+            self._warn_settle("Cannot settle: no NIFTY close for the expiry", error=str(exc))
             return None, ""
         for row in reversed(list(frame.itertuples())):
             ts = row.ts.to_pydatetime() if hasattr(row.ts, "to_pydatetime") else row.ts
             if ts.date() == self.expiry:
                 return float(row.close), f"the official NIFTY close on {self.expiry:%d-%b-%Y}"
-        self.emit(
-            "warn", "Cannot settle: the expiry date is missing from the NIFTY series",
-            expiry=self.expiry.isoformat(),
-        )
+        self._warn_settle("Cannot settle: the expiry date is missing from the NIFTY series")
         return None, ""
+
+    def _warn_settle(self, message: str, **fields) -> None:
+        """Say once per expiry that it cannot settle yet. Every tick retries,
+        and repeating it every few seconds flushed the run's event log."""
+        key = (self.expiry, message)
+        if key in self._settle_warned:
+            return
+        self._settle_warned = self._settle_warned | {key}
+        self.emit("warn", message, expiry=self.expiry.isoformat() if self.expiry else None, **fields)
 
     def _settle(self, unit: PositionUnit, now: dt.datetime, spot: float, note: str) -> None:
         """Close one position at intrinsic value.
@@ -886,18 +904,34 @@ class ForwardRunner:
             )
         return value, as_of, None
 
-    def _vix_allows_entries(self, now: dt.datetime) -> bool:
+    def _vix_allows_entries(self, now: dt.datetime) -> bool | None:
         """The VIX rule for this tick, saying so in the log when it changes.
 
         The same decision the backtest makes on every bar: no new positions
         while India VIX is above the run's limit, or while there is no usable
         reading to judge it by. Open positions are not touched either way.
+
+        None means "hold still": there is no usable reading yet, and the caller
+        must not feed the ladder this tick. Treated as a pause instead, the
+        first tick of the day -- before India VIX had printed -- paused the run
+        and resumed it seconds later, and the resume passed over every level an
+        opening gap had crossed, with VIX nowhere near the limit. The backtest,
+        which reads the VIX of the bar's own interval, opened them. Held still,
+        the ladder simply sees the gap once a reading arrives. Only a spell of
+        VIX_WAIT_LIMIT with no reading becomes the rule's pause.
         """
         limit = self.strategy.max_entry_vix
         if limit is None:
             return True
         value, as_of, problem = self._read_vix(now)
         self.last_vix, self.last_vix_as_of, self.vix_problem = value, as_of, problem
+        if problem:
+            if self._vix_missing_since is None:
+                self._vix_missing_since = now
+            if now - self._vix_missing_since < VIX_WAIT_LIMIT:
+                return None
+        else:
+            self._vix_missing_since = None
         was_paused = self.ladder.paused
         allowed = vix_allows_entries(None if problem else value, limit, was_paused)
         if not allowed and not was_paused:
@@ -1042,7 +1076,9 @@ class ForwardRunner:
 
         allowed = self._vix_allows_entries(now)
         passed_before = len(self.ladder.passed)
-        fresh = self.ladder.on_price(spot, now, entries_allowed=allowed)
+        # No usable India VIX reading yet: nothing is decided this tick, and the
+        # ladder is left exactly where it was for the next one.
+        fresh = [] if allowed is None else self.ladder.on_price(spot, now, entries_allowed=allowed)
         passed = self.ladder.passed[passed_before:]
         if passed:
             self.emit(

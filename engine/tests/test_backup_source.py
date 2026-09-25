@@ -24,7 +24,7 @@ from engine.strategy.condor import PriceSource
 REPO = pathlib.Path(__file__).resolve().parents[2]
 # Choice is the only company the dashboard names. The exchange's daily record
 # is "the exchange", never its name or its file's.
-OTHER_VENDORS = re.compile(r"yahoo|yfinance|groww|dhan|nse|nseindia|bhavcopy", re.IGNORECASE)
+OTHER_VENDORS = re.compile(r"yahoo|yfinance|groww|dhan|\bnse\b|nseindia|bhavcopy", re.IGNORECASE)
 
 
 # ======================================================== a fake HTTP server
@@ -434,3 +434,62 @@ def test_the_dashboard_code_names_no_other_company():
                 for match in OTHER_VENDORS.finditer(text):
                     offenders.append(f"{path.relative_to(REPO)}: {match.group(0)}")
     assert offenders == []
+
+
+
+def test_the_stand_in_engine_takes_a_second_sign_in():
+    """engine/tests/fake_engine.py stands in for the engine in end-to-end
+    dashboard tests; a second sign-in of the same user returned HTTP 500."""
+    from engine.tests import fake_engine
+
+    session = fake_engine.FakeChoiceSession(type("C", (), {"api_key": fake_engine.GOOD_KEY, "mobile_no": "9000000001"})())
+    assert session.proven_live(None) is False
+
+
+# ================================================================ after review
+
+
+def test_a_refused_sign_in_is_held_not_asked_again():
+    """A refused sign-in was retried on every request: fifteen attempts over two
+    backtests, against a limit of 150 a day, each with the same answer."""
+    http = FakeHttp(token_status=401)
+    c = client(http)
+    for _ in range(5):
+        with pytest.raises(groww.BackupUnavailable):
+            c.index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert len(http.posts) == 1, "one attempt, then the refusal is held"
+
+
+def test_a_401_a_fresh_token_cannot_fix_is_held():
+    http = FakeHttp(candle_status=401)
+    c = client(http)
+    for _ in range(5):
+        with pytest.raises(groww.BackupUnavailable):
+            c.index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert http.tokens_issued == 2, "the first token and one fresh one, then held"
+
+
+def test_the_providers_own_words_never_carry_its_name():
+    class Named(FakeHttp):
+        def get(self, url, params=None, timeout=None, headers=None):
+            self.gets.append({"url": url})
+            return Resp(403, {"status": "FAILURE",
+                              "error": {"code": "GA001", "message": "Groww API access is not enabled for GROWW.IN"}})
+
+    with pytest.raises(groww.BackupUnavailable) as err:
+        client(Named()).index_candles("NIFTY", dt.date(2026, 9, 21), dt.date(2026, 9, 21), "D")
+    assert not OTHER_VENDORS.search(str(err.value)), str(err.value)
+    assert "backup source" in str(err.value)
+
+
+def test_a_token_expiry_without_a_zone_is_india_time():
+    """Read as UTC, a token was trusted five and a half hours past its 06:00
+    lapse; an epoch number was read as nanoseconds."""
+    from engine.config import IST as _IST
+
+    six = dt.datetime(2026, 9, 26, 6, 0, tzinfo=_IST).timestamp()
+    assert groww._expiry_seconds("2026-09-26T06:00:00", 0) == six
+    assert groww._expiry_seconds("2026-09-26T06:00:00+05:30", 0) == six
+    assert groww._expiry_seconds(int(six), 0) == six
+    assert groww._expiry_seconds(int(six * 1000), 0) == six
+    assert groww._expiry_seconds("not a time", 1_790_000_000) == groww._next_six_am(1_790_000_000)

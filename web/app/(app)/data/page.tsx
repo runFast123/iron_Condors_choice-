@@ -23,6 +23,11 @@ export default async function DataHealthPage() {
   const exchangeQuotes = p.exchange_quotes ?? 0;
   const anchoredQuotes = p.anchored_quotes ?? 0;
   const accuracy = exchange?.accuracy ?? null;
+  // Bars and daily closes alike: a close taken from the backup is labelled
+  // "backup:close", which a check on "backup" alone never saw.
+  const vixFromBackup = Object.entries(gate?.readings ?? {}).some(
+    ([source, n]) => source.startsWith("backup") && n > 0,
+  );
 
   return (
     <>
@@ -114,9 +119,9 @@ export default async function DataHealthPage() {
                   <Row
                     name="India VIX, entry rule"
                     source={`INDIAVIX ${gate.resolution === "D" ? "daily" : `${gate.resolution}-min`} bars`}
-                    ok={!awaiting && (gate.readings.backup ?? 0) === 0 && gate.bars_without_vix === 0}
+                    ok={!awaiting && !vixFromBackup && gate.bars_without_vix === 0}
                     awaiting={awaiting}
-                    fromBackup={(gate.readings.backup ?? 0) > 0}
+                    fromBackup={vixFromBackup}
                     note={`No new positions while VIX was above ${gate.limit}: paused on ${pct(gate.paused_fraction)} of bars (${num(gate.paused_bars)} of ${num(gate.bars)}) in ${num(gate.spells)} spell${gate.spells === 1 ? "" : "s"}; ${num(gate.levels_passed)} level${gate.levels_passed === 1 ? "" : "s"} passed while paused.${gate.bars_without_vix ? ` ${num(gate.bars_without_vix)} bars had no reading and could not open anything.` : ""}`}
                   />
                 )}

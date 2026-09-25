@@ -99,10 +99,27 @@ COLUMNS = [
 #: Set to "off" to run backtests on the India VIX model alone.
 ENV_SWITCH = "EXCHANGE_CLOSES"
 
+#: After the archive fails to answer or refuses, how long every request is
+#: answered from the cache alone. A host that holds connections open cost each
+#: run three read timeouts, under a lock every other user's run waits on.
+UNAVAILABLE_HOLD = 600.0
+
+#: A contract's own figures -- its closing trade, its day's range -- are taken
+#: as evidence only when it traded at least this much. A single one-lot print,
+#: hours old, is not "the price at the close", and a range made of one trade
+#: does not bound anything.
+LIQUID_VOLUME = 100
+LIQUID_TRADES = 20
+
 
 class ExchangeDataUnavailable(Exception):
     """The archive could not be reached, or refused. The message is shown to
     users as it stands, so it never names the source."""
+
+
+class ExchangeFileUnreadable(ExchangeDataUnavailable):
+    """One day's file came back but could not be read. That day only: the
+    archive is not refusing, so the other days are still asked for."""
 
 
 # ------------------------------------------------------------------ parsing
@@ -239,6 +256,8 @@ class BhavcopyArchive:
         self.downloads = 0
         self.cache_hits = 0
         self.requests_made = 0
+        self._held_until = 0.0
+        self._held_reason = ""
 
     # -- cache -----------------------------------------------------------
 
@@ -254,13 +273,30 @@ class BhavcopyArchive:
         frame["right"] = frame["right"].fillna("").astype(str)
         return frame[COLUMNS]
 
+    def _read_cached(self, path: pathlib.Path) -> pd.DataFrame | None:
+        """The cached day, or None -- with the file moved aside -- when it is
+        damaged. A corrupt cache file used to fail every run covering its day."""
+        try:
+            return self._read(path)
+        except Exception as exc:                    # noqa: BLE001 - any damage is the same fault
+            log.warning("Cached exchange file %s is unreadable (%s); fetching it again", path, exc)
+            try:
+                os.replace(path, path.with_name(path.name + ".bad"))
+            except OSError:
+                pass
+            return None
+
     def _write(self, path: pathlib.Path, frame: pd.DataFrame) -> None:
         # Written aside and moved into place, so a second backtest reading the
-        # same day never sees half a file.
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        frame.to_csv(temp, index=False, compression="gzip")
-        os.replace(temp, path)
+        # same day never sees half a file. A failure costs the cache, never the
+        # day: Windows refuses the move while another process holds the file.
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            frame.to_csv(temp, index=False, compression="gzip")
+            os.replace(temp, path)
+        except OSError as exc:
+            log.warning("Could not cache the exchange file %s: %s", path, exc)
 
     def is_cached(self, day: dt.date) -> bool:
         return self._path(day).exists() or self._closed_path(day).exists()
@@ -273,8 +309,21 @@ class BhavcopyArchive:
             time.sleep(wait)
         self._last_request = time.monotonic()
 
+    def _hold(self, reason: str) -> None:
+        self._held_until = time.monotonic() + UNAVAILABLE_HOLD
+        self._held_reason = reason
+
     def _get(self, url: str) -> bytes | None:
-        """The file at `url`, or None when the archive has none."""
+        """The file at `url`, or None when the archive has none (a 404).
+        Anything else that is not the file raises, and is never taken for a
+        day the market was shut."""
+        try:
+            return self._get_once(url)
+        except ExchangeDataUnavailable as exc:
+            self._hold(str(exc))
+            raise
+
+    def _get_once(self, url: str) -> bytes | None:
         last_error = ""
         for attempt in range(self.attempts):
             self._throttle()
@@ -292,8 +341,10 @@ class BhavcopyArchive:
                 content = response.content
                 if content[:2] != b"PK":
                     # A page instead of a file: the archive's way of saying no
-                    # without saying 404.
-                    return None
+                    # without saying 404 -- maintenance, a block. Not a holiday.
+                    raise ExchangeDataUnavailable(
+                        "the exchange's archive answered with a page instead of the day's file"
+                    )
                 return content
             if status in (401, 403):
                 raise ExchangeDataUnavailable(
@@ -309,26 +360,35 @@ class BhavcopyArchive:
         )
 
     def _download(self, day: dt.date) -> pd.DataFrame | None:
+        """The day's frame; None only when every source answered 404."""
         sources = [(udiff_url(day), parse_udiff)]
         if day <= LEGACY_UNTIL:
             sources.append((legacy_url(day), parse_legacy))
+        unreadable = ""
         for url, parser in sources:
             content = self._get(url)
             if content is None:
                 continue
             try:
                 frame = parser(_read_zip(content), self.symbol)
-            except (ValueError, KeyError, zipfile.BadZipFile) as exc:
+            except Exception as exc:                # noqa: BLE001 - a bad file, whatever the flavour
                 log.warning("Exchange file for %s could not be read from %s: %s", day, url, exc)
+                unreadable = f"the exchange's file for {day:%d %b %Y} could not be read ({type(exc).__name__})"
                 continue
             self.downloads += 1
             return frame
+        if unreadable:
+            raise ExchangeFileUnreadable(unreadable)
         return None
 
     # -- public ----------------------------------------------------------
 
-    def day(self, day: dt.date) -> pd.DataFrame | None:
+    def day(self, day: dt.date, *, session: bool = False) -> pd.DataFrame | None:
         """NIFTY's options and futures on `day`, or None when nothing traded.
+
+        `session` says the caller knows the market was open that day -- a
+        backtest's own NIFTY bars do -- so a missing file is never remembered
+        as a holiday, and one remembered by mistake is asked about again.
 
         Raises ExchangeDataUnavailable when the archive cannot be asked; a day
         with no file is an answer, not an error.
@@ -336,19 +396,31 @@ class BhavcopyArchive:
         path = self._path(day)
         with self._lock:
             if path.exists():
-                self.cache_hits += 1
-                return self._read(path)
-            if self._closed_path(day).exists():
-                return None
+                cached = self._read_cached(path)
+                if cached is not None:
+                    self.cache_hits += 1
+                    return cached
+            closed = self._closed_path(day)
+            if closed.exists():
+                if not session:
+                    return None
+                try:
+                    closed.unlink()
+                except OSError:
+                    pass
             today = self._today()
             if day > today:
                 return None
+            if time.monotonic() < self._held_until:
+                raise ExchangeDataUnavailable(self._held_reason)
             frame = self._download(day)
             if frame is None:
-                if (today - day).days >= CLOSED_AFTER_DAYS:
-                    marker = self._closed_path(day)
-                    marker.parent.mkdir(parents=True, exist_ok=True)
-                    marker.touch()
+                if not session and (today - day).days >= CLOSED_AFTER_DAYS:
+                    try:
+                        closed.parent.mkdir(parents=True, exist_ok=True)
+                        closed.touch()
+                    except OSError:
+                        pass
                 return None
             self._write(path, frame)
             return frame
@@ -357,29 +429,50 @@ class BhavcopyArchive:
         self,
         days: Iterable[dt.date],
         progress: Callable[[int, int, dt.date], None] | None = None,
+        *,
+        sessions: Iterable[dt.date] = (),
     ) -> tuple[dict[dt.date, pd.DataFrame], str | None]:
         """Every day in `days` the exchange traded, and a note on what failed.
 
         A refusal stops the downloading -- asking again for the next day would
-        only repeat it -- but whatever is already cached is still used.
+        only repeat it -- but whatever is already cached is still used. A day
+        whose file cannot be read costs that day, nothing more; and nothing in
+        here can fail the backtest calling it.
+
+        `sessions` are days the caller knows traded (see `day`).
         """
         wanted = sorted(set(days))
+        known = set(sessions)
         frames: dict[dt.date, pd.DataFrame] = {}
-        note: str | None = None
+        refused: str | None = None
+        unreadable: list[str] = []
         for i, day in enumerate(wanted, 1):
             if progress is not None:
                 progress(i, len(wanted), day)
-            if note is not None and not self.is_cached(day):
+            if refused is not None and not self.is_cached(day):
                 continue
             try:
-                frame = self.day(day)
+                frame = self.day(day, session=day in known)
+            except ExchangeFileUnreadable as exc:
+                unreadable.append(str(exc))
+                continue
             except ExchangeDataUnavailable as exc:
-                note = str(exc)
+                refused = str(exc)
                 log.warning("Exchange closing prices unavailable from %s: %s", day, exc)
+                continue
+            except Exception as exc:                # noqa: BLE001 - costs the day, never the run
+                log.exception("Exchange file for %s failed unexpectedly", day)
+                unreadable.append(f"the exchange's file for {day:%d %b %Y} failed ({type(exc).__name__})")
                 continue
             if frame is not None and not frame.empty:
                 frames[day] = frame
-        return frames, note
+        notes = [refused] if refused else []
+        if unreadable:
+            notes.append(
+                f"{len(unreadable)} day(s) could not be read"
+                + (f" ({unreadable[0]}{'; ...' if len(unreadable) > 1 else ''})")
+            )
+        return frames, "; ".join(notes) or None
 
 
 _shared: BhavcopyArchive | None = None
@@ -420,6 +513,17 @@ class ContractDay:
         """Whether anyone paid anything for it that day. Without a trade the
         close is yesterday's, carried forward, and not evidence of today."""
         return self.volume > 0 and self.close > 0 and self.low > 0
+
+    @property
+    def liquid(self) -> bool:
+        """Traded enough for its closing trade and its day's range to stand
+        for the market in it (LIQUID_VOLUME lots, LIQUID_TRADES trades where
+        the file counts them)."""
+        return (
+            self.traded
+            and self.volume >= LIQUID_VOLUME
+            and (self.trades is None or self.trades >= LIQUID_TRADES)
+        )
 
 
 def _optional(value) -> float | None:

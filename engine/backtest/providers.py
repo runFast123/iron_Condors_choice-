@@ -30,6 +30,7 @@ from engine.pricing.black76 import forward_price, greeks
 from engine.pricing.exchange_smile import (
     SESSION_CLOSE,
     ExchangeSmile,
+    TradingClock,
     build_smile,
     carried_vol,
     years_to_expiry,
@@ -192,18 +193,23 @@ class ExchangeAnchoredPriceProvider:
     For a moment on day D, for a contract Choice has no candle for:
 
     * from 15:29 -- or on a daily bar, which is the close -- a contract that
-      traded on D is priced at its real closing trade from the exchange's
-      record. Tagged EXCHANGE: a real price, not a model.
+      traded on D in size (see ContractDay.liquid) is priced at its real
+      closing trade from the exchange's record. Tagged EXCHANGE: a real price,
+      not a model.
     * otherwise at the smile the market traded at the previous session's
       close, carried to this moment by NIFTY and India VIX. Only that
       session's figures are read (engine.pricing.exchange_smile). MODELED.
     * with no previous session to read -- a gap in the record, or an expiry
       not yet listed -- the India VIX model this wraps. MODELED.
 
-    A modelled price for a contract that traded on D is then kept inside D's
-    real low and high. Every price the contract traded at that day lies in
-    that range, so the bound can only move a price towards the truth, never
-    away from it.
+    A modelled price for a contract that traded on D in size is then kept
+    inside D's real low and high. Every price it traded at that day lies in
+    that range, so the bound can only move a price towards the truth. Not for
+    a contract that barely traded: one print hours old bounds nothing.
+
+    Volatility is carried on a TradingClock -- sessions count a day, days the
+    market is shut NON_TRADING_WEIGHT of one -- so Friday's smile is not
+    applied to Monday as if the weekend had been two trading days.
     """
 
     history: ChainHistory
@@ -219,6 +225,23 @@ class ExchangeAnchoredPriceProvider:
     clamped: int = 0
     exchange_prices: int = 0
     _smiles: dict[tuple[dt.date, dt.date], ExchangeSmile | None] = field(default_factory=dict)
+    clock: TradingClock | None = None
+
+    def __post_init__(self) -> None:
+        if self.clock is None:
+            from engine.data.market_calendar import MarketCalendar
+
+            calendar = MarketCalendar.load()
+            days = self.history.days
+
+            def is_session(day: dt.date) -> bool:
+                # The record itself says which days traded wherever it reaches;
+                # beyond it, the exchange's published calendar.
+                if days and days[0] <= day <= days[-1]:
+                    return self.history.has_day(day)
+                return calendar.is_trading_day(day)
+
+            self.clock = TradingClock(is_session)
 
     def smile_before(self, day: dt.date, expiry: dt.date) -> ExchangeSmile | None:
         """The smile `expiry` closed with in the last session before `day`."""
@@ -234,6 +257,7 @@ class ExchangeAnchoredPriceProvider:
                 self.history.chain(anchor, expiry), anchor, expiry,
                 self.history.underlying(anchor),
                 future=self.history.future(anchor, expiry), vix=vix, rate=self.rate,
+                clock=self.clock,
             )
         return self._smiles[key]
 
@@ -249,7 +273,8 @@ class ExchangeAnchoredPriceProvider:
         years = years_to_expiry(request.when, request.expiry)
         forward = request.spot * math.exp(smile.carry * years)
         vix_now = self.vix_at(request.when) if self.vix_at is not None else None
-        vol = carried_vol(smile, float(request.strike), forward, vix_now)
+        ratio_now = self.clock.ratio(request.when, request.expiry) if self.clock else None
+        vol = carried_vol(smile, float(request.strike), forward, vix_now, ratio_now)
         g = greeks(forward, float(request.strike), years, vol, self.rate, request.right)
         return max(self.fallback.min_price, g.price), vol, g.delta, True
 
@@ -258,7 +283,7 @@ class ExchangeAnchoredPriceProvider:
         today: ContractDay | None = self.history.contract(
             day, request.expiry, float(request.strike), request.right
         )
-        if today is not None and not today.traded:
+        if today is not None and not today.liquid:
             today = None
         if today is not None:
             closing = today.close if self.daily_bars else today.last
@@ -317,7 +342,7 @@ class ExchangeAnchoredPriceProvider:
                     continue
                 real = self.history.contract(day, expiry, float(strike), right)
                 spot = self.history.underlying(day)
-                if real is None or not real.traded or not spot:
+                if real is None or not real.liquid or not spot:
                     continue
                 request = PriceRequest(
                     expiry=expiry, strike=float(strike), right=right,
