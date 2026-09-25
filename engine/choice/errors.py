@@ -129,6 +129,18 @@ class ChoiceAuthError(ChoiceError):
     """
 
 
+class ChoiceSessionRejected(ChoiceAuthError):
+    """Choice refused a session that was opened today.
+
+    A Choice session lasts the whole day, so a refusal of one minted today is
+    not an expiry: on 25 Sep it was Choice failing (timeouts, HTTP 500s, then
+    "VendorId doesn't exists" on sessions minutes old), and the four automatic
+    logins the engine made into it cured nothing and cost four OTPs. So it is
+    not answered with a login. Callers keep the session and try again later;
+    it works again as soon as Choice accepts it.
+    """
+
+
 class ChoiceRateLimitError(ChoiceError):
     """HTTP 429 or a broker-side throttle.  Carries ``retry_after`` seconds."""
 

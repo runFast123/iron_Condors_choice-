@@ -39,6 +39,7 @@ from engine.backtest.runner import (
 )
 from engine.choice.errors import ChoiceError
 from engine.config import IST, choice_config
+from engine.choice.session import ChoiceSession
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.pricing.costs import CostModel
 from engine.pricing.iv_surface import IVSurface, from_vix
@@ -59,7 +60,7 @@ def build(
     stop_loss: float | None = None,
     option_resolution: str | None = None,
 ) -> tuple[BacktestResult, dict]:
-    market = ChoiceMarketData.connect()
+    market = ChoiceMarketData.connect(ChoiceSession(interactive=True))
 
     end = dt.datetime.now(tz=IST).date()
     start = end - dt.timedelta(days=days)

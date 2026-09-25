@@ -401,7 +401,8 @@ def test_an_expired_choice_session_is_named_once_with_the_fix():
     r.expiry = EXPIRY
 
     r.tick()
-    assert "Sign out and sign in again" in (r.last_error or "")
+    assert "Signing in again on the dashboard renews the session" in (r.last_error or "")
+    assert "OTP" in (r.last_error or "")
     errors = [e for e in r.events if e.level == "error"]
     assert len(errors) == 1
     assert errors[0].message == "Choice session expired"
@@ -441,3 +442,30 @@ def test_a_touchline_auth_failure_does_not_probe_every_payload_shape():
         market._touchline_quotes([contract(1, 23_000.0, "PE")])
 
     assert market.session.calls == 1, "it must stop at the first rejection"
+
+
+
+def test_a_session_refused_on_the_day_it_was_opened_says_so():
+    """Not an expiry, and not something a sign-in fixes: the run says what is
+    happening and that it will pick up by itself, instead of telling the user
+    to sign out and in -- which cost an OTP and changed nothing on 25 Sep."""
+    from engine.choice.errors import ChoiceSessionRejected
+    from engine.choice.session import session_rejected_message
+
+    message = session_rejected_message(None, "HTTP 401: Unauthorized, VendorId doesn't exists")
+
+    class RefusedSession:
+        master = FakeMaster()
+
+        def quotes(self, contracts):
+            raise ChoiceSessionRejected(message)
+
+    r = runner()
+    r.market = RefusedSession()  # type: ignore[assignment]
+    r.expiry = EXPIRY
+    r.tick()
+    r.tick()
+    assert r.last_error == message
+    assert "Sign out" not in r.last_error
+    errors = [e for e in r.events if e.level == "error"]
+    assert [e.message for e in errors] == ["Choice is refusing the session"]

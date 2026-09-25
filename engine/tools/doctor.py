@@ -67,7 +67,8 @@ class Doctor:
     def check_login(self) -> bool:
         self.step("2. Login (non-interactive TOTP)")
         try:
-            self.session = ChoiceSession()
+            # A person is running this: its login is theirs, not the engine's.
+            self.session = ChoiceSession(interactive=True)
             session_id = self.session.ensure_session()
         except StaticIpRejectedError as exc:
             self.fail("Rejected as coming from an undeclared IP.")

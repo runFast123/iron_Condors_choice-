@@ -76,7 +76,10 @@ def test_a_401_on_any_auth_endpoint_never_triggers_a_relogin():
 
 
 def test_a_401_on_a_data_endpoint_does_re_login_exactly_once():
-    """The behaviour we actually want to keep: expired sessions recover."""
+    """The behaviour we actually want to keep: expired sessions recover.
+    Expired means opened on an earlier day -- a session opened today is kept."""
+    import datetime as _dt
+
     state = {"logged_in": False}
 
     def responder(url, calls):
@@ -88,6 +91,7 @@ def test_a_401_on_a_data_endpoint_does_re_login_exactly_once():
         return FakeResponse(200, {"Status": "Success", "Response": {"ok": True}})
 
     s, http = session_with(responder)
+    s.session_id, s._login_date = "sess-yesterday", _dt.date.today() - _dt.timedelta(days=1)
     out = s.request("POST", "api/OpenGraph/ChartData", {})
     assert out["Status"] == "Success"
     assert s.session_id == "sess-1"
@@ -102,7 +106,10 @@ def test_a_second_401_after_relogin_gives_up(monkeypatch):
             return FakeResponse(200, {"Status": "Success", "Response": "sess-1"})
         return FakeResponse(401, text="still denied")
 
+    import datetime as _dt
+
     s, http = session_with(responder)
+    s.session_id, s._login_date = "sess-yesterday", _dt.date.today() - _dt.timedelta(days=1)
     with pytest.raises(ChoiceAuthError):
         s.request("POST", "api/OpenGraph/ChartData", {})
     assert len(http.calls) < 12
@@ -257,8 +264,11 @@ def test_a_session_that_cannot_be_renewed_is_an_auth_failure_not_a_crash():
     runner's quote handling and reached the "unexpected error" branch, which
     *stops* a run. Two live campaigns with open positions were stopped that way
     by a session expiring overnight."""
+    import datetime as _dt
+
     s, _http = session_with(lambda url, calls: FakeResponse(401, text="VendorId does not exist"))
     s.access_token = "stale"
+    s.session_id, s._login_date = "sess-overnight", _dt.date.today() - _dt.timedelta(days=1)
 
     def login_without_credentials(force: bool = False):
         raise RuntimeError("Missing Choice credentials: CHOICE_API_KEY, CHOICE_MOBILE_NO.")

@@ -93,6 +93,10 @@ class FakeChoiceSession:
         self.session_id = "fake-session"
         return self.session_id
 
+    def proven_live(self, within, now=None):
+        # Never: every sign-in to the stand-in engine goes through its login.
+        return False
+
     def request(self, method, endpoint, data=None, **kw):
         if "MultipleTouchline" in endpoint:
             return _synthetic_touchline(data or {})

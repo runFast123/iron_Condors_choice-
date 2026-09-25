@@ -641,6 +641,12 @@ class ChoiceMarketData:
         for contract in contracts:
             try:
                 frame = self.candles(contract, start, end, "1")
+            except ChoiceAuthError:
+                # A refused session is not a missing candle. Swallowed here it
+                # became "no usable quote" on every tick, instead of the one
+                # message that says what is happening and that it is not a login
+                # the engine can fix.
+                raise
             except ChoiceError as exc:
                 # The broker declining is ordinary here; the caller still gets
                 # the primary touchline error, which is the useful one.

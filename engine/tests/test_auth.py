@@ -31,6 +31,9 @@ class FakeChoiceSession:
     accept = True
     profile: dict | None = None
     instances: list["FakeChoiceSession"] = []
+    # Whether the engine's own session counts as proven to work right now.
+    live = False
+    logins = 0
 
     def __init__(self, config):
         import threading as _threading
@@ -49,8 +52,12 @@ class FakeChoiceSession:
     def login(self, force: bool = False, *, automatic: bool = True):
         if not FakeChoiceSession.accept:
             raise ChoiceAuthError("Invalid credentials")
+        FakeChoiceSession.logins += 1
         self.session_id = "sess-abc123"
         return self.session_id
+
+    def proven_live(self, within, now=None):
+        return FakeChoiceSession.live and bool(self.session_id)
 
     def request(self, method, endpoint, data=None, **kw):
         if "UserProfile" in endpoint:
@@ -66,6 +73,8 @@ def fake_choice(monkeypatch):
     FakeChoiceSession.accept = True
     FakeChoiceSession.profile = None
     FakeChoiceSession.instances = []
+    FakeChoiceSession.live = False
+    FakeChoiceSession.logins = 0
     monkeypatch.setattr(auth, "ChoiceSession", FakeChoiceSession)
     yield
 
@@ -492,3 +501,59 @@ def test_a_new_sign_in_reaches_the_session_the_runners_already_hold(reg):
 
     assert second.choice is held_by_runners
     assert held_by_runners.session_id == second.choice.session_id
+
+
+
+# ----------------------------------------- a sign-in that needs no new OTP
+
+
+def test_a_sign_in_takes_over_a_session_choice_accepted_moments_ago(reg):
+    """Every Choice login texts an OTP. The engine was already holding this
+    account's session, opened today and working; signing in to the dashboard
+    logged in to Choice again anyway -- two OTPs on 25 Sep for nothing."""
+    first = reg.login(VENDOR, KEY, MOBILE)
+    assert FakeChoiceSession.logins == 1
+    FakeChoiceSession.live = True
+
+    second = reg.login(VENDOR, KEY, MOBILE)
+    assert FakeChoiceSession.logins == 1, "no new Choice login, so no OTP"
+    assert second.choice is first.choice
+    assert second.token != first.token and reg.get(first.token) is None
+    assert second.profile == first.profile
+
+
+def test_other_credentials_always_go_to_choice(reg):
+    reg.login(VENDOR, KEY, MOBILE)
+    FakeChoiceSession.live = True
+    reg.login(VENDOR, KEY + "-other", MOBILE)
+    assert FakeChoiceSession.logins == 2, "a different key is checked by Choice, not waved through"
+
+
+def test_a_wrong_key_on_a_live_account_is_still_refused(reg):
+    reg.login(VENDOR, KEY, MOBILE)
+    FakeChoiceSession.live = True
+    FakeChoiceSession.accept = False
+    with pytest.raises(ChoiceAuthError):
+        reg.login(VENDOR, "wrong-key", MOBILE)
+
+
+def test_a_session_not_proven_to_work_is_replaced_by_a_real_login(reg):
+    reg.login(VENDOR, KEY, MOBILE)
+    FakeChoiceSession.live = False
+    reg.login(VENDOR, KEY, MOBILE)
+    assert FakeChoiceSession.logins == 2
+
+
+
+def test_a_sign_in_ends_a_refusal_spell_on_the_shared_session(reg):
+    """The sign-in's fresh session is copied into the object the runners
+    hold -- and a refusal spell it ended must end with it."""
+    import datetime as _dt
+
+    first = reg.login(VENDOR, KEY, MOBILE)
+    held = first.choice
+    held.rejected_since = _dt.datetime.now()
+    held._refusal_logged = _dt.datetime.now()
+    FakeChoiceSession.live = False
+    reg.login(VENDOR, KEY, MOBILE)
+    assert held.rejected_since is None and held._refusal_logged is None

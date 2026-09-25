@@ -22,6 +22,7 @@ from pathlib import Path
 
 from engine.choice.errors import ChoiceError
 from engine.config import IST, choice_config, engine_config
+from engine.choice.session import ChoiceSession
 from engine.data.market import NIFTY, ChoiceMarketData
 from engine.forward.runner import ForwardRunner, market_is_open
 from engine.pricing.costs import CostModel
@@ -82,7 +83,7 @@ def main() -> int:
         print("NSE regular session is 09:15-15:30 IST, Mon-Fri. Running anyway; the runner will idle.")
 
     try:
-        market = ChoiceMarketData.connect()
+        market = ChoiceMarketData.connect(ChoiceSession(interactive=True))
     except ChoiceError as exc:
         print(f"Could not connect to Choice: {exc}")
         out.write_text(json.dumps(empty_state(str(exc)), separators=(",", ":")), encoding="utf-8")

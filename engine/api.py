@@ -530,6 +530,18 @@ def _resume_forward_locked(session: UserSession, *, only: str | None = None) -> 
     return resumed
 
 
+_RESUME_WAIT_NOTED: dict[tuple[str, str], float] = {}
+_RESUME_WAIT_EVERY = 1800.0
+
+
+def _note_resume_wait(user_id: str, run_key: str, reason: str) -> None:
+    now = time.monotonic()
+    key = (user_id, run_key)
+    if now - _RESUME_WAIT_NOTED.get(key, -_RESUME_WAIT_EVERY) >= _RESUME_WAIT_EVERY:
+        _RESUME_WAIT_NOTED[key] = now
+        log.info("Run %s for %s waits to resume: %s", run_key, user_id, reason)
+
+
 def _resume_one(session: UserSession, run_key: str, rows: list[dict]) -> bool:
     # Only one run of a strategy can be driven at a time, so its siblings --
     # and only its siblings -- are retired.
@@ -558,6 +570,12 @@ def _resume_one(session: UserSession, run_key: str, rows: list[dict]) -> bool:
     if session.market is None:
         try:
             session.market = ChoiceMarketData.connect(session.choice)
+        except ChoiceAuthError as exc:
+            # Waiting for a session -- before 08:00, after a sign-out, or with
+            # the day's automatic logins used -- is expected and not a fault.
+            # The watchdog asks every minute; say so once every half hour.
+            _note_resume_wait(session.user_id, run_key, str(exc))
+            return False
         except ChoiceError:
             log.exception("Could not attach market data to resume %s", record["session_id"])
             return False
@@ -1250,7 +1268,22 @@ def _state_path(session: UserSession, run_key: str = DEFAULT_RUN_KEY):
 
 @app.exception_handler(ChoiceError)
 def choice_error_handler(_request: Request, exc: ChoiceError):
+    """Choice's answer, as a status the dashboard can act on.
+
+    A 401 tells the dashboard the user's own sign-in is gone and sends the
+    browser to the login page -- right for an unknown engine token, which
+    `current_user` reports itself, and wrong for anything Choice says. When
+    Choice refused the broker session every 401 from here bounced the user to
+    a sign-in that texted them another OTP and fixed nothing. So a refused
+    broker session is a 503 that carries the explanation, and the page stays
+    where it is.
+    """
     from fastapi.responses import JSONResponse
 
-    code = status.HTTP_401_UNAUTHORIZED if isinstance(exc, ChoiceAuthError) else status.HTTP_502_BAD_GATEWAY
+    if isinstance(exc, StaticIpRejectedError):
+        code = status.HTTP_403_FORBIDDEN
+    elif isinstance(exc, ChoiceAuthError):
+        code = status.HTTP_503_SERVICE_UNAVAILABLE
+    else:
+        code = status.HTTP_502_BAD_GATEWAY
     return JSONResponse(status_code=code, content={"detail": str(exc)})

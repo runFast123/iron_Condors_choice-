@@ -29,7 +29,7 @@ from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Callable
 
-from engine.choice.errors import ChoiceAuthError, ChoiceError
+from engine.choice.errors import ChoiceAuthError, ChoiceError, ChoiceSessionRejected
 from engine.choice.instruments import Contract
 from engine.config import IST, engine_config
 from engine.choice.errors import ChoiceInstrumentError
@@ -946,14 +946,24 @@ class ForwardRunner:
             # ticking and every tick fails the same way, so say what will fix
             # it rather than repeating the broker's wording -- and say it once
             # per spell, not every ten seconds into a log nobody can then read.
-            self.last_error = (
-                "Choice has rejected this session, so no quotes can be fetched. "
-                "Sign out and sign in again to renew it. The run keeps its "
-                "positions and resumes marking as soon as it can quote."
+            #
+            # A session opened today being refused is not an expiry, and the
+            # engine deliberately does not log in again for it; its message
+            # says so. "Sign out and sign in again" was the advice here, and
+            # on 25 Sep it was exactly what cost another OTP for nothing.
+            refused_today = isinstance(exc, ChoiceSessionRejected)
+            self.last_error = str(exc) if refused_today else (
+                "Choice has rejected this session, so no quotes can be fetched. The run "
+                "keeps its positions and resumes marking as soon as it can quote. Signing "
+                "in again on the dashboard renews the session (Choice texts you one OTP)."
             )
             if not self._auth_failed:
                 self._auth_failed = True
-                self.emit("error", "Choice session expired", error=str(exc))
+                self.emit(
+                    "error",
+                    "Choice is refusing the session" if refused_today else "Choice session expired",
+                    error=str(exc),
+                )
             return
         except ChoiceError as exc:
             self.last_error = str(exc)

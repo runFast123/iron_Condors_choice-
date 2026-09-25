@@ -31,9 +31,15 @@ def _fresh_login_ledger():
     loop of logins across session objects -- so each test starts it empty."""
     from engine.choice.session import LOGIN_LEDGER
 
-    LOGIN_LEDGER.forget()
+    # Memory only: a test must never write the engine's real ledger file. And
+    # no night rule, or every login test would fail when run before 08:00;
+    # the rule has tests of its own on a ledger that keeps it.
+    rule = LOGIN_LEDGER.first_automatic_login
+    LOGIN_LEDGER.bind(None)
+    LOGIN_LEDGER.first_automatic_login = None
     yield
-    LOGIN_LEDGER.forget()
+    LOGIN_LEDGER.bind(None)
+    LOGIN_LEDGER.first_automatic_login = rule
 
 
 @pytest.fixture(autouse=True)

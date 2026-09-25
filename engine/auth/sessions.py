@@ -64,6 +64,11 @@ def _id_salt() -> bytes:
 
 MAX_SESSIONS = int(os.environ.get("ENGINE_MAX_SESSIONS", "50") or 50)
 
+#: A sign-in takes over the account's Choice session, instead of logging in to
+#: Choice again (and texting an OTP), when Choice accepted that session within
+#: this long. Live runs touch it every few seconds in market hours.
+REUSE_WITHIN = dt.timedelta(minutes=15)
+
 
 def derive_user_id(mobile: str) -> str:
     """Stable, non-reversible id for a mobile number."""
@@ -291,29 +296,47 @@ class SessionRegistry:
         user_id = derive_user_id(mobile)
         self._throttle.check(user_id)
 
-        config = ChoiceConfig(vendor_id=vendor_id, api_key=api_key, mobile_no=mobile)
-        choice = ChoiceSession(config)
-        try:
-            choice.login(force=True, automatic=False)
-        except ChoiceError as exc:
-            self._throttle.record_failure(user_id)
-            log.warning("Login failed for user %s: %s", user_id, exc)
-            raise
-        self._throttle.clear(user_id)
+        # Every Choice login texts the account holder an OTP. If the engine is
+        # already holding this account's session, opened today and accepted by
+        # Choice moments ago, a sign-in with the same credentials gets that
+        # session: the same proof -- these are the credentials Choice accepted
+        # when it was opened -- without another OTP.
+        live = self._live_choice_for(user_id, vendor_id, api_key, mobile)
+        if live is not None:
+            self._throttle.clear(user_id)
+            choice = live
+            profile = self._known_profile(user_id)
+            log.info(
+                "User %s signed in on the Choice session already live today; "
+                "no new Choice login, so no OTP", user_id,
+            )
+        else:
+            config = ChoiceConfig(vendor_id=vendor_id, api_key=api_key, mobile_no=mobile)
+            choice = ChoiceSession(config)
+            try:
+                choice.login(force=True, automatic=False)
+            except ChoiceError as exc:
+                self._throttle.record_failure(user_id)
+                log.warning("Login failed for user %s: %s", user_id, exc)
+                raise
+            self._throttle.clear(user_id)
+            # Handed to the runners at once. Choice dropped their old session
+            # the moment this login went through, so every call they make on
+            # it until then is refused -- and reads as a refusal spell.
+            choice = self._share_choice(user_id, choice, just_logged_in=True)
 
-        profile: dict[str, Any] = {}
-        try:
-            resp = choice.request("GET", "api/OpenAPI/UserProfile")
-            body = resp.get("Response")
-            if isinstance(body, dict):
-                profile = body
-        except ChoiceError as exc:
-            # Not fatal: the session is valid even if the profile call is not
-            # available for this account type.
-            log.info("Could not load profile for %s: %s", user_id, exc)
+            profile = {}
+            try:
+                resp = choice.request("GET", "api/OpenAPI/UserProfile", retry_auth=False)
+                body = resp.get("Response")
+                if isinstance(body, dict):
+                    profile = body
+            except ChoiceError as exc:
+                # Not fatal: the session is valid even if the profile call is not
+                # available for this account type.
+                log.info("Could not load profile for %s: %s", user_id, exc)
 
         now = dt.datetime.now(tz=IST)
-        choice = self._share_choice(user_id, choice, just_logged_in=True)
         session = UserSession(
             user_id=user_id,
             token=secrets.token_urlsafe(32),
@@ -349,6 +372,34 @@ class SessionRegistry:
         log.info("User %s logged in (vendor %s)", user_id, vendor_id)
         return session
 
+    def _live_choice_for(
+        self, user_id: str, vendor_id: str, api_key: str, mobile: str
+    ) -> ChoiceSession | None:
+        """The user's Choice session, if a sign-in can take it as it stands.
+
+        Only one that is opened today, accepted by Choice within REUSE_WITHIN
+        and not refused since -- and only for the credentials it was opened
+        with, compared in constant time. Anything less and the sign-in logs in
+        to Choice as it always has.
+        """
+        with self._choice_lock:
+            existing = self._choice_by_user.get(user_id)
+        if existing is None or not existing.proven_live(REUSE_WITHIN):
+            return None
+        held = existing.config
+        for kept, given in ((held.vendor_id, vendor_id), (held.api_key, api_key), (held.mobile_no, mobile)):
+            if not kept or not hmac.compare_digest(str(kept).encode("utf-8"), given.encode("utf-8")):
+                return None
+        return existing
+
+    def _known_profile(self, user_id: str) -> dict[str, Any]:
+        """The profile an earlier sign-in of this user loaded, if any."""
+        with self._lock:
+            for session in self._sessions.values():
+                if session.user_id == user_id and session.profile:
+                    return dict(session.profile)
+        return {}
+
     def _share_choice(self, user_id: str, fresh: ChoiceSession, *, just_logged_in: bool) -> ChoiceSession:
         """The user's one Choice session, with `fresh` folded into it.
 
@@ -373,6 +424,12 @@ class SessionRegistry:
                 existing.bcast_port = fresh.bcast_port
                 existing._login_date = fresh._login_date
                 existing.active_base_url = fresh.active_base_url
+                # A fresh login is fresh evidence, and ends any refusal spell:
+                # left set, a spell Choice ended by this very sign-in kept the
+                # session "refused" until the next accepted call.
+                existing.last_ok = getattr(fresh, "last_ok", None)
+                existing.rejected_since = None
+                existing._refusal_logged = None
             elif not existing.config.api_key and fresh.config.api_key:
                 # A session revived before credentials were stored meets one
                 # that has them: keep the live session, gain the ability to

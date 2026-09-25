@@ -21,6 +21,8 @@ ALICE, BOB = "9000000001", "9000000002"
 class FakeChoiceSession:
     accept = True
     raise_static_ip = False
+    # Whether the engine's own session counts as proven to work right now.
+    live = False
 
     def __init__(self, config):
         import threading as _threading
@@ -49,11 +51,15 @@ class FakeChoiceSession:
     def logoff(self):
         self.logged_off = True
 
+    def proven_live(self, within, now=None):
+        return FakeChoiceSession.live and bool(self.session_id)
+
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch):
     FakeChoiceSession.accept = True
     FakeChoiceSession.raise_static_ip = False
+    FakeChoiceSession.live = False
     monkeypatch.setattr(auth, "ChoiceSession", FakeChoiceSession)
     monkeypatch.setattr(auth, "registry", auth.SessionRegistry())
     import engine.api as api
@@ -329,3 +335,46 @@ def test_calibration_is_readable_and_gated(client):
     body = client.get("/calibration", headers=bearer(token)).json()
     assert "calibration" in body
     assert body["stale_after_days"] > 0
+
+
+
+# ------------------------------------------------ what Choice says, as a status
+
+
+def _raising_route(exc):
+    """A throwaway route on the real app that raises `exc` after sign-in."""
+    import engine.api as api
+    from fastapi import Depends
+
+    path = f"/_test/raise/{type(exc).__name__}/{id(exc)}"
+
+    @api.app.get(path)
+    def _route(session=Depends(api.current_user)):
+        raise exc
+
+    return path
+
+
+def test_a_session_choice_refuses_is_503_not_a_sign_out(client):
+    """A 401 sends the dashboard to the login page. When Choice was refusing
+    the broker session, that bounce is what made users sign in again -- one
+    more OTP -- for a fault a login could not fix."""
+    from engine.choice.errors import ChoiceSessionRejected
+
+    token = login(client, ALICE).json()["token"]
+    for exc in (ChoiceSessionRejected("Choice has been refusing this account's session"),
+                ChoiceAuthError("The engine has already renewed this Choice session 2 times today")):
+        res = client.get(_raising_route(exc), headers=bearer(token))
+        assert res.status_code == 503, (type(exc).__name__, res.status_code)
+        assert res.json()["detail"] == str(exc)
+
+
+def test_a_static_ip_refusal_inside_a_request_is_403(client):
+    token = login(client, ALICE).json()["token"]
+    res = client.get(_raising_route(StaticIpRejectedError("from 1.2.3.4")), headers=bearer(token))
+    assert res.status_code == 403
+
+
+def test_an_unknown_dashboard_token_is_still_401(client):
+    res = client.get(_raising_route(ChoiceAuthError("never reached")), headers=bearer("not-a-token"))
+    assert res.status_code == 401
