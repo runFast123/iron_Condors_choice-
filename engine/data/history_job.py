@@ -33,9 +33,15 @@ ENV_SWITCH = "HISTORY_COLLECTOR"
 #: contracts that expired meanwhile, and a long gap is a job for a person.
 MAX_CATCH_UP_DAYS = 10
 
+#: A run with more failed contracts than this share is tried again.
+MAX_FAILED_SHARE = 0.10
+#: ...but not all evening: after this many tries the day is recorded anyway.
+MAX_ATTEMPTS = 3
+
 # Days a full collection came back with no bars at all: a closure the
 # calendar did not know. Asked once, not every five minutes until midnight.
 _empty_days: set[dt.date] = set()
+_attempts: dict[dt.date, int] = {}
 
 
 def _enabled() -> bool:
@@ -50,10 +56,12 @@ def _last_collected() -> dt.date | None:
     except Exception as exc:                    # noqa: BLE001 - locked or missing: not today
         log.info("History store unavailable: %s", exc)
         return None
-    days = info.get("choice_days") or []
-    candidates = [dt.date.fromisoformat(d) for d in days]
-    if info.get("delivered_until"):
-        candidates.append(dt.date.fromisoformat(str(info["delivered_until"])[:10]))
+    # Only finished collections count: a day with some bars may be a run that
+    # was cut short, and its missing contracts would never be asked for.
+    candidates = [
+        dt.date.fromisoformat(str(info[key])[:10])
+        for key in ("collected_until", "delivered_until") if info.get(key)
+    ]
     return max(candidates) if candidates else None
 
 
@@ -110,10 +118,18 @@ def run_once(registry, now: dt.datetime | None = None) -> dict | None:
         "with_bars": report.with_bars, "rows": report.rows, "failed": report.failed,
         "index_rows": report.index_rows, "seconds": round(time.monotonic() - started),
     }
+    log.info("History job collected %s", summary)
     if report.rows == 0 and report.failed == 0:
         _empty_days.add(today)
         log.warning("History job: no bars at all for %s..%s; treating %s as a closed day", start, today, today)
-    log.info("History job collected %s", summary)
+        return summary
+    _attempts[today] = _attempts.get(today, 0) + 1
+    if report.failed > report.legs * MAX_FAILED_SHARE and _attempts[today] < MAX_ATTEMPTS:
+        log.warning("History job: %d of %d contracts failed; trying again", report.failed, report.legs)
+        return summary
+    if report.failed:
+        log.warning("History job: %d of %d contracts could not be collected", report.failed, report.legs)
+    history_store.mark_collected(start, today, report)
     return summary
 
 

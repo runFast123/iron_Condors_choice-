@@ -252,3 +252,56 @@ def test_no_history_file_is_said_plainly(tmp_path):
     with pytest.raises(hs.HistoryUnavailable, match="no recorded history"):
         hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 1))], dt.date(2026, 9, 28),
                        path=tmp_path / "absent.duckdb")
+
+
+# ------------------------------------------------- a day is done when finished
+
+
+def test_a_run_cut_short_leaves_the_day_to_be_collected_again(monkeypatch):
+    """Bars go in in batches, so a run that dies part-way leaves some of the
+    day behind. That must not count as the day being done."""
+    from engine.choice.errors import ChoiceAuthError
+
+    class DiesHalfway(Market):
+        def option_candles(self, *a, **k):
+            self.asked.append(a)
+            if len(self.asked) > 150:
+                raise ChoiceAuthError("session rejected")
+            return choice_frame(day=evening().date())
+
+    monkeypatch.setattr(history_job, "_attempts", {})
+    monkeypatch.setattr(hs, "coverage", hs.coverage)
+    today = evening().date()
+    hs.mark_collected(today - dt.timedelta(days=1), today - dt.timedelta(days=1), hs.CollectReport())
+    reg = Registry(Session(Choice(today), DiesHalfway()))
+    with pytest.raises(ChoiceAuthError):
+        history_job.run_once(reg, now=evening())
+    assert hs.coverage()["choice_days"] == [today.isoformat()]      # some bars are in...
+    assert history_job._last_collected() == today - dt.timedelta(days=1)   # ...the day is not done
+
+    market = Market()
+    reg = Registry(Session(Choice(today), market))
+    assert history_job.run_once(reg, now=evening())["to"] == today.isoformat()
+    assert history_job._last_collected() == today
+    asked = len(market.asked)
+    assert history_job.run_once(reg, now=evening()) is None and len(market.asked) == asked
+
+
+def test_a_run_with_many_failures_is_tried_again_but_not_all_evening(monkeypatch):
+    from engine.choice.errors import ChoiceError
+
+    class Flaky(Market):
+        def option_candles(self, underlying, expiry, strike, *a, **k):
+            if int(strike) % 100:                       # half the strikes refuse
+                raise ChoiceError("no data")
+            return choice_frame(day=evening().date())
+
+    monkeypatch.setattr(history_job, "_attempts", {})
+    today = evening().date()
+    hs.mark_collected(today - dt.timedelta(days=1), today - dt.timedelta(days=1), hs.CollectReport())
+    reg = Registry(Session(Choice(today), Flaky()))
+    for _ in range(history_job.MAX_ATTEMPTS - 1):
+        assert history_job.run_once(reg, now=evening())["failed"] > 0
+        assert history_job._last_collected() == today - dt.timedelta(days=1)
+    history_job.run_once(reg, now=evening())
+    assert history_job._last_collected() == today

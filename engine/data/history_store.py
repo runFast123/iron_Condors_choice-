@@ -45,6 +45,10 @@ ENV_DB = "NIFTY_HISTORY_DB"
 
 OPTIONS_TABLE = "choice_bars"
 INDEX_TABLE = "choice_index_bars"
+#: One row per finished collection. A day is done when it is recorded here,
+#: not when some of its bars exist: bars are written in batches, so a run cut
+#: short leaves a day part-filled.
+COLLECTIONS_TABLE = "choice_collections"
 DELIVERED_TABLE = "dtable"
 
 #: Strikes collected, as a fraction of spot either side. The delivered data
@@ -219,6 +223,11 @@ def _ensure(con) -> None:
             strike DOUBLE, type VARCHAR, source VARCHAR, fetched_at VARCHAR
         )""")
     con.execute(f"""
+        CREATE TABLE IF NOT EXISTS {COLLECTIONS_TABLE} (
+            first_day VARCHAR, last_day VARCHAR, legs BIGINT, with_bars BIGINT,
+            rows BIGINT, failed BIGINT, finished_at VARCHAR
+        )""")
+    con.execute(f"""
         CREATE TABLE IF NOT EXISTS {INDEX_TABLE} (
             datetime VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE,
             volume BIGINT, name VARCHAR, source VARCHAR, fetched_at VARCHAR
@@ -373,6 +382,20 @@ def _with_connection(work, path: pathlib.Path, *, read_only: bool):
     raise HistoryUnavailable("the recorded history was in use by another process") from last_error
 
 
+def mark_collected(first: dt.date, last: dt.date, report: CollectReport,
+                   path: pathlib.Path | None = None) -> None:
+    """Record that [first, last] was collected in full."""
+    def write(con) -> None:
+        _ensure(con)
+        con.execute(
+            f"INSERT INTO {COLLECTIONS_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [first.isoformat(), last.isoformat(), report.legs, report.with_bars, report.rows,
+             report.failed, dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")],
+        )
+
+    _with_connection(write, path or db_path(), read_only=False)
+
+
 def coverage(path: pathlib.Path | None = None) -> dict:
     """What the file holds: the delivered data's end and Choice's days."""
     return _with_connection(_coverage, path or db_path(), read_only=True)
@@ -387,4 +410,7 @@ def _coverage(con) -> dict:
         out["choice_days"] = [r[0] for r in con.execute(
             f"SELECT DISTINCT substr(datetime, 1, 10) FROM {OPTIONS_TABLE} ORDER BY 1").fetchall()]
         out["choice_rows"] = con.execute(f"SELECT count(*) FROM {OPTIONS_TABLE}").fetchone()[0]
+    if COLLECTIONS_TABLE in tables:
+        out["collected_until"] = con.execute(
+            f"SELECT max(last_day) FROM {COLLECTIONS_TABLE}").fetchone()[0]
     return out
