@@ -136,3 +136,37 @@ def test_a_small_modelled_remainder_is_never_called_zero_percent():
     assert _share(1, 603820) == "under 0.1%"
     assert _share(0, 10) == "0.0%"
     assert _share(35, 100) == "35%"
+
+
+def test_choice_is_asked_twice_per_expiry_it_no_longer_holds(monkeypatch, recorded):
+    """Choice keeps no bars for a long-expired contract. Once the first two
+    legs of an expiry come back empty, and the recorded history holds that
+    expiry, the rest go to the history without asking."""
+    from engine.tests.test_jobs import FakeMarket
+
+    first = _run(monkeypatch, FakeMarket(spot=_spot_at_ten()))
+    expiries = sorted({dt.date.fromisoformat(c["expiry"]) for c in first.result["condors"]})
+    monkeypatch.setattr(history_store, "expiries", lambda path=None: expiries)
+
+    market = FakeMarket(spot=_spot_at_ten())
+    job = _run(monkeypatch, market)
+    assert job.status == "done", job.error
+    prov = job.result["provenance"]
+    assert prov["legs_not_asked"] > 0
+    assert market.option_calls == prov["legs_total"] - prov["legs_not_asked"]
+    assert market.option_calls <= 2 * len(expiries)
+    # Every leg is still priced from real trades.
+    assert prov["legs_priced_real"] == prov["legs_total"]
+    assert {leg["source"] for c in job.result["condors"] for leg in c["legs"]} == {"history"}
+
+
+def test_an_expiry_choice_still_serves_is_asked_in_full(monkeypatch, recorded):
+    from engine.tests.test_jobs import FakeMarket
+
+    first = _run(monkeypatch, FakeMarket(spot=_spot_at_ten()))
+    expiries = sorted({dt.date.fromisoformat(c["expiry"]) for c in first.result["condors"]})
+    monkeypatch.setattr(history_store, "expiries", lambda path=None: expiries)
+    market = FakeMarket(spot=_spot_at_ten(), option_frames=True)
+    job = _run(monkeypatch, market)
+    assert job.result["provenance"]["legs_not_asked"] == 0
+    assert market.option_calls == job.result["provenance"]["legs_total"]

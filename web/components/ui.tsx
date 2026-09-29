@@ -212,6 +212,8 @@ export function ProvenanceBanner({
     backup?: number;
     /** Priced from the recorded one-minute history at least once. */
     history?: number;
+    /** Not asked of Choice: it had nothing for the first legs of their expiry. */
+    notAsked?: number;
   };
   /** Share of price lookups the backup source answered. Counted inside
    *  realFraction: a backup price is a real traded price, not a model. */
@@ -276,7 +278,7 @@ export function ProvenanceBanner({
           expiries" is the actual answer and is not fixable from here. */}
       {/* The reason, not just the percentage. The percentage counts every
           price lookup the replay made; the lines below count legs. */}
-      {legs && (legs.empty || legs.unused || legs.unresolved) ? (
+      {legs && (legs.empty || legs.unused || legs.unresolved || legs.notAsked) ? (
         <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
           <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice candles.
           {legs.unused
@@ -288,6 +290,9 @@ export function ProvenanceBanner({
               }.`
             : ""}
           {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
+          {legs.notAsked
+            ? ` ${legs.notAsked} were not asked of Choice, which had no bars for the first contracts of their expiry.`
+            : ""}
           {legs.history
             ? ` Of the legs Choice could not fully price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
             : ""}

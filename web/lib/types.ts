@@ -145,6 +145,9 @@ export interface Provenance {
   legs_total?: number;
   legs_real?: number;
   legs_empty?: number;
+  /** Not asked of Choice: it had no bars for the first legs of their expiry,
+   *  and the recorded history holds it. */
+  legs_not_asked?: number;
   legs_unresolved?: number;
   empty_expiries?: string[];
   /** Bars came back for these legs, but none near a moment they were needed. */

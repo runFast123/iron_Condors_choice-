@@ -224,6 +224,10 @@ def _fetch_with_backup(
     return merged, taken, note, choice_error
 
 
+#: Legs of one expiry Choice must return nothing for before the rest of that
+#: expiry is taken from the recorded history without asking.
+CHOICE_EMPTY_PROBES = 2
+
 #: At or below this share of modelled lookups a run is described as real
 #: prices with a small modelled remainder, not as a modelled run.
 MOSTLY_REAL = 0.02
@@ -761,6 +765,15 @@ class BacktestRunner:
         # and when the run first needed it -- the evidence for why a leg with
         # data could still end up modelled.
         spans: dict[tuple[dt.date, float, str], tuple[int, Any, Any, dt.datetime]] = {}
+        # Expiries Choice has shown it no longer holds: the first legs asked
+        # came back empty. Choice keeps no bars for a long-expired contract, so
+        # where the recorded history has the expiry, its other legs go there
+        # directly -- an all-data run otherwise spent most of an hour on
+        # requests that could only come back empty.
+        recorded_expiries = set(recorded)
+        empty_by_expiry: dict[dt.date, int] = {}
+        served_by_expiry: set[dt.date] = set()
+        not_asked: list[str] = []
         total = max(1, len(requirements))
         for i, req in enumerate(requirements, 1):
             self._step(
@@ -768,9 +781,17 @@ class BacktestRunner:
                 0.20 + 0.65 * (i / total),
                 f"Fetching option {i} of {total} ({req.strike:g} {req.right} {req.expiry})",
             )
+            if (req.expiry in recorded_expiries and req.expiry not in served_by_expiry
+                    and empty_by_expiry.get(req.expiry, 0) >= CHOICE_EMPTY_PROBES):
+                not_asked.append(f"{req.expiry} {req.strike:g}{req.right}")
+                continue
             try:
+                # Only the leg's own life: from the day before it is first
+                # needed to its expiry. Asking over the whole run cost dozens of
+                # empty windows per leg on a multi-year range.
                 frame = market.option_candles(
-                    NIFTY, req.expiry, req.strike, req.right, start, end,
+                    NIFTY, req.expiry, req.strike, req.right,
+                    max(start, req.first_needed.date() - dt.timedelta(days=1)), min(end, req.expiry),
                     p.get("option_resolution") or resolution,
                     instruments=instruments,
                 )
@@ -779,13 +800,20 @@ class BacktestRunner:
                 missing.append(f"{req.expiry} {req.strike:g}{req.right}")
                 continue
             if not frame.empty:
+                served_by_expiry.add(req.expiry)
                 candles.add(req.expiry, req.strike, req.right, frame)
                 fetched += 1
                 spans[(req.expiry, float(req.strike), req.right)] = (
                     len(frame), frame["ts"].min(), frame["ts"].max(), req.first_needed,
                 )
             else:
+                empty_by_expiry[req.expiry] = empty_by_expiry.get(req.expiry, 0) + 1
                 served_nothing.append(f"{req.expiry} {req.strike:g}{req.right}")
+        if not_asked:
+            log.info(
+                "[%s] %d legs not asked of Choice: it had no bars for the first %d of their expiry, "
+                "and the recorded history holds it", job.job_id, len(not_asked), CHOICE_EMPTY_PROBES,
+            )
 
         if served_nothing:
             by_expiry: dict[str, int] = {}
@@ -1025,6 +1053,9 @@ class BacktestRunner:
             "legs_unused": len(unused),
             "unused_legs": leg_detail[:40],
             "legs_empty": len(served_nothing),
+            # Not asked of Choice: it had nothing for the first legs of their
+            # expiry, and the recorded history holds that expiry.
+            "legs_not_asked": len(not_asked),
             "legs_unresolved": len(missing),
             "empty_expiries": sorted({e.split(" ", 1)[0] for e in served_nothing}),
             # The scrip master delists expired contracts, so a historical run

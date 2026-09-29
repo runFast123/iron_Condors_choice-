@@ -35,6 +35,7 @@ export default async function LadderPage() {
             emptyExpiries: provenance.empty_expiries,
             backup: provenance.legs_backup,
             history: provenance.legs_history,
+            notAsked: provenance.legs_not_asked,
           }}
         />
 
