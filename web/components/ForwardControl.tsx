@@ -318,13 +318,9 @@ export function ForwardControl({
 
   const stop = async (key: string = runKey) => {
     await post(`/api/forward/stop?run=${encodeURIComponent(key)}`, undefined, "stopping");
-    // A stopped run drops out of the listing, so staying pointed at it would
-    // leave the panel on a run that no longer exists. Move to another live
-    // one if there is one.
-    if (key === runKey) {
-      const next = runs.find((r) => r.run_key !== key && r.running);
-      selectRun(next ? next.run_key : DEFAULT_RUN);
-    }
+    // The stopped run stays listed and on screen, with its final positions and
+    // P&L, so there is no need to jump elsewhere.
+    if (key === runKey) void refresh();
   };
 
   /** Switch the panel, and put the run in the address bar with it.
@@ -352,6 +348,20 @@ export function ForwardControl({
    * how a number gets trusted more than it deserves.
    */
   const notes: { key: string; tone: "warn" | "info"; body: ReactNode }[] = [];
+  if (running && state?.risk?.entries_halted) {
+    notes.push({
+      key: "loss-halt",
+      tone: "warn",
+      body: (
+        <>
+          <strong>Daily loss limit hit.</strong> Today&rsquo;s P&amp;L is{" "}
+          {inr(state.risk.day_pnl ?? 0, { sign: true })} against a limit of{" "}
+          {inr(state.risk.daily_loss_limit ?? 0)}, so no new positions open for the rest of
+          today. Open positions are held and settle as usual; entries resume tomorrow.
+        </>
+      ),
+    });
+  }
   // First, because it explains why nothing new is opening -- which otherwise
   // looks exactly like a run that has stopped working.
   const vix = state?.vix;
@@ -562,7 +572,7 @@ export function ForwardControl({
           </div>
         )}
 
-        {!running || starting ? (
+        {!state || starting ? (
           <>
             {starting && running && (
               <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--ink-2)" }}>
@@ -858,7 +868,28 @@ export function ForwardControl({
           </>
         ) : (
           <>
-            {session?.last_error && (
+            {!running && (
+              <div
+                className="auth-alert auth-alert-info"
+                style={{ marginBottom: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}
+              >
+                <span style={{ flex: "1 1 320px" }}>
+                  <strong>This run has stopped</strong>
+                  {session?.stopped_reason ? ` (${session.stopped_reason})` : ""}. Its chart,
+                  positions and P&amp;L are shown as they stood when it stopped.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setStarting(true)}
+                  disabled={atCap}
+                  className="btn-quiet"
+                  style={{ fontSize: 12, padding: "5px 12px" }}
+                >
+                  Start a new run
+                </button>
+              </div>
+            )}
+            {running && session?.last_error && (
               <div className="auth-alert auth-alert-error" style={{ marginBottom: 14 }}>
                 <strong>No live quotes.</strong> {session.last_error}
               </div>
@@ -911,7 +942,7 @@ export function ForwardControl({
                 />
               ) : (
                 <div style={{ padding: "36px 16px", textAlign: "center", fontSize: 12.5, color: "var(--ink-muted)" }}>
-                  Waiting for the first live quote&hellip;
+                  {running ? <>Waiting for the first live quote&hellip;</> : "No ticks were recorded for this run."}
                 </div>
               )}
             </div>
@@ -960,18 +991,20 @@ export function ForwardControl({
                 // *up* rung once the down side is capped, so the tile labelled
                 // "Next down" showed a level above the market.
                 value={
-                  state?.ladder.next_down != null
+                  !running
+                    ? "—"
+                    : state?.ladder.next_down != null
                     ? num(state.ladder.next_down)
                     : state?.ladder.direction !== "both" && state?.ladder.next_trigger != null
                       ? num(state.ladder.next_trigger)
                       : "—"
                 }
-                hint={shapeHint(state?.ladder.next_down_kind)}
+                hint={running ? shapeHint(state?.ladder.next_down_kind) : undefined}
               />
               {state?.ladder.direction === "both" && (
                 <Metric
                   label="Next up"
-                  value={state?.ladder.next_up != null ? num(state.ladder.next_up) : "—"}
+                  value={running && state?.ladder.next_up != null ? num(state.ladder.next_up) : "—"}
                   hint={shapeHint(state?.ladder.next_up_kind)}
                 />
               )}
@@ -990,9 +1023,11 @@ export function ForwardControl({
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               {/* Arrow, not a bare reference: onClick hands the handler a
                   MouseEvent, which would arrive as the run name. */}
-              <button onClick={() => stop()} disabled={busy !== null} className="btn-danger">
-                {busy === "stopping" ? "Stopping…" : `Stop ${runs.length > 1 ? runKey : "run"}`}
-              </button>
+              {running && (
+                <button onClick={() => stop()} disabled={busy !== null} className="btn-danger">
+                  {busy === "stopping" ? "Stopping…" : `Stop ${runs.length > 1 ? runKey : "run"}`}
+                </button>
+              )}
 
               <button onClick={refresh} className="btn-quiet">
                 Refresh now
@@ -1050,7 +1085,9 @@ export function ForwardControl({
               </div>
               {openPositions.length === 0 ? (
                 <div style={{ padding: "18px 12px", textAlign: "center", fontSize: 12.5, color: "var(--ink-muted)", background: "var(--surface-3)", borderRadius: 8 }}>
-                  No condors open yet. The first one opens on the next tick.
+                  {running
+                    ? "No condors open yet. The first one opens on the next tick."
+                    : "No positions were open when this run stopped."}
                 </div>
               ) : (
                 <div className="scroll-x">
@@ -1104,11 +1141,6 @@ export function ForwardControl({
               )}
             </div>
 
-            {session?.stopped_reason && (
-              <p style={{ fontSize: 12, color: "var(--neg)", margin: "12px 0 0" }}>
-                <strong>Stopped:</strong> {session.stopped_reason}
-              </p>
-            )}
           </>
         )}
       </div>

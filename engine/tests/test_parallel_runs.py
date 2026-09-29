@@ -35,12 +35,21 @@ class FakeRunner:
         self.saved = 0
         self._total = total
         self._suspended = False
+        self.halted_on = None
+
+    def entries_halted(self, day):
+        return self.halted_on == day
+
+    def halt_entries(self, day, message, **detail):
+        self.halted_on = day
+        self.emit("error", message)
 
     def snapshot(self):
         # Every field carries the run's name, so a page showing one run's
         # numbers under another's heading is detectable rather than plausible.
         return {
             "pnl": {"total": self._total, "open_condors": 1},
+            "risk": {"day_pnl": self._total},
             "session": {"last_tick": None, "expiry": None},
             "ladder": {"direction": "down", "fired": [self.run_key]},
             "positions": [{"index": 0, "level": 23_400, "tag": self.run_key}],
@@ -241,10 +250,12 @@ def test_one_run_polices_itself_without_the_account_check(registry):
     assert _enforce_account_loss_limit(session) is False
 
 
-def test_several_small_losses_that_add_up_stop_every_run(registry):
+def test_several_small_losses_today_halt_every_run_for_the_day(registry):
     """Per-run limits alone leave the total unbounded: five runs each stopping
-    at their own limit is five times the intended worst case."""
-    from engine.config import engine_config
+    at their own limit is five times the intended worst case. Measured on
+    today's P&L, and answered by halting entries, not stopping the runs."""
+    import datetime as _dt
+    from engine.config import IST as _IST, engine_config
 
     session = _session(registry)
     each = -(abs(engine_config.account_loss_limit) / 2 + 1)
@@ -253,9 +264,11 @@ def test_several_small_losses_that_add_up_stop_every_run(registry):
         session.set_runner(r.run_key, r)
 
     assert _enforce_account_loss_limit(session) is True
-    assert all(r.stopped_reason for r in runs)
-    assert all("account loss limit" in r.stopped_reason for r in runs)
-    assert all(r.saved for r in runs), "a stopped run must be persisted as stopped"
+    today = _dt.datetime.now(tz=_IST).date()
+    assert all(r.entries_halted(today) and r.stopped_reason is None for r in runs)
+    assert all("Account loss limit hit" in r.events[-1] for r in runs)
+    assert all(r.saved for r in runs), "the halt must be persisted"
+    assert _enforce_account_loss_limit(session) is False, "said once a day"
 
 
 def test_runs_inside_the_account_limit_are_left_running(registry):
@@ -416,3 +429,71 @@ def test_the_listing_agrees_with_what_each_run_reports(client):
     for key, total in listed.items():
         detail = client.get(f"/forward/state?run={key}").json()["state"]["pnl"]["total"]
         assert detail == total, key
+
+
+# ============================== a stopped run stays visible
+
+
+def test_a_stopped_run_is_still_shown_with_its_last_state(registry, tmp_path, monkeypatch):
+    """A stopped run left memory -- at once on a stop from the dashboard, on
+    any restart otherwise -- and with it its chart, positions and P&L: the page
+    showed nothing for a run that had traded for weeks."""
+    import json
+    import engine.api as api
+
+    store = Store(tmp_path / "engine.db")
+    monkeypatch.setattr(api, "store", store)
+    monkeypatch.setenv("ENGINE_STATE_DIR", str(tmp_path))
+    session = _session(registry)
+    now = dt.datetime.now(tz=IST).isoformat()
+    store.save_forward(session_id="sess-ladder", user_id=session.user_id, status="stopped",
+                       started_at=now, stopped_reason="daily loss limit hit (-25,188)",
+                       state={"version": 2}, run_key=LADDER, strategy_id=LADDER)
+    snap = {"session": {"status": "running", "last_tick": now, "expiry": "2026-09-29"},
+            "pnl": {"total": -25_188.0, "open_condors": 8}, "ladder": {"direction": "both"},
+            "positions": [{"index": 0, "status": "OPEN"}]}
+    (tmp_path / f"live-{session.user_id}-{LADDER}.json").write_text(json.dumps(snap), encoding="utf-8")
+
+    body = api.forward_state(session=session, run=LADDER)
+    assert body["running"] is False
+    assert body["state"]["pnl"]["total"] == -25_188.0 and body["state"]["positions"]
+    assert body["state"]["session"]["status"] == "stopped"
+    listed = [r for r in body["runs"] if r["run_key"] == LADDER]
+    assert listed and listed[0]["running"] is False and "daily loss" in listed[0]["stopped_reason"]
+
+
+def test_a_reader_never_waits_on_a_slow_tick():
+    """A tick holds the lock across its round trip to Choice. The state
+    endpoint reads every run's snapshot, so one slow tick stalled every page."""
+    import threading
+    import time
+    from engine.tests.test_forward_fills import EXPIRY, runner
+
+    r = runner()
+    r.market.prices = {26000: 24_000.0}
+    r.expiry = EXPIRY
+    r.tick()
+    held, release = threading.Event(), threading.Event()
+
+    def slow_tick():
+        with r._lock:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=slow_tick)
+    worker.start()
+    held.wait(2)
+    try:
+        started = time.monotonic()
+        snap = r.snapshot()
+        assert time.monotonic() - started < 1.0
+        assert snap["session"] is not None
+    finally:
+        release.set()
+        worker.join()
+
+
+def test_responses_are_compressed():
+    import engine.api as api
+
+    assert any(m.cls.__name__ == "GZipMiddleware" for m in api.app.user_middleware)

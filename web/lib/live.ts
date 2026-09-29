@@ -110,6 +110,13 @@ export interface LiveState {
     /** When that spot printed, as against when the engine read it. */
     as_of?: string | null;
   };
+  /** The daily loss limit: today's P&L and whether new entries are halted
+   *  for the rest of today. Absent from engines that predate it. */
+  risk?: {
+    daily_loss_limit: number | null;
+    day_pnl: number | null;
+    entries_halted: boolean;
+  };
   /** The VIX rule. `limit` null: this run has no rule (started before it
    *  existed, or with it cleared). Absent from engines that predate it. */
   vix?: {

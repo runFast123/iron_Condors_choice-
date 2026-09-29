@@ -222,6 +222,15 @@ class ForwardRunner:
     # Expiries a "Cannot settle" warning has been given for, so a settlement
     # that keeps failing says so once instead of on every tick.
     _settle_warned: frozenset = frozenset()
+    # The daily loss limit's day: which day it is measuring, the book's P&L
+    # when that day began, the P&L at the last tick, and the day new entries
+    # were halted on (None when they are not).
+    risk_day: dt.date | None = None
+    risk_day_base: float | None = None
+    last_total: float | None = None
+    halted_on: dt.date | None = None
+    # The last snapshot, for a reader arriving while a tick holds the lock.
+    _snapshot_cache: dict | None = None
 
     def __init__(
         self,
@@ -960,6 +969,25 @@ class ForwardRunner:
 
     # ----------------------------------------------------------------- tick
 
+    def entries_halted(self, day: dt.date) -> bool:
+        return self.halted_on == day
+
+    def halt_entries(self, day: dt.date, message: str, **detail) -> None:
+        """No new positions for the rest of `day`. Open ones are held and settle
+        as usual -- the strategy holds to expiry, and a run that stops ticking
+        leaves them frozen and unsettled."""
+        if self.halted_on == day:
+            return
+        self.halted_on = day
+        self.emit("error", message, **detail)
+
+    def day_pnl(self) -> float | None:
+        """Today's P&L: the book now against where it stood when today began."""
+        today = dt.datetime.now(tz=IST).date()
+        if self.risk_day != today or self.risk_day_base is None or self.last_total is None:
+            return None
+        return self.last_total - self.risk_day_base
+
     def tick(self) -> None:
         """One polling cycle: read spot, fire triggers, refresh MTM.
 
@@ -970,6 +998,7 @@ class ForwardRunner:
         """
         with self._lock:
             self._tick_locked()
+            self._snapshot_cache = self._snapshot_locked()
 
     def _tick_locked(self) -> None:
         try:
@@ -1087,7 +1116,15 @@ class ForwardRunner:
                 + " while new positions were paused; not opened",
                 levels=[p.level for p in passed],
             )
+        halted = self.entries_halted(now.date())
         for trigger in fresh:
+            if halted:
+                self.emit(
+                    "warn",
+                    f"Level {trigger.level:,.0f} not opened: the loss limit was hit today",
+                    level=trigger.level,
+                )
+                continue
             # The ladder enforces the same cap when it decides whether to fire,
             # so this is a backstop -- but it must read the *run's* limit, not a
             # global one, or a run configured for 30 would silently drop 10.
@@ -1104,9 +1141,27 @@ class ForwardRunner:
         # `last_mtm`, still showed the real figure. Stale marks are a worse
         # answer than fresh ones and a far better one than silence.
         total, unmarked = self._pnl_total_locked()
-        if total <= -self.daily_loss_limit:
-            self.stopped_reason = f"daily loss limit hit ({total:,.0f})"
-            self.emit("error", "KILL SWITCH: " + self.stopped_reason, pnl=round(total, 2))
+        # A *daily* limit: today's P&L, from where the book stood at the last
+        # tick of the previous session -- so an overnight gap counts as today's.
+        # It was the run's whole P&L since it started, which stopped both ladder
+        # runs at 09:16 on expiry day for a loss built up over three weeks.
+        today = now.date()
+        if self.risk_day != today:
+            self.risk_day = today
+            self.risk_day_base = self.last_total if self.last_total is not None else total
+        self.last_total = total
+        day_pnl = total - (self.risk_day_base if self.risk_day_base is not None else total)
+        if day_pnl <= -self.daily_loss_limit:
+            # Entries stop for the day; the run does not. Stopping it froze the
+            # book -- no marks, no settlement at expiry -- and hid it from the
+            # dashboard, which helps nobody on a paper run.
+            self.halt_entries(
+                today,
+                f"Daily loss limit hit: today's P&L is {day_pnl:,.0f} against a limit of "
+                f"{self.daily_loss_limit:,.0f}. No new positions for the rest of today; open "
+                "positions are held and settle as usual.",
+                day_pnl=round(day_pnl, 2), limit=round(self.daily_loss_limit, 2),
+            )
         elif unmarked and unmarked != self._unmarked_seen:
             # Said when it changes, not every ten seconds. The limit is being
             # measured against part of the book, and a reader deciding whether
@@ -1121,6 +1176,24 @@ class ForwardRunner:
     # ---------------------------------------------------------------- state
 
     def snapshot(self) -> dict[str, Any]:
+        """The dashboard's view of the run.
+
+        A tick holds the lock across its round trip to Choice, which takes
+        seconds when Choice is slow -- and the state endpoint reads every run's
+        snapshot, so one slow tick stalled every page. A reader that cannot get
+        the lock at once gets the snapshot the last tick left, which was
+        consistent when it was taken.
+        """
+        if self._lock.acquire(timeout=0.2):
+            try:
+                snap = self._snapshot_locked()
+                self._snapshot_cache = snap
+                return snap
+            finally:
+                self._lock.release()
+        cached = self._snapshot_cache
+        if cached is not None:
+            return cached
         with self._lock:
             return self._snapshot_locked()
 
@@ -1282,6 +1355,11 @@ class ForwardRunner:
                 }
                 for p in net_positions(self.condors, open_only=True)
             ],
+            "risk": {
+                "daily_loss_limit": getattr(self, "daily_loss_limit", None),
+                "day_pnl": None if self.day_pnl() is None else round(self.day_pnl(), 2),
+                "entries_halted": self.entries_halted(dt.datetime.now(tz=IST).date()),
+            },
             "generated_at": dt.datetime.now(tz=IST).isoformat(),
         }
 
@@ -1500,6 +1578,12 @@ class ForwardRunner:
             # So a resumed run can say why it is paused before its first tick.
             "last_vix": self.last_vix,
             "last_vix_as_of": self.last_vix_as_of.isoformat() if self.last_vix_as_of else None,
+            # The daily loss limit's day, so a restart mid-session does not
+            # reset today's measure or lift a halt.
+            "risk_day": self.risk_day.isoformat() if self.risk_day else None,
+            "risk_day_base": self.risk_day_base,
+            "last_total": self.last_total,
+            "halted_on": self.halted_on.isoformat() if self.halted_on else None,
             "vix_problem": self.vix_problem,
             "condors": [self._condor_state(c) for c in self.condors],
             "fills": [asdict(f) for f in self.fills],
@@ -1577,6 +1661,10 @@ class ForwardRunner:
             runner.last_vix = None
         runner.last_vix_as_of = _parse_dt(state.get("last_vix_as_of"))
         runner.vix_problem = state.get("vix_problem")
+        runner.risk_day = _parse_date(state.get("risk_day"))
+        runner.risk_day_base = _float_or_none(state.get("risk_day_base"))
+        runner.last_total = _float_or_none(state.get("last_total"))
+        runner.halted_on = _parse_date(state.get("halted_on"))
         runner.legs_on_real_depth = int(state.get("legs_on_real_depth") or 0)
         runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)
         runner.total_slippage = float(state.get("total_slippage") or 0.0)
@@ -1594,6 +1682,13 @@ class ForwardRunner:
             log.error("%s: %s", run_key or resolved_strategy_id, skew)
             runner.emit("error", skew)
         return runner
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _expects_debit(unit: PositionUnit) -> bool:

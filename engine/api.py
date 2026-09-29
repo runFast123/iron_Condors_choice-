@@ -33,6 +33,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -135,6 +136,12 @@ app = FastAPI(
     title="Iron Condor Ladder engine", version="1.0.0",
     docs_url=None, redoc_url=None, lifespan=_lifespan,
 )
+
+# Every response over a kilobyte goes compressed. The dashboard talks to this
+# engine from Vercel through a tunnel, and a run's state (60-70 KB, polled every
+# ten seconds) or a backtest's dataset (megabytes at five-minute bars) crossed it
+# as plain JSON; both shrink about sevenfold.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 if ALLOWED_ORIGINS:
     app.add_middleware(
@@ -713,35 +720,41 @@ def _watchdog_pass() -> None:
 
 
 def _enforce_account_loss_limit(session: UserSession) -> bool:
-    """Stop every one of a user's runs if their combined loss breaches.
+    """Halt every one of a user's runs for the day if their combined loss
+    today breaches the account limit.
 
-    Each run carries its own limit, so one runaway test cannot take the others
-    down. That leaves the sum unbounded -- five runs each stopping at the limit
-    is five times the intended worst case -- which is what this catches. It
-    lives here rather than in the runner because a runner cannot see its
-    siblings, and a per-tick check that needed to would have to reach across
-    them on every tick of every run.
+    Each run carries its own daily limit, so one runaway test cannot take the
+    others down. That leaves the sum unbounded -- five runs each stopping at
+    the limit is five times the intended worst case -- which is what this
+    catches. Measured on today's P&L, like the per-run limit, and answered the
+    same way: no new positions today, open ones held to settle. It used to
+    compare the runs' whole P&L since they started and stop them outright.
     """
     runners = [r for r in session.runners().values() if r.stopped_reason is None]
     if len(runners) < 2:
         return False                     # a single run polices itself
 
     limit = abs(engine_config.account_loss_limit)
+    today = dt.datetime.now(tz=IST).date()
     total = 0.0
     for runner in runners:
-        pnl = runner.snapshot().get("pnl") or {}
-        total += float(pnl.get("total") or 0.0)
+        risk = runner.snapshot().get("risk") or {}
+        total += float(risk.get("day_pnl") or 0.0)
     if total > -limit:
         return False
 
-    reason = f"account loss limit hit across {len(runners)} runs ({total:,.0f})"
-    log.error("KILL SWITCH for %s: %s", session.user_id, reason)
-    for runner in runners:
-        runner.stopped_reason = reason
-        runner.emit("error", "KILL SWITCH: " + reason, pnl=round(total, 2))
+    fresh = [r for r in runners if not r.entries_halted(today)]
+    if not fresh:
+        return False
+    message = (
+        f"Account loss limit hit: today's P&L across {len(runners)} runs is {total:,.0f} "
+        f"against a limit of {limit:,.0f}. No new positions in any run for the rest of today; "
+        "open positions are held and settle as usual."
+    )
+    log.error("Account loss limit for %s: %s", session.user_id, message)
+    for runner in fresh:
+        runner.halt_entries(today, message, day_pnl=round(total, 2))
         runner.save()
-        if runner.session_id:
-            store.mark_stopped(runner.session_id, reason)
     return True
 
 
@@ -1122,6 +1135,83 @@ def forward_tick(
     return {"ok": True, "state": runner.snapshot()}
 
 
+#: How long a stopped run stays in the roll-call after it stopped.
+STOPPED_RUNS_SHOWN_DAYS = 14
+
+
+def _stopped_rows(session: UserSession) -> dict[str, dict[str, Any]]:
+    """The latest stored row of each run this user has that the engine is no
+    longer driving and that stopped recently, by run name."""
+    try:
+        rows = store.forward_history(session.user_id, limit=50)
+    except Exception:                               # noqa: BLE001
+        log.exception("Could not read stopped runs for %s", session.user_id)
+        return {}
+    live = session.runners()
+    cutoff = dt.datetime.now(tz=IST) - dt.timedelta(days=STOPPED_RUNS_SHOWN_DAYS)
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:                                # newest first
+        key = row["run_key"]
+        if key in live or key in out:
+            continue
+        out[key] = row
+    keep = {}
+    for key, row in out.items():
+        reason = row.get("stopped_reason") or ""
+        if row["status"] != "stopped" or reason.startswith(("retired", "superseded")):
+            continue
+        try:
+            updated = dt.datetime.fromisoformat(row["updated_at"])
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=dt.timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if updated >= cutoff:
+            keep[key] = row
+    return keep
+
+
+def _saved_snapshot(session: UserSession, run_key: str) -> dict[str, Any] | None:
+    """The last snapshot a run wrote before the engine stopped driving it.
+
+    A stopped run left memory -- on a stop from the dashboard at once, on any
+    restart otherwise -- and with it went its chart, its positions and its
+    P&L: the page showed nothing at all for a run that had been trading for
+    weeks. The snapshot each save writes is exactly what the page needs.
+    """
+    import json as _json
+
+    path = _state_path(session, run_key)
+    try:
+        return _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _stopped_summary(session: UserSession, run_key: str, row: dict[str, Any]) -> dict[str, Any] | None:
+    snap = _saved_snapshot(session, run_key)
+    if snap is None:
+        return None
+    pnl = snap.get("pnl") or {}
+    info = snap.get("session") or {}
+    return {
+        "run_key": run_key,
+        "label": row.get("run_label") or run_key,
+        "strategy": row.get("strategy_id") or LADDER,
+        "running": False,
+        "stopped_reason": row.get("stopped_reason") or "stopped",
+        "ticking": False,
+        "started_at": row["started_at"],
+        "last_tick": info.get("last_tick"),
+        "expiry": info.get("expiry"),
+        "direction": (snap.get("ladder") or {}).get("direction"),
+        "lots": info.get("lots"),
+        "daily_loss_limit": (snap.get("risk") or {}).get("daily_loss_limit"),
+        "pnl": pnl,
+        "open_condors": pnl.get("open_condors", 0),
+    }
+
+
 def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
     """Every forward test this user is driving, newest first.
 
@@ -1150,7 +1240,15 @@ def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
             "pnl": pnl,
             "open_condors": pnl.get("open_condors", 0),
         })
+    # Recently stopped runs too, listed as stopped, so one is never simply
+    # gone from the page.
+    for run_key, row in _stopped_rows(session).items():
+        summary = _stopped_summary(session, run_key, row)
+        if summary is not None:
+            out.append(summary)
+    # Live runs first, each group newest first.
     out.sort(key=lambda r: r["started_at"], reverse=True)
+    out.sort(key=lambda r: not r["running"])
     return out
 
 
@@ -1192,10 +1290,20 @@ def forward_state(
         run_key = next(iter(runners), DEFAULT_RUN_KEY)
 
     runner = runners.get(run_key)
+    state = runner.snapshot() if runner is not None else None
+    if state is None:
+        # Not driven any more: serve what it last looked like, marked stopped.
+        row = _stopped_rows(session).get(run_key)
+        state = _saved_snapshot(session, run_key) if row is not None else None
+        if state is not None:
+            info = dict(state.get("session") or {})
+            info["status"] = "stopped"
+            info["stopped_reason"] = info.get("stopped_reason") or row.get("stopped_reason")
+            state = {**state, "session": info}
     return {
         "run_key": run_key,
         "running": runner is not None and runner.stopped_reason is None,
-        "state": runner.snapshot() if runner is not None else None,
+        "state": state,
         "runs": _run_summaries(session),
         "max_runs": MAX_RUNS_PER_USER,
         "account_loss_limit": abs(engine_config.account_loss_limit),
@@ -1215,9 +1323,14 @@ def forward_ticks(
     empty series.
     """
     runner = session.runner_for(run_key)
-    if runner is None or not runner.session_id:
+    session_id = runner.session_id if runner is not None else None
+    if session_id is None:
+        # A stopped run's chart is still worth seeing.
+        row = _stopped_rows(session).get(run_key)
+        session_id = row["session_id"] if row is not None else None
+    if not session_id:
         return {"ticks": []}
-    return {"ticks": store.ticks(runner.session_id, limit=max(1, min(limit, 5_000)))}
+    return {"ticks": store.ticks(session_id, limit=max(1, min(limit, 5_000)))}
 
 
 @app.get("/forward/history", dependencies=[Depends(check_engine_key)])

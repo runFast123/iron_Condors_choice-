@@ -299,15 +299,50 @@ def test_a_failed_quote_is_surfaced_not_swallowed():
     assert r.last_spot is None
 
 
-def test_the_daily_loss_limit_stops_the_run():
-    from engine.config import engine_config
+def test_the_daily_loss_limit_halts_entries_for_the_day_not_the_run():
+    """Today's loss, measured from where the book stood when the day began.
+    It used to be the run's whole P&L since it started, and it stopped the
+    run: both ladder runs were killed at 09:16 on expiry day for a loss built
+    over three weeks, frozen unsettled and gone from the dashboard."""
+    import datetime as _dt
+    from engine.config import IST as _IST, engine_config
 
+    limit = abs(engine_config.daily_loss_limit)
     r = runner()
-    r.realised = -abs(engine_config.daily_loss_limit) - 1
     r.market.prices = {26000: 24_000.0}
     r.expiry = EXPIRY
+    today = _dt.datetime.now(tz=_IST).date()
+
+    # Weeks of losses, but none today: nothing happens.
+    r.realised = -limit * 3
+    r.risk_day, r.risk_day_base, r.last_total = today, -limit * 3, -limit * 3
     r.tick()
-    assert r.stopped_reason and "daily loss limit" in r.stopped_reason
+    assert r.stopped_reason is None and not r.entries_halted(today)
+
+    # Today's loss crosses the limit: entries halt, the run keeps going.
+    r.realised = -limit * 4 - 1
+    r.tick()
+    assert r.stopped_reason is None, "the run keeps marking and settles as usual"
+    assert r.entries_halted(today)
+    assert r.snapshot()["risk"]["entries_halted"] is True
+    assert sum("Daily loss limit hit" in e.message for e in r.events) == 1
+
+    # The next day starts from where this one ended.
+    r.risk_day = today - _dt.timedelta(days=1)
+    r.halted_on = today - _dt.timedelta(days=1)
+    r.tick()
+    assert not r.entries_halted(today)
+
+
+def test_the_days_start_survives_a_restart():
+    import datetime as _dt
+
+    r = runner()
+    r.risk_day, r.risk_day_base, r.last_total = _dt.date(2026, 9, 29), -21_000.0, -24_000.0
+    r.halted_on = _dt.date(2026, 9, 29)
+    state = r.to_state()
+    assert state["risk_day"] == "2026-09-29" and state["risk_day_base"] == -21_000.0
+    assert state["halted_on"] == "2026-09-29" and state["last_total"] == -24_000.0
 
 
 def test_the_kill_switch_does_not_read_a_failed_refresh_as_break_even():
