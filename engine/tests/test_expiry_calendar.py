@@ -275,3 +275,37 @@ def test_a_date_that_cannot_be_confirmed_is_kept_as_derived():
     d = dt.date(2026, 5, 26)
     fixed, changed = confirm_derived_expiries([d], {d}, unreachable)
     assert fixed == [d] and changed == {}
+
+
+# ============================================ the recorded history's calendar
+
+
+def test_recorded_expiries_replace_the_derived_calendar_in_the_past():
+    """Choice refuses its old contract lists, so before 2022 the derived
+    Tuesday calendar was all there was -- where the exchange ran Thursdays."""
+    recorded = [dt.date(2018, 12, 27), dt.date(2019, 1, 31), dt.date(2019, 2, 14),
+                dt.date(2019, 2, 21), dt.date(2019, 2, 28), dt.date(2019, 3, 7)]
+    listed_now = [dt.date(2026, 9, 29), dt.date(2026, 10, 6)]
+    got, derived = expiry_calendar(dt.date(2019, 1, 1), dt.date(2019, 3, 7), listed_now,
+                                   cadence="weekly", recorded=recorded)
+    assert got == recorded[1:] and derived == set()
+    monthly, _ = expiry_calendar(dt.date(2019, 1, 1), dt.date(2019, 2, 28), listed_now,
+                                 cadence="monthly", recorded=recorded)
+    assert monthly[:2] == [dt.date(2019, 1, 31), dt.date(2019, 2, 28)]
+
+
+def test_no_weekly_is_invented_where_the_record_has_none():
+    """NIFTY weeklies began in February 2019: inside the recorded span a
+    missing date was no expiry, not a gap to fill."""
+    recorded = [dt.date(2018, 11, 29), dt.date(2018, 12, 27), dt.date(2019, 1, 31)]
+    got, derived = expiry_calendar(dt.date(2018, 11, 22), dt.date(2019, 1, 31), [dt.date(2026, 9, 29)],
+                                   cadence="weekly", recorded=recorded)
+    assert got == recorded and not derived
+
+
+def test_the_derivation_weekday_comes_from_todays_listing_not_the_old_thursdays():
+    recorded = [dt.date(2025, 8, 28)]                   # a Thursday, from the record
+    listed_now = [dt.date(2026, 9, 29), dt.date(2026, 10, 6)]
+    got, derived = expiry_calendar(dt.date(2026, 9, 1), dt.date(2026, 10, 6), listed_now,
+                                   cadence="weekly", recorded=recorded)
+    assert all(d.weekday() == 1 for d in derived)       # Tuesdays after the record ends

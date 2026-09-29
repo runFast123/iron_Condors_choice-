@@ -122,6 +122,7 @@ def expiry_calendar(
     *,
     cadence: str = "weekly",
     calendar: MarketCalendar | None = None,
+    recorded: Iterable[dt.date] = (),
 ) -> tuple[list[dt.date], set[dt.date]]:
     """Expiries covering ``[start, end]``, and which of them were derived.
 
@@ -130,8 +131,13 @@ def expiry_calendar(
     caller can report how much of a run rests on an inferred calendar rather
     than on contracts the exchange actually published.
     """
-    listed_all = sorted(listed)
-    weekday = infer_expiry_weekday(listed_all)
+    # `recorded` are past expiries from the recorded history: real contracts,
+    # as authoritative as listed ones. The weekday for deriving what neither
+    # covers comes from today's listing alone -- the recorded years are mostly
+    # the old Thursday expiries.
+    listed_now = sorted(listed)
+    weekday = infer_expiry_weekday(listed_now)
+    listed_all = sorted(set(listed_now) | set(recorded))
 
     # A monthly campaign must not be handed a listed *weekly*. The union of
     # listed and derived otherwise mixed the exchange's weeklies straight into
@@ -153,8 +159,14 @@ def expiry_calendar(
 
     # A derived date within a few days of a listed one is the same contract
     # seen through an incomplete holiday calendar; keep the exchange's version.
+    # Inside the span the recorded history covers, its calendar is complete:
+    # a date it lacks was no expiry (NIFTY weeklies only began in Feb 2019).
+    recorded_all = sorted(recorded)
+    covered = (recorded_all[0], recorded_all[-1]) if recorded_all else None
     derived: set[dt.date] = set()
     for candidate in derived_all:
+        if covered and covered[0] <= candidate <= covered[1]:
+            continue
         if any(abs((candidate - real).days) <= 3 for real in listed_in_range):
             continue
         derived.add(candidate)

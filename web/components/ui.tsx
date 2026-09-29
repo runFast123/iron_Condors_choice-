@@ -266,6 +266,79 @@ export function ProvenanceBanner({
   // percentage that rounds to "0%", contradicted itself.
   const mostlyReal = modeled <= MOSTLY_REAL;
   const tone = mostlyReal ? "var(--pos)" : "var(--warn)";
+  const explanation = (
+    <>
+      <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-muted)", maxWidth: "88ch", lineHeight: 1.55 }}>
+        {note}
+      </p>
+      {/* The reason, not just the percentage. "76% modelled" invites a hunt
+          for a misconfiguration; "Choice served no candles for three settled
+          expiries" is the actual answer and is not fixable from here. */}
+      {/* The reason, not just the percentage. The percentage counts every
+          price lookup the replay made; the lines below count legs. */}
+      {legs && (legs.empty || legs.unused || legs.unresolved) ? (
+        <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
+          <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice candles.
+          {legs.unused
+            ? ` ${legs.unused} more came back with bars, but none close to the moments they were needed, so they were modelled as well.`
+            : ""}
+          {legs.empty
+            ? ` Choice returned no bars at all for ${legs.empty}${
+                legs.emptyExpiries?.length ? ` (${legs.emptyExpiries.join(", ")})` : ""
+              }.`
+            : ""}
+          {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
+          {legs.history
+            ? ` Of the legs Choice could not fully price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
+            : ""}
+          {legs.backup
+            ? ` ${legs.history ? "And" : "Of the legs Choice could not fully price,"} ${legs.backup} ${legs.history ? "more " : ""}were priced from real candles from the backup source instead.`
+            : ""}
+          {legs.history || legs.backup || accuracy
+            ? ""
+            : " So far only the expiry that is currently trading has priced reliably from real data; a range inside it is the most trustworthy test."}
+        </p>
+      ) : null}
+      {/* How far the model can be trusted, measured rather than asserted:
+          the same model the replay used, checked every session against the
+          exchange's closing prices for the legs this run traded. */}
+      {accuracy ? (
+        <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
+          Where Choice had no candle, the model is anchored to the exchange&rsquo;s closing prices for the
+          same contract the session before, moved by NIFTY and India VIX since. Checked against those closes
+          on this run&rsquo;s own legs &mdash; {accuracy.checks.toLocaleString("en-IN")} checks across{" "}
+          {accuracy.contracts} contracts &mdash; it was typically within{" "}
+          <strong>{pct(accuracy.anchored.median_abs)}</strong>, averaging{" "}
+          {pct(Math.abs(accuracy.anchored.bias))} {accuracy.anchored.bias >= 0 ? "high" : "low"}. The India VIX
+          model alone was typically {pct(accuracy.vix_model.median_abs)} out, averaging{" "}
+          {pct(Math.abs(accuracy.vix_model.bias))} {accuracy.vix_model.bias >= 0 ? "high" : "low"}.
+        </p>
+      ) : null}
+    </>
+  );
+
+  if (mostlyReal) {
+    // One line on every page, not a paragraph: nothing here needs acting on.
+    // The full account is one click away, and on Data Health.
+    return (
+      <details className="card provenance-compact" style={{ padding: "7px 12px", borderColor: tone }}>
+        <summary style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", cursor: "pointer" }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={tone} strokeWidth="2.2"
+               strokeLinecap="round" style={{ flexShrink: 0 }} aria-hidden="true">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+          <Badge tone="pos">{sharePct(realFraction)} REAL</Badge>
+          <Badge tone="brand">{sharePct(modeled)} MODELED</Badge>
+          <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>Almost every price is a real traded price.</span>
+          <span className="provenance-toggle" style={{ marginLeft: "auto", fontSize: 12, color: "var(--ink-muted)" }}>
+            Details
+          </span>
+        </summary>
+        <div style={{ padding: "2px 0 4px 23px" }}>{explanation}</div>
+      </details>
+    );
+  }
+
   return (
     <div
       className="card"
@@ -280,66 +353,14 @@ export function ProvenanceBanner({
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={tone} strokeWidth="2"
            strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true">
-        {mostlyReal
-          ? <path d="M20 6 9 17l-5-5" />
-          : <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />}
+        <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
       </svg>
       <div>
         <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
-          {mostlyReal && <Badge tone="pos">{sharePct(realFraction)} REAL</Badge>}
-          <Badge tone={mostlyReal ? "brand" : "warn"}>{sharePct(modeled)} MODELED</Badge>
-          <strong style={{ fontSize: 12.5 }}>
-            {mostlyReal
-              ? "Almost every price is a real traded price."
-              : <>These P&amp;L figures are not broker-verified.</>}
-          </strong>
+          <Badge tone="warn">{sharePct(modeled)} MODELED</Badge>
+          <strong style={{ fontSize: 12.5 }}>These P&amp;L figures are not broker-verified.</strong>
         </div>
-        <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-muted)", maxWidth: "88ch", lineHeight: 1.55 }}>
-          {note}
-        </p>
-        {/* The reason, not just the percentage. "76% modelled" invites a hunt
-            for a misconfiguration; "Choice served no candles for three settled
-            expiries" is the actual answer and is not fixable from here. */}
-        {/* The reason, not just the percentage. The percentage counts every
-            price lookup the replay made; the lines below count legs. */}
-        {legs && (legs.empty || legs.unused || legs.unresolved) ? (
-          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
-            <strong>{legs.real ?? 0} of {legs.total ?? 0} legs</strong> priced from real Choice candles.
-            {legs.unused
-              ? ` ${legs.unused} more came back with bars, but none close to the moments they were needed, so they were modelled as well.`
-              : ""}
-            {legs.empty
-              ? ` Choice returned no bars at all for ${legs.empty}${
-                  legs.emptyExpiries?.length ? ` (${legs.emptyExpiries.join(", ")})` : ""
-                }.`
-              : ""}
-            {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
-            {legs.history
-              ? ` Of the legs Choice could not fully price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
-              : ""}
-            {legs.backup
-              ? ` ${legs.history ? "And" : "Of the legs Choice could not fully price,"} ${legs.backup} ${legs.history ? "more " : ""}were priced from real candles from the backup source instead.`
-              : ""}
-            {legs.history || legs.backup || accuracy
-              ? ""
-              : " So far only the expiry that is currently trading has priced reliably from real data; a range inside it is the most trustworthy test."}
-          </p>
-        ) : null}
-        {/* How far the model can be trusted, measured rather than asserted:
-            the same model the replay used, checked every session against the
-            exchange's closing prices for the legs this run traded. */}
-        {accuracy ? (
-          <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink-2)", maxWidth: "88ch", lineHeight: 1.55 }}>
-            Where Choice had no candle, the model is anchored to the exchange&rsquo;s closing prices for the
-            same contract the session before, moved by NIFTY and India VIX since. Checked against those closes
-            on this run&rsquo;s own legs &mdash; {accuracy.checks.toLocaleString("en-IN")} checks across{" "}
-            {accuracy.contracts} contracts &mdash; it was typically within{" "}
-            <strong>{pct(accuracy.anchored.median_abs)}</strong>, averaging{" "}
-            {pct(Math.abs(accuracy.anchored.bias))} {accuracy.anchored.bias >= 0 ? "high" : "low"}. The India VIX
-            model alone was typically {pct(accuracy.vix_model.median_abs)} out, averaging{" "}
-            {pct(Math.abs(accuracy.vix_model.bias))} {accuracy.vix_model.bias >= 0 ? "high" : "low"}.
-          </p>
-        ) : null}
+        {explanation}
       </div>
     </div>
   );

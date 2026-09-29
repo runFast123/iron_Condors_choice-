@@ -37,6 +37,8 @@ log = logging.getLogger(__name__)
 
 NIFTY = "NIFTY"
 INDIA_VIX = "INDIAVIX"
+# The session's end, for taking a day's close from intraday bars.
+MARKET_CLOSE_TIME = dt.time(15, 30)
 
 TOUCHLINE_ENDPOINT = "api/OpenAPI/MultipleTouchline"
 
@@ -340,10 +342,27 @@ class ChoiceMarketData:
             frame = self.india_vix(start, end, "D", strict=False)
         except (ChoiceError, ChoiceInstrumentError) as exc:
             log.warning("India VIX unavailable from Choice: %s", exc)
-            return {}
-        if frame.empty:
-            return {}
-        return {row.ts.date(): float(row.close) for row in frame.itertuples()}
+            frame = pd.DataFrame()
+        out = {} if frame.empty else {row.ts.date(): float(row.close) for row in frame.itertuples()}
+
+        # Choice's daily India VIX starts on 31 Jul 2020; its hourly bars go
+        # back to 22 Nov 2018. Before the daily series, each day's close is
+        # its last hourly reading inside the session -- still Choice's data.
+        first_day = pd.Timestamp(start).date()
+        until = (min(out) - dt.timedelta(days=1)) if out else pd.Timestamp(end).date()
+        if first_day <= until:
+            try:
+                bars = self.india_vix(first_day, until, "60", strict=False)
+            except ChoiceAuthError:
+                raise
+            except (ChoiceError, ChoiceInstrumentError) as exc:
+                log.info("No hourly India VIX before the daily series: %s", exc)
+                bars = pd.DataFrame()
+            if not bars.empty:
+                session = bars[bars["ts"].dt.time <= MARKET_CLOSE_TIME]
+                for day, closes in session.groupby(session["ts"].dt.date)["close"]:
+                    out.setdefault(day, float(closes.iloc[-1]))
+        return out
 
     def india_vix_now(self) -> tuple[float, dt.datetime | None]:
         """India VIX as it stands, and when that reading printed.

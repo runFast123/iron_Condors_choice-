@@ -366,6 +366,37 @@ def option_bars(
     return out
 
 
+_expiry_cache: dict[tuple[str, float], list[dt.date]] = {}
+
+
+def expiries(path: pathlib.Path | None = None) -> list[dt.date]:
+    """Every NIFTY option expiry the recorded history holds -- the exchange's
+    real calendar since 2018, holiday moves and the old Thursday expiries
+    included. Choice's dated contract lists before about 2022 are refused, so
+    for those years this is the only record of which dates were real.
+
+    Empty when there is no file. Cached until the file changes.
+    """
+    path = path or db_path()
+    if not available(path):
+        return []
+    key = (str(path), path.stat().st_mtime)
+    if key not in _expiry_cache:
+        def read(con) -> list[dt.date]:
+            tables = {r[0] for r in con.execute(
+                "SELECT table_name FROM information_schema.tables").fetchall()}
+            found: set[str] = set()
+            for table in (DELIVERED_TABLE, OPTIONS_TABLE):
+                if table in tables:
+                    found |= {r[0] for r in con.execute(
+                        f"SELECT DISTINCT exp FROM {table} WHERE type <> 'F'").fetchall()}
+            return sorted(dt.date.fromisoformat(str(e)[:10]) for e in found if e)
+
+        _expiry_cache.clear()
+        _expiry_cache[key] = _with_connection(read, path, read_only=True)
+    return list(_expiry_cache[key])
+
+
 def _with_connection(work, path: pathlib.Path, *, read_only: bool):
     """Run `work(con)` on the file, waiting out another process that holds it.
 

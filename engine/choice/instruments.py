@@ -526,6 +526,11 @@ class HistoricalInstruments:
         if base is not None:
             self._loaded.append((dt.datetime.now(tz=IST).date(), base))
         self.downloads = 0
+        # Expiries whose file Choice refused (it refuses those from before
+        # about 2022). Asked once: every leg of that expiry asked again, a few
+        # refused requests each, and a multi-year run spent most of its time
+        # there.
+        self._unavailable: set[dt.date] = set()
 
     def option(self, underlying: str, expiry: dt.date, strike: float, right: str) -> Contract:
         found = self.find_option(underlying, expiry, strike, right)
@@ -557,12 +562,13 @@ class HistoricalInstruments:
         settles, and `fetch` already walks back over weekends and holidays to
         the nearest file that exists.
         """
-        if any(on == expiry for on, _ in self._loaded):
+        if expiry in self._unavailable or any(on == expiry for on, _ in self._loaded):
             return None                       # already tried, and it did not have it
         try:
             master = shared_master(expiry)
         except ChoiceError:
             log.info("No scrip master available around %s", expiry)
+            self._unavailable.add(expiry)
             return None
         self.downloads += 1
         self._loaded.insert(0, (expiry, master))

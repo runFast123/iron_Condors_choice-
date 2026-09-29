@@ -361,3 +361,28 @@ def test_only_a_lock_is_waited_out(tmp_path):
     with pytest.raises(RuntimeError):
         hs._with_connection(broken, tmp_path / "h.duckdb", read_only=False)
     assert calls == [1]
+
+
+def test_the_record_lists_every_real_expiry(tmp_path):
+    path = tmp_path / "h.duckdb"
+    delivered(path)                                     # 29 Sep 2026
+    hs.append_options(hs.option_rows(choice_frame(), dt.date(2026, 10, 6), 23300.0, "PE"), path)
+    assert hs.expiries(path) == [EXPIRY, dt.date(2026, 10, 6)]
+    assert hs.expiries(tmp_path / "absent.duckdb") == []
+
+
+def test_a_refused_contract_list_is_asked_for_once(monkeypatch):
+    from engine.choice import instruments
+    from engine.choice.errors import ChoiceError
+
+    asked = []
+
+    def refuse(day):
+        asked.append(day)
+        raise ChoiceError("HTTP 403")
+
+    monkeypatch.setattr(instruments, "shared_master", refuse)
+    resolver = instruments.HistoricalInstruments()
+    for strike in (23000.0, 23100.0, 23200.0):
+        assert resolver.find_option("NIFTY", dt.date(2021, 3, 25), strike, "PE") is None
+    assert asked == [dt.date(2021, 3, 25)]

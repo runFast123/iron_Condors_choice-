@@ -653,10 +653,20 @@ class BacktestRunner:
         # weeklies as half-year options. Derive the calendar the exchange
         # actually ran, and keep listed contracts wherever they overlap.
         listed = market.master.expiries(NIFTY)
+        # The recorded history knows every real expiry since 2018. Choice's
+        # dated contract lists before about 2022 are refused, so without it a
+        # past range got the derived Tuesday calendar where the exchange ran
+        # Thursdays, and not one contract matched.
+        try:
+            recorded = history_store.expiries()
+        except Exception as exc:                        # noqa: BLE001 - costs accuracy only
+            log.warning("[%s] Recorded expiries unavailable: %s", job.job_id, exc)
+            recorded = []
         try:
             expiries, derived_expiries = expiry_calendar(
                 first_day, last_day + dt.timedelta(days=MAX_WEEKLY_DTE), listed,
                 cadence=str(p.get("expiry_cadence") or "weekly"),
+                recorded=[e for e in recorded if e < dt.date.today()],
             )
         except ValueError as exc:
             raise ChoiceError(str(exc)) from exc

@@ -3,11 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BacktestJob } from "@/lib/engine";
 
+/** The first day Choice serves intraday NIFTY and India VIX bars. Option
+ *  prices before that exist in the recorded history, but a replay needs the
+ *  index too. */
+const DATA_START = Date.UTC(2018, 10, 22);
+const ALL_DATA_DAYS = Math.floor((Date.now() - DATA_START) / 86_400_000);
+
 const RANGES = [
   { days: 30, label: "1 month" },
   { days: 90, label: "3 months" },
   { days: 180, label: "6 months" },
   { days: 365, label: "1 year" },
+  { days: 730, label: "2 years" },
+  { days: 1095, label: "3 years" },
+  { days: 1826, label: "5 years" },
+  { days: ALL_DATA_DAYS, label: "All data (from Nov 2018)" },
 ];
 
 /**

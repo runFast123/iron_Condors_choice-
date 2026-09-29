@@ -588,3 +588,11 @@ input:focus-visible {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* The one-line "real prices" banner: its own toggle text instead of the
+   browser's disclosure triangle. */
+.provenance-compact > summary { list-style: none; }
+.provenance-compact > summary::-webkit-details-marker { display: none; }
+.provenance-compact > summary .provenance-toggle::after { content: " \25B8"; }
+.provenance-compact[open] > summary .provenance-toggle::after { content: " \25BE"; }
+.provenance-compact > summary:hover .provenance-toggle { color: var(--ink-2); }
