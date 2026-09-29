@@ -216,10 +216,19 @@ def collect(
 # ------------------------------------------------------------------ storage
 
 
+#: DuckDB's own ceiling. By default it may take 80% of the machine's memory
+#: to cache a scan of the 7 GB file: an all-data backtest's read peaked 2.5 GB
+#: above the engine, beside the live runs. Capped, the same read adds about
+#: 0.25 GB and takes 9 s instead of 7.
+DB_MEMORY = os.environ.get("NIFTY_HISTORY_DB_MEMORY", "1GB")
+DB_THREADS = int(os.environ.get("NIFTY_HISTORY_DB_THREADS", "4"))
+
+
 def _connect(path: pathlib.Path | None = None, *, read_only: bool = False):
     import duckdb
 
-    return duckdb.connect(str(path or db_path()), read_only=read_only)
+    return duckdb.connect(str(path or db_path()), read_only=read_only,
+                          config={"memory_limit": DB_MEMORY, "threads": DB_THREADS})
 
 
 def _ensure(con) -> None:

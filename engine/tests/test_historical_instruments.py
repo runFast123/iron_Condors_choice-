@@ -202,3 +202,24 @@ def test_bars_after_a_contracts_expiry_are_dropped():
 
     assert list(out["close"]) == [100.0, 95.0]
     assert out["ts"].max() <= dt.datetime(2026, 7, 28, 15, 30, tzinfo=IST)
+
+
+def test_a_long_backtest_keeps_only_a_few_dated_masters(monkeypatch):
+    """Each parsed master is about 110 MB; an all-data run consulted sixteen
+    and kept every one."""
+    import datetime as dt
+
+    from engine.choice import instruments as mod
+
+    class Master:
+        def find_option(self, *a):
+            return None
+
+    base = Master()
+    monkeypatch.setattr(mod, "shared_master", lambda day: Master())
+    resolver = mod.HistoricalInstruments(base)
+    for n in range(10):
+        resolver.find_option("NIFTY", dt.date(2021, 1, 7) + dt.timedelta(weeks=n), 15000.0, "PE")
+    dated = [m for _, m in resolver._loaded if m is not base]
+    assert len(dated) == mod.LOADED_MASTERS
+    assert any(m is base for _, m in resolver._loaded)            # today's always stays

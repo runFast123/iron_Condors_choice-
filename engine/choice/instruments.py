@@ -462,9 +462,10 @@ _MASTER_LOCK = threading.Lock()
 # because a backtest needs several: today's lists only contracts that still
 # exist, and a run over past months is asking about ones that have settled.
 _MASTER_CACHE: dict[dt.date, "ScripMaster"] = {}
-# Each is 20-30 MB parsed. Enough for a long backtest's handful of dates,
-# bounded so an engine left running for weeks cannot accumulate them.
-MASTER_CACHE_SIZE = 6
+# Each is about 110 MB parsed (measured: some 140,000 contracts), not the
+# 20-30 MB once assumed. Today's and a couple of dated ones; an engine left
+# running for weeks must not accumulate them.
+MASTER_CACHE_SIZE = 3
 
 
 def shared_master(on: dt.date | None = None) -> "ScripMaster":
@@ -502,6 +503,10 @@ def shared_master(on: dt.date | None = None) -> "ScripMaster":
         return master
 
 
+#: Dated scrip masters one HistoricalInstruments keeps besides today's.
+LOADED_MASTERS = 2
+
+
 class HistoricalInstruments:
     """Resolves option contracts that may no longer be listed.
 
@@ -523,6 +528,7 @@ class HistoricalInstruments:
         # Newest first, so the common case -- a live or near expiry -- is
         # answered by the master the engine already had in memory.
         self._loaded: list[tuple[dt.date, ScripMaster]] = []
+        self._base = base
         if base is not None:
             self._loaded.append((dt.datetime.now(tz=IST).date(), base))
         self.downloads = 0
@@ -572,6 +578,13 @@ class HistoricalInstruments:
             return None
         self.downloads += 1
         self._loaded.insert(0, (expiry, master))
+        # A multi-year backtest walks through dozens of dated files, about
+        # 110 MB each, and kept every one: 1.8 GB for an all-data run. Legs
+        # come in date order, so the few latest are the ones still asked;
+        # the base (today's) file always stays.
+        dated = [entry for entry in self._loaded if entry[1] is not self._base]
+        for entry in dated[LOADED_MASTERS:]:
+            self._loaded.remove(entry)
         return master
 
 
