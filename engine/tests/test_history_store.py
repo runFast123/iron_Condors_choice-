@@ -386,3 +386,38 @@ def test_a_refused_contract_list_is_asked_for_once(monkeypatch):
     for strike in (23000.0, 23100.0, 23200.0):
         assert resolver.find_option("NIFTY", dt.date(2021, 3, 25), strike, "PE") is None
     assert asked == [dt.date(2021, 3, 25)]
+
+
+# ----------------------------------------------- expiries the exchange moved
+
+
+def test_a_contract_renamed_when_its_expiry_moved_is_one_contract(tmp_path):
+    """The March 2026 monthlies were filed as NIFTY31MAR26... until the
+    exchange moved the expiry for a holiday, then as NIFTY30MAR26... Both
+    names are one contract, and 31 Mar was never an expiry."""
+    path = tmp_path / "h.duckdb"
+    old, new = dt.date(2026, 3, 31), dt.date(2026, 3, 30)
+    for strike in (23000, 23100):
+        delivered(path, symbol=f"NIFTY31MAR26{strike}PE", day="2025-12-26", closes=(50.0,))
+        delivered(path, symbol=f"NIFTY30MAR26{strike}PE", day="2025-12-29", closes=(55.0,))
+        delivered(path, symbol=f"NIFTY30MAR26{strike}PE", day="2026-03-30", closes=(1.0,))
+    con = duckdb.connect(str(path))
+    con.execute("UPDATE dtable SET exp = '2026-03-31 00:00:00', strike = CAST(substr(symbol, 13, 5) AS DOUBLE) "
+                "WHERE symbol LIKE 'NIFTY31MAR26%'")
+    con.execute("UPDATE dtable SET exp = '2026-03-30 00:00:00', strike = CAST(substr(symbol, 13, 5) AS DOUBLE) "
+                "WHERE symbol LIKE 'NIFTY30MAR26%'")
+    con.close()
+    assert hs.expiries(path) == [new]
+    frame = hs.option_bars([(new, 23000.0, "PE", dt.date(2025, 12, 1))], dt.date(2026, 3, 30),
+                           path=path)[(new, 23000.0, "PE")]
+    assert list(frame["close"]) == [50.0, 55.0, 1.0]                # both names, in order
+
+
+def test_a_label_that_merely_stops_early_is_still_an_expiry(tmp_path):
+    """A gap in what was recorded is not a renamed contract."""
+    path = tmp_path / "h.duckdb"
+    delivered(path, symbol="NIFTY15SEP2623300PE", day="2026-09-11", closes=(10.0,))
+    con = duckdb.connect(str(path))
+    con.execute("UPDATE dtable SET exp = '2026-09-15 00:00:00'")
+    con.close()
+    assert hs.expiries(path) == [dt.date(2026, 9, 15)]

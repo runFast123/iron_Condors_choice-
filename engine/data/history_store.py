@@ -317,12 +317,16 @@ def option_bars(
     path = path or db_path()
     if not available(path):
         raise HistoryUnavailable("no recorded history on this machine")
+    # A contract filed under its pre-holiday expiry for part of its life is
+    # read under both names.
+    aliases = _calendar(path)[1]
     keys: dict[str, tuple[dt.date, float, str]] = {}
     starts: dict[str, dt.date] = {}
     for e, k, r, d in legs:
-        symbol = symbol_for(e, k, r)
-        keys[symbol] = (e, float(k), r)
-        starts[symbol] = min(d, starts.get(symbol, d))
+        for label in [e, *aliases.get(e, [])]:
+            symbol = symbol_for(label, k, r)
+            keys[symbol] = (e, float(k), r)
+            starts[symbol] = min(d, starts.get(symbol, d))
     if not keys:
         return {}
     symbols = list(keys)
@@ -367,42 +371,100 @@ def option_bars(
         "ts": (rows["bar"] + pd.Timedelta(seconds=59)).dt.tz_localize("Asia/Kolkata").reset_index(drop=True),
         "close": rows["close"].to_numpy(),
     })
+    frame["key"] = frame["leg"].map(lambda i: keys[symbols[int(i)]])
     out: dict[tuple[dt.date, float, str], pd.DataFrame] = {}
-    for leg, bars in frame.groupby("leg", sort=False):
-        out[keys[symbols[int(leg)]]] = (bars[["ts", "close"]].drop_duplicates("ts", keep="last")
-                                        .sort_values("ts").reset_index(drop=True))
+    for key, bars in frame.groupby("key", sort=False):
+        out[key] = (bars[["ts", "close"]].sort_values("ts", kind="stable")
+                    .drop_duplicates("ts", keep="last").reset_index(drop=True))
     return out
 
 
-_expiry_cache: dict[tuple[str, float], list[dt.date]] = {}
+_calendar_cache: dict[tuple[str, float], tuple[list[dt.date], dict[dt.date, list[dt.date]]]] = {}
+
+#: How far a holiday, or the 2025 switch from Thursday to Tuesday, moved an
+#: expiry -- and how soon after the old name stops the new one must start.
+MOVED_WITHIN = dt.timedelta(days=10)
+RENAMED_WITHIN = dt.timedelta(days=5)
+
+
+def _calendar(path: pathlib.Path) -> tuple[list[dt.date], dict[dt.date, list[dt.date]]]:
+    """The real expiries, and for each the labels its contracts were first
+    filed under.
+
+    When an expiry moves -- a holiday, or the switch from Thursday to Tuesday
+    in September 2025 -- contracts listed before the move keep their original
+    date until the exchange renames them: the March 2026 monthlies were
+    NIFTY31MAR26... until 26 Dec 2025 and NIFTY30MAR26... from 29 Dec. A label
+    is such a stale name when the same strikes carry on under a nearby label,
+    starting right where it stopped. A label that merely stops early -- a gap
+    in what was recorded -- stays a real expiry.
+    """
+    key = (str(path), path.stat().st_mtime)
+    if key not in _calendar_cache:
+        def read(con) -> list[tuple]:
+            tables = {r[0] for r in con.execute(
+                "SELECT table_name FROM information_schema.tables").fetchall()}
+            out: list[tuple] = []
+            for table in (DELIVERED_TABLE, OPTIONS_TABLE):
+                if table in tables:
+                    out += con.execute(
+                        f"SELECT exp, strike, CAST(type AS VARCHAR), min(datetime), max(datetime) "
+                        f"FROM {table} WHERE type <> 'F' GROUP BY 1, 2, 3").fetchall()
+            return out
+
+        spans: dict[dt.date, dict[tuple[float, str], tuple[dt.datetime, dt.datetime]]] = {}
+        for exp, strike, right, first, last in _with_connection(read, path, read_only=True):
+            if not exp:
+                continue
+            label = dt.date.fromisoformat(str(exp)[:10])
+            k = (float(strike), str(right))
+            f, l = dt.datetime.fromisoformat(str(first)), dt.datetime.fromisoformat(str(last))
+            if k in spans.setdefault(label, {}):
+                f0, l0 = spans[label][k]
+                f, l = min(f, f0), max(l, l0)
+            spans[label][k] = (f, l)
+
+        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).date()
+        renamed: dict[dt.date, dt.date] = {}
+        for label, contracts in spans.items():
+            if label >= today or max(l for _, l in contracts.values()).date() >= label:
+                continue                               # traded to its own expiry
+            ended = max(l for _, l in contracts.values())
+            for other, theirs in spans.items():
+                if other == label or abs(other - label) > MOVED_WITHIN:
+                    continue
+                began = min(f for f, _ in theirs.values())
+                shared = sum(1 for k in contracts if k in theirs)
+                # The new name starts right where the old one stopped, and
+                # carries most of its strikes.
+                if dt.timedelta(0) < began - ended <= RENAMED_WITHIN and shared >= len(contracts) / 2:
+                    renamed[label] = other
+                    break
+
+        real = sorted(e for e in spans if e not in renamed)
+        aliases: dict[dt.date, list[dt.date]] = {}
+        for label, target in sorted(renamed.items()):
+            while target in renamed:                  # renamed twice
+                target = renamed[target]
+            aliases.setdefault(target, []).append(label)
+        _calendar_cache.clear()
+        _calendar_cache[key] = (real, aliases)
+    return _calendar_cache[key]
 
 
 def expiries(path: pathlib.Path | None = None) -> list[dt.date]:
-    """Every NIFTY option expiry the recorded history holds -- the exchange's
-    real calendar since 2018, holiday moves and the old Thursday expiries
-    included. Choice's dated contract lists before about 2022 are refused, so
-    for those years this is the only record of which dates were real.
+    """Every real NIFTY option expiry the recorded history holds -- the
+    exchange's calendar since 2018, holiday moves and the old Thursday expiries
+    included, stale pre-move labels left out. Choice's dated contract lists
+    before about 2022 are refused, so for those years this is the only record
+    of which dates were real.
 
     Empty when there is no file. Cached until the file changes.
     """
     path = path or db_path()
     if not available(path):
         return []
-    key = (str(path), path.stat().st_mtime)
-    if key not in _expiry_cache:
-        def read(con) -> list[dt.date]:
-            tables = {r[0] for r in con.execute(
-                "SELECT table_name FROM information_schema.tables").fetchall()}
-            found: set[str] = set()
-            for table in (DELIVERED_TABLE, OPTIONS_TABLE):
-                if table in tables:
-                    found |= {r[0] for r in con.execute(
-                        f"SELECT DISTINCT exp FROM {table} WHERE type <> 'F'").fetchall()}
-            return sorted(dt.date.fromisoformat(str(e)[:10]) for e in found if e)
-
-        _expiry_cache.clear()
-        _expiry_cache[key] = _with_connection(read, path, read_only=True)
-    return list(_expiry_cache[key])
+    return list(_calendar(path)[0])
 
 
 def _with_connection(work, path: pathlib.Path, *, read_only: bool):
