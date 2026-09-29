@@ -1,12 +1,26 @@
 /**
  * Where an option premium came from. "choice" is a real Choice candle;
+ * "history" a real one-minute trade from the recorded history kept with the
+ * engine, for a contract Choice no longer serves (backtests only);
  * "backup" a real candle from the backtest's backup source, for a contract
  * Choice has no history for (backtests only); "exchange" a real closing trade
  * from the exchange's daily record, for a backtest bar at the close;
  * "modeled" is Black-76, not a source at all. The dashboard never names the
  * backup source.
  */
-export type PriceSource = "choice" | "backup" | "exchange" | "modeled";
+export type PriceSource = "choice" | "history" | "backup" | "exchange" | "modeled";
+
+/** The recorded one-minute history: real trades for contracts Choice no
+ *  longer serves, asked after Choice and before the backup source. */
+export interface HistoryUse {
+  available: boolean;
+  used: boolean;
+  legs_asked: number;
+  legs_found: number;
+  legs_used: number;
+  quotes?: number;
+  note: string | null;
+}
 
 /** Relative errors of a model against the exchange's closing prices. */
 export interface ErrorStats {
@@ -109,6 +123,7 @@ export interface Provenance {
   provider: {
     real_quotes: number; modeled_quotes: number; total_quotes: number; real_fraction: number;
     choice_quotes?: number; backup_quotes?: number; backup_fraction?: number;
+    history_quotes?: number; history_fraction?: number;
     exchange_quotes?: number; exchange_fraction?: number;
     anchored_quotes?: number; vix_only_quotes?: number; clamped_quotes?: number;
     anchored_fraction?: number;
@@ -142,6 +157,10 @@ export interface Provenance {
   backup?: BackupUse;
   /** Legs priced from the backup source at least once. */
   legs_backup?: number;
+  /** Absent on runs from before the recorded history was read. */
+  history?: HistoryUse;
+  /** Legs priced from the recorded one-minute history at least once. */
+  legs_history?: number;
   /** How many expiries settled against NIFTY's official close, and which
    *  fell back to their last bar. */
   settlement?: { official_close: number; last_bar: string[] };

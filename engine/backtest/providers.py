@@ -5,14 +5,15 @@ where a premium came from — but every quote it returns carries its
 :class:`PriceSource`, and that tag follows the fill all the way into the UI.
 
 * :class:`CandlePriceProvider` — real option candles: Choice's (the good
-  case), or the backup source's for a contract Choice has no history for.
+  case), or for a contract Choice has no history for, the recorded one-minute
+  history on this machine, then the backup source's.
 * :class:`ExchangeAnchoredPriceProvider` — for a moment neither has a candle
   for: the smile the market traded at the previous session's close, from the
   exchange's daily record, carried forward by NIFTY and India VIX.
 * :class:`ModelPriceProvider`  — Black-76 from India VIX plus a skew, used
   only when there is no exchange record to anchor to either.
-* :class:`FallbackPriceProvider` — Choice first, the backup second, the model
-  last, and a count of how often each answered.
+* :class:`FallbackPriceProvider` — Choice first, the recorded history, the
+  backup, the model last, and a count of how often each answered.
 """
 
 from __future__ import annotations
@@ -107,13 +108,19 @@ class CandlePriceProvider:
 
         # As-of lookup: the last bar at or before the requested moment. Using a
         # later bar would leak future information into the fill.
+        # A binary search on the sorted bars: a leg from the recorded history
+        # holds tens of thousands of one-minute bars, and a full scan per
+        # quote made a long run crawl.
         timestamps = frame["ts"]
-        eligible = frame[timestamps <= request.when]
-        if eligible.empty:
+        moment = pd.Timestamp(request.when)
+        if timestamps.dt.tz is not None and moment.tzinfo is not None:
+            moment = moment.tz_convert(timestamps.dt.tz)
+        at = int(timestamps.searchsorted(moment, side="right"))
+        if at == 0:
             self.misses += 1
             return None
 
-        row = eligible.iloc[-1]
+        row = frame.iloc[at - 1]
         if request.when - row["ts"] > self.max_staleness:
             # A stale print is worse than an honest miss: it silently marks the
             # book at a price that no longer existed.
@@ -388,7 +395,8 @@ def _error_stats(errors: list[float]) -> dict[str, float]:
 class FallbackPriceProvider:
     """Real data where it exists, modeled where it does not.
 
-    Choice first (`primary`), then the backup source's candles (`secondary`,
+    Choice first (`primary`), then the recorded one-minute history
+    (`history`, optional), then the backup source's candles (`secondary`,
     optional), then the fallback -- the model, or the exchange-anchored
     provider, which can itself answer with a real closing trade. Keeps a count
     of each so the dashboard can state plainly what fraction of a backtest
@@ -398,7 +406,9 @@ class FallbackPriceProvider:
     primary: PriceProvider
     fallback: PriceProvider
     secondary: PriceProvider | None = None
+    history: PriceProvider | None = None
     choice_quotes: int = 0
+    history_quotes: int = 0
     backup_quotes: int = 0
     exchange_quotes: int = 0
     modeled_quotes: int = 0
@@ -408,6 +418,11 @@ class FallbackPriceProvider:
         if found is not None:
             self.choice_quotes += 1
             return found
+        if self.history is not None:
+            found = self.history.quote(request)
+            if found is not None:
+                self.history_quotes += 1
+                return found
         if self.secondary is not None:
             found = self.secondary.quote(request)
             if found is not None:
@@ -426,7 +441,7 @@ class FallbackPriceProvider:
     @property
     def real_quotes(self) -> int:
         """Quotes from a real traded price, whichever source served it."""
-        return self.choice_quotes + self.backup_quotes + self.exchange_quotes
+        return self.choice_quotes + self.history_quotes + self.backup_quotes + self.exchange_quotes
 
     @property
     def total_quotes(self) -> int:
@@ -440,11 +455,13 @@ class FallbackPriceProvider:
         out: dict[str, float | int] = {
             "real_quotes": self.real_quotes,
             "choice_quotes": self.choice_quotes,
+            "history_quotes": self.history_quotes,
             "backup_quotes": self.backup_quotes,
             "exchange_quotes": self.exchange_quotes,
             "modeled_quotes": self.modeled_quotes,
             "total_quotes": self.total_quotes,
             "real_fraction": self.real_fraction,
+            "history_fraction": self.history_quotes / self.total_quotes if self.total_quotes else 0.0,
             "backup_fraction": self.backup_quotes / self.total_quotes if self.total_quotes else 0.0,
             "exchange_fraction": self.exchange_quotes / self.total_quotes if self.total_quotes else 0.0,
         }

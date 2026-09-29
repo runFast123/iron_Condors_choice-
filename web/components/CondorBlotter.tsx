@@ -217,16 +217,18 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                                       {legPnl == null ? "--" : inr(legPnl, { sign: true })}
                                     </td>
                                     <td>
-                                      {/* EXCHANGE is a real closing trade from the
+                                      {/* HISTORY is a real one-minute trade from the recorded
+                                          history; EXCHANGE a real closing trade from the
                                           exchange's daily record: real, but not Choice's. */}
                                       <Badge
                                         tone={
                                           leg.source === "choice" ? "pos"
-                                            : leg.source === "backup" || leg.source === "exchange" ? "brand"
+                                            : leg.source === "history" || leg.source === "backup" || leg.source === "exchange" ? "brand"
                                               : "warn"
                                         }
                                       >
                                         {leg.source === "choice" ? "CHOICE"
+                                          : leg.source === "history" ? "HISTORY"
                                           : leg.source === "backup" ? "BACKUP"
                                             : leg.source === "exchange" ? "EXCHANGE"
                                               : "MODELED"}

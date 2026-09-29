@@ -189,3 +189,66 @@ def test_known_2026_closures_are_not_trading_days():
     for day in (dt.date(2026, 9, 14), dt.date(2026, 10, 20), dt.date(2026, 11, 24)):
         assert not calendar.is_trading_day(day)
     assert calendar.is_trading_day(dt.date(2026, 10, 19))
+
+
+# ------------------------------------------------------- read by a backtest
+
+
+def delivered(path, symbol="NIFTY29SEP2623300PE", day="2026-09-10", closes=(100.0, 101.0, 102.0),
+              first="09:15"):
+    con = duckdb.connect(str(path))
+    con.execute("""CREATE TABLE IF NOT EXISTS dtable (datetime VARCHAR, open DOUBLE, high DOUBLE,
+                   low DOUBLE, close DOUBLE, volume INTEGER, oi DOUBLE, name VARCHAR, symbol VARCHAR,
+                   exp VARCHAR, strike DOUBLE, type VARCHAR)""")
+    start = dt.datetime.fromisoformat(f"{day} {first}")
+    for i, close in enumerate(closes):
+        stamp = (start + dt.timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
+        con.execute("INSERT INTO dtable VALUES (?, ?, ?, ?, ?, 650, 1, 'NIFTY', ?, '2026-09-29 00:00:00', 23300, ?)",
+                    [stamp, close, close, close, close, symbol, symbol[-2:]])
+    con.close()
+
+
+def test_a_backtest_reads_bars_stamped_like_choices(tmp_path):
+    path = tmp_path / "h.duckdb"
+    delivered(path)
+    bars = hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 1))], dt.date(2026, 9, 28), path=path)
+    frame = bars[(EXPIRY, 23300.0, "PE")]
+    # The 09:15 bar is known at 09:15:59, as Choice stamps it.
+    assert frame["ts"].iloc[0] == pd.Timestamp("2026-09-10 09:15:59", tz="Asia/Kolkata")
+    assert list(frame["close"]) == [100.0, 101.0, 102.0]
+
+
+def test_the_closing_session_is_not_a_price_a_strategy_could_trade(tmp_path):
+    path = tmp_path / "h.duckdb"
+    delivered(path, closes=(90.0, 91.0, 92.0), first="15:28")
+    frame = hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 1))], dt.date(2026, 9, 28),
+                           path=path)[(EXPIRY, 23300.0, "PE")]
+    assert list(frame["close"]) == [90.0, 91.0]                  # 15:28 and 15:29; not 15:30
+
+
+def test_choices_rows_extend_the_delivered_data_without_overlapping(tmp_path):
+    path = tmp_path / "h.duckdb"
+    delivered(path, day="2026-09-11")
+    # Choice's copy of 11 Sep differs and must not replace the delivered one;
+    # its 15 Sep is new.
+    hs.append_options(hs.option_rows(choice_frame(day=dt.date(2026, 9, 11), price=500.0), EXPIRY, 23300.0, "PE"), path)
+    hs.append_options(hs.option_rows(choice_frame(day=dt.date(2026, 9, 15), price=120.0), EXPIRY, 23300.0, "PE"), path)
+    frame = hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 1))], dt.date(2026, 9, 28),
+                           path=path)[(EXPIRY, 23300.0, "PE")]
+    by_day = frame.groupby(frame["ts"].dt.date)["close"].first()
+    assert by_day[dt.date(2026, 9, 11)] == 100.0 and by_day[dt.date(2026, 9, 15)] == 120.0
+
+
+def test_each_leg_starts_on_its_own_day(tmp_path):
+    path = tmp_path / "h.duckdb"
+    delivered(path, day="2026-09-08", closes=(70.0,))
+    delivered(path, day="2026-09-10", closes=(80.0,))
+    frame = hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 9))], dt.date(2026, 9, 28),
+                           path=path)[(EXPIRY, 23300.0, "PE")]
+    assert list(frame["close"]) == [80.0]
+
+
+def test_no_history_file_is_said_plainly(tmp_path):
+    with pytest.raises(hs.HistoryUnavailable, match="no recorded history"):
+        hs.option_bars([(EXPIRY, 23300.0, "PE", dt.date(2026, 9, 1))], dt.date(2026, 9, 28),
+                       path=tmp_path / "absent.duckdb")

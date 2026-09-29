@@ -56,12 +56,15 @@ class PriceSource(str, Enum):
 
     Choice is the source. BACKUP is a real traded price from the backtest's
     backup source, used only where Choice has no history for a contract --
-    never on a live run. EXCHANGE is a real traded price from the exchange's
-    own daily record: a contract's last trade of the day, for a backtest bar at
-    the close. MODELED is not a source at all but Black-76.
+    never on a live run. HISTORY is a real one-minute trade from the recorded
+    history kept on this machine (nifty.db), for a contract Choice no longer
+    serves -- asked before the backup. EXCHANGE is a real traded price from
+    the exchange's own daily record: a contract's last trade of the day, for a
+    backtest bar at the close. MODELED is not a source at all but Black-76.
     """
 
     CHOICE = "choice"       # a real Choice FinX candle or quote
+    HISTORY = "history"     # a real one-minute bar from the recorded history
     BACKUP = "backup"       # a real candle from the backtest's backup source
     EXCHANGE = "exchange"   # a real closing trade from the exchange's daily record
     MODELED = "modeled"     # Black-76, from India VIX or the exchange's closes

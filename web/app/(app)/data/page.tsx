@@ -19,6 +19,8 @@ export default async function DataHealthPage() {
   // Results from before the backup existed carry only the combined count.
   const choiceQuotes = p.choice_quotes ?? p.real_quotes;
   const backupQuotes = p.backup_quotes ?? 0;
+  const historyQuotes = p.history_quotes ?? 0;
+  const history = provenance.history;
   const exchange = provenance.exchange;
   const exchangeQuotes = p.exchange_quotes ?? 0;
   const anchoredQuotes = p.anchored_quotes ?? 0;
@@ -33,7 +35,7 @@ export default async function DataHealthPage() {
     <>
       <PageHeader
         title="Data Health"
-        subtitle="Choice FinX is the source for every price, historical and live. A backtest turns to its backup source only for what Choice did not supply — an option contract with no usable history, or a trading day with no NIFTY or India VIX bars — and everything it took is listed here. Where no real candle exists at all, the model is anchored to the exchange's own daily closing prices for the same contract. Live runs use neither. A failed fetch is shown as a failure, with the broker's own message, rather than silently becoming an empty result."
+        subtitle="Choice FinX is the source for every price, historical and live. A backtest turns elsewhere only for what Choice did not supply: for an option contract with no usable history, first to the recorded one-minute history kept with the engine, then to its backup source; for a trading day with no NIFTY or India VIX bars, to the backup source. Everything it took is listed here. Where no real candle exists at all, the model is anchored to the exchange's own daily closing prices for the same contract. Live runs use neither. A failed fetch is shown as a failure, with the broker's own message, rather than silently becoming an empty result."
       />
 
       <div style={{ display: "grid", gap: 16 }}>
@@ -55,6 +57,14 @@ export default async function DataHealthPage() {
               tone={choiceQuotes > 0 ? "pos" : "neg"}
               hint={pct(p.total_quotes ? choiceQuotes / p.total_quotes : 0)}
             />
+            {historyQuotes > 0 && (
+              <Stat
+                label="Real (history)"
+                value={num(historyQuotes)}
+                tone="pos"
+                hint={`${pct(p.history_fraction ?? 0)} one-minute trades`}
+              />
+            )}
             {backupQuotes > 0 && (
               <Stat
                 label="Real (backup)"
@@ -131,8 +141,28 @@ export default async function DataHealthPage() {
                   ok={!awaiting && legsTotal > 0 && legsReal === legsTotal}
                   awaiting={awaiting}
                   fromBackup={(provenance.legs_backup ?? 0) > 0}
-                  note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED), anchored to the exchange's closing prices wherever its record reaches.`}
+                  note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the recorded one-minute history where it holds the contract (badged HISTORY${provenance.legs_history ? `; ${num(provenance.legs_history)} leg(s) in this run` : ""}), then from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED), anchored to the exchange's closing prices wherever its record reaches.`}
                 />
+                {history && history.available && (
+                  <Row
+                    name="Recorded one-minute history"
+                    source="kept with the engine"
+                    ok={!awaiting && !history.note}
+                    awaiting={awaiting}
+                    badge={
+                      history.used ? <Badge tone="brand">HISTORY</Badge>
+                        : history.note ? <Badge tone="warn">UNAVAILABLE</Badge>
+                          : <Badge tone="brand">NOT NEEDED</Badge>
+                    }
+                    note={
+                      history.note
+                        ? `Not used in this run: ${history.note}.`
+                        : history.legs_asked
+                          ? `Every NIFTY option's one-minute trades since 2018, kept current each evening from Choice. Of ${num(history.legs_asked)} leg(s) Choice could not fully price, it held ${num(history.legs_found)} and priced ${num(history.legs_used)}${history.quotes ? ` (${num(history.quotes)} lookups)` : ""}.`
+                          : "Every NIFTY option's one-minute trades since 2018, kept current each evening from Choice. Choice priced every leg of this run, so it was not needed."
+                    }
+                  />
+                )}
                 {exchange && exchange.configured && (
                   <Row
                     name="Exchange closing prices"

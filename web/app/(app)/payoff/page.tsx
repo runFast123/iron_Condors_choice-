@@ -60,6 +60,7 @@ export default async function PayoffPage() {
           verified={provenance.verified}
           realFraction={metrics.real_price_fraction}
           backupFraction={provenance.provider?.backup_fraction ?? 0}
+          historyFraction={provenance.provider?.history_fraction ?? 0}
           exchangeFraction={provenance.provider?.exchange_fraction ?? 0}
           exchange={provenance.exchange}
           note={provenance.note}
@@ -73,6 +74,7 @@ export default async function PayoffPage() {
             unresolved: provenance.legs_unresolved,
             emptyExpiries: provenance.empty_expiries,
             backup: provenance.legs_backup,
+            history: provenance.legs_history,
           }}
         />
 

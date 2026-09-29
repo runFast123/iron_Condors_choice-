@@ -180,6 +180,7 @@ export function ProvenanceBanner({
   legs,
   backupFraction = 0,
   exchangeFraction = 0,
+  historyFraction = 0,
   exchange,
 }: {
   verified: boolean;
@@ -197,6 +198,8 @@ export function ProvenanceBanner({
     emptyExpiries?: string[];
     /** Priced from the backup source at least once. */
     backup?: number;
+    /** Priced from the recorded one-minute history at least once. */
+    history?: number;
   };
   /** Share of price lookups the backup source answered. Counted inside
    *  realFraction: a backup price is a real traded price, not a model. */
@@ -204,6 +207,9 @@ export function ProvenanceBanner({
   /** Share answered by a real closing trade from the exchange's record. Also
    *  inside realFraction. */
   exchangeFraction?: number;
+  /** Share answered by the recorded one-minute history. Also inside
+   *  realFraction. */
+  historyFraction?: number;
   /** How the run used the exchange's record, and how accurate the model was
    *  against it. */
   exchange?: ExchangeUse;
@@ -223,8 +229,9 @@ export function ProvenanceBanner({
 
   const modeled = 1 - realFraction;
   if (modeled <= 0) {
-    const others = backupFraction + exchangeFraction;
+    const others = historyFraction + backupFraction + exchangeFraction;
     const parts = [`${(100 * (1 - others)).toFixed(0)}% from Choice FinX`];
+    if (historyFraction > 0) parts.push(`${(100 * historyFraction).toFixed(0)}% from the recorded one-minute history`);
     if (backupFraction > 0) parts.push(`${(100 * backupFraction).toFixed(0)}% from the backup source`);
     if (exchangeFraction > 0) parts.push(`${(100 * exchangeFraction).toFixed(0)}% from the exchange's record of closing trades`);
     return (
@@ -283,10 +290,13 @@ export function ProvenanceBanner({
                 }.`
               : ""}
             {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
-            {legs.backup
-              ? ` Of the legs Choice could not price, ${legs.backup} were priced from real candles from the backup source instead.`
+            {legs.history
+              ? ` Of the legs Choice could not price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
               : ""}
-            {legs.backup || accuracy
+            {legs.backup
+              ? ` ${legs.history ? "And" : "Of the legs Choice could not price,"} ${legs.backup} ${legs.history ? "more " : ""}were priced from real candles from the backup source instead.`
+              : ""}
+            {legs.history || legs.backup || accuracy
               ? ""
               : " So far only the expiry that is currently trading has priced reliably from real data; a range inside it is the most trustworthy test."}
           </p>

@@ -260,7 +260,10 @@ export default async function AboutPage() {
             </li>
             <li>
               <strong>Backtest prices:</strong> Choice&rsquo;s own option candles wherever it has them.
-              An expired contract has none, so its price is modelled &mdash; anchored to the
+              An expired contract has none from Choice, so it comes from the recorded one-minute
+              history kept with the engine &mdash; every NIFTY option&rsquo;s real trades since 2018,
+              topped up from Choice each evening. Only where that holds nothing either is a price
+              modelled &mdash; anchored to the
               exchange&rsquo;s closing prices for that same contract the session before, carried to
               the moment by NIFTY and India VIX, and held inside the day&rsquo;s real traded range.
               Only the previous session&rsquo;s figures are read, so the model knows nothing a trader

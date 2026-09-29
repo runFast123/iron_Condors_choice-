@@ -37,7 +37,7 @@ from engine.backtest.runner import (
 )
 from engine.backtest.serialise import empty_bundle, serialise
 from engine.backtest.vix_series import VixAsOf
-from engine.data import groww, nse_bhavcopy
+from engine.data import groww, history_store, nse_bhavcopy
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE, confirm_derived_expiries, expiry_calendar
 from engine.data.market_calendar import MARKET_CLOSE, MarketCalendar
 from engine.choice.errors import ChoiceAuthError, ChoiceError
@@ -67,7 +67,9 @@ log = logging.getLogger(__name__)
 #        out-of-the-money legs about 13% too high on average.
 #   6 -> the exchange's movable holidays known, so a holiday week's contract
 #        expires on the day the exchange listed (30 Mar 2026, not 31 Mar).
-RESULT_VERSION = 6
+#   7 -> a leg Choice no longer serves is priced from the recorded one-minute
+#        history's real trades before the backup source or the model.
+RESULT_VERSION = 7
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
 #: first, since it is the one every older result is missing.
@@ -220,6 +222,16 @@ def _fetch_with_backup(
         return frame, [], note, choice_error
     merged, taken, note = backup.fill_missing_days(frame, name, days_needed, resolution)
     return merged, taken, note, choice_error
+
+
+def _daily_closes(frame: pd.DataFrame) -> pd.DataFrame:
+    """One-minute bars to one bar a day: the day's last trade, stamped at the
+    start of the day as a daily candle is."""
+    if frame.empty:
+        return frame
+    days = frame["ts"].dt.normalize()
+    last = frame.groupby(days, sort=True)["close"].last()
+    return pd.DataFrame({"ts": last.index, "close": last.to_numpy()})
 
 
 def _choice_falls_short(
@@ -429,6 +441,55 @@ class BacktestRunner:
                 "the India VIX model alone where that was over a week old"
             )
         return (history if history else None), info
+
+    def _recorded_history(
+        self, legs: list, end: dt.date, resolution: str,
+    ) -> tuple[CandlePriceProvider, dict, dict[str, Any]]:
+        """Real one-minute trades for `legs` from the history kept on this
+        machine: the delivered file to 11 Sep 2026, and each evening's bars
+        from Choice after that.
+
+        Returns the provider, per-leg spans (as for Choice's own bars) and what
+        to report. Absent, locked or unreadable costs accuracy, not the run.
+        """
+        provider = CandlePriceProvider(source=PriceSource.HISTORY)
+        spans: dict[tuple[dt.date, float, str], tuple[int, Any, Any, dt.datetime]] = {}
+        info: dict[str, Any] = {
+            "available": history_store.available(), "used": False,
+            "legs_asked": 0, "legs_found": 0, "legs_used": 0, "note": None,
+        }
+        if not legs or not info["available"]:
+            return provider, spans, info
+        if resolution in ("W", "M"):
+            # A weekly or monthly bar spans many sessions; no minute is its price.
+            info["note"] = "not used for weekly or monthly bars"
+            return provider, spans, info
+        info["legs_asked"] = len(legs)
+        self._step("history", 0.855, f"Reading {len(legs)} option legs from the recorded history")
+        first_needed = {(r.expiry, float(r.strike), r.right): r.first_needed for r in legs}
+        try:
+            bars = history_store.option_bars(
+                [(r.expiry, float(r.strike), r.right, r.first_needed.date()) for r in legs], end,
+            )
+        except history_store.HistoryUnavailable as exc:
+            info["note"] = str(exc)
+            return provider, spans, info
+        except Exception as exc:                        # noqa: BLE001 - never the run's failure
+            log.exception("[%s] Recorded history failed", self.job.job_id)
+            info["note"] = f"could not be read ({type(exc).__name__})"
+            return provider, spans, info
+        if resolution == "D":
+            # A daily candle is stamped at the start of its day and priced at
+            # its close; the same, from the day's last trade.
+            provider.max_staleness = dt.timedelta(hours=12)
+            bars = {key: _daily_closes(frame) for key, frame in bars.items()}
+        for key, frame in bars.items():
+            if frame.empty or key not in first_needed:
+                continue
+            provider.add(*key, frame)
+            spans[key] = (len(frame), frame["ts"].min(), frame["ts"].max(), first_needed[key])
+        info.update(used=bool(spans), legs_found=len(spans))
+        return provider, spans, info
 
     def _step(self, stage: str, progress: float, message: str = "") -> None:
         self.job.stage = stage
@@ -721,15 +782,30 @@ class BacktestRunner:
                 "[%s] %d of %d legs had no Choice premium; %d scrip master(s) consulted",
                 job.job_id, len(missing), total, instruments.downloads,
             )
-        # The backup source, for every leg Choice's history leaves unpriced --
-        # above all an expired contract, which Choice answers with nothing.
-        backup_candles = CandlePriceProvider(source=PriceSource.BACKUP)
-        backup_found: list[str] = []
-        short = [
+        # The recorded one-minute history on this machine, for every leg
+        # Choice's history leaves unpriced -- above all an expired contract,
+        # which Choice answers with nothing. Real trades, asked before the
+        # backup source.
+        short_of_choice = [
             req for req in requirements
             if _choice_falls_short(
                 (req.expiry, float(req.strike), req.right), req.first_needed, spans, end,
                 candles.max_staleness,
+            )
+        ]
+        history_candles, history_spans, history_info = self._recorded_history(
+            short_of_choice, end, resolution,
+        )
+
+        # The backup source, for what neither Choice nor the recorded history
+        # covers.
+        backup_candles = CandlePriceProvider(source=PriceSource.BACKUP)
+        backup_found: list[str] = []
+        short = [
+            req for req in short_of_choice
+            if _choice_falls_short(
+                (req.expiry, float(req.strike), req.right), req.first_needed, history_spans, end,
+                history_candles.max_staleness,
             )
         ]
         if short and backup is not None:
@@ -763,7 +839,7 @@ class BacktestRunner:
                 backup_notes.append(f"Option legs: the backup source failed on {failures} leg(s) ({last_error})")
         elif short:
             backup_notes.append(
-                f"Option legs: {len(short)} leg(s) had no usable Choice history and no backup "
+                f"Option legs: {len(short)} leg(s) had no usable Choice or recorded history and no backup "
                 "source is configured, so they were modelled"
             )
 
@@ -795,6 +871,7 @@ class BacktestRunner:
         self._step("replay", 0.90, "Replaying the ladder")
         provider = FallbackPriceProvider(
             primary=candles,
+            history=history_candles if history_candles.candles else None,
             secondary=backup_candles if backup_candles.candles else None,
             fallback=anchored if anchored is not None else model,
         )
@@ -847,6 +924,9 @@ class BacktestRunner:
 
         self._step("serialise", 0.97, "Building the dashboard dataset")
         used_backup = sorted(k for k, n in backup_candles.hits_by_key.items() if n > 0)
+        used_history = sorted(k for k, n in history_candles.hits_by_key.items() if n > 0)
+        history_info["legs_used"] = len(used_history)
+        history_used = bool(provider.history_quotes)
         settled_official = sorted(e for e in settlement if e <= last_day)
         backup_used = bool(
             nifty_backup or vix_daily_backup or vix_intraday_backup or used_backup
@@ -861,10 +941,11 @@ class BacktestRunner:
         exchange_used = bool(provider.exchange_quotes)
         if provider.modeled_quotes == 0:
             note_text = (
-                "All prices sourced from Choice FinX." if not (backup_used or exchange_used)
+                "All prices sourced from Choice FinX."
+                if not (backup_used or exchange_used or history_used)
                 else "Every price is a real traded price: from Choice FinX, and where Choice "
-                     "had none, from the backup source or the exchange's closing record -- "
-                     "listed below."
+                     "had none, from the recorded one-minute history, the backup source or the "
+                     "exchange's closing record -- listed below."
             )
         elif anchor_counts.get("anchored_quotes"):
             note_text = (
@@ -887,6 +968,8 @@ class BacktestRunner:
         contributed = []
         if fetched:
             contributed.append("choice:ChartData")
+        if history_used:
+            contributed.append("history:one-minute")
         if used_backup:
             contributed.append("backup")
         if exchange_used:
@@ -927,7 +1010,8 @@ class BacktestRunner:
             "expiries_listed": len(expiries) - len(derived_expiries),
             # "Everything from Choice": no modelled premium, no backup day and
             # no closing trade taken from the exchange's record.
-            "verified": provider.modeled_quotes == 0 and not backup_used and not exchange_used,
+            "verified": (provider.modeled_quotes == 0 and not backup_used and not exchange_used
+                         and not history_used),
             "note": note_text,
             # What came from the backup source, day by day and leg by leg. It
             # is never named: on the dashboard it is "the backup source".
@@ -944,6 +1028,10 @@ class BacktestRunner:
                 "option_legs_used": len(used_backup),
                 "notes": backup_notes,
             },
+            # The recorded one-minute history kept on this machine: real trades
+            # for legs Choice no longer serves, asked before the backup.
+            "history": {**history_info, "quotes": provider.history_quotes},
+            "legs_history": len(used_history),
             # Legs priced from the backup at least once. Counted apart from the
             # Choice split above, which still says what Choice itself served.
             "legs_backup": len(used_backup),

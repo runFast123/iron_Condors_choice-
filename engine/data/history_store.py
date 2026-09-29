@@ -232,21 +232,18 @@ def _append(table: str, keys: tuple[str, ...], frame: pd.DataFrame, path: pathli
     frame["source"] = "choice"
     frame["fetched_at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     key_list = ", ".join(keys)
-    with _write_lock:
-        con = _connect(path)
-        try:
-            _ensure(con)
-            con.register("incoming", frame)
-            con.execute("BEGIN")
-            con.execute(
-                f"DELETE FROM {table} WHERE ({key_list}) IN (SELECT {key_list} FROM incoming)"
-            )
-            columns = ", ".join(frame.columns)
-            con.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM incoming")
-            con.execute("COMMIT")
-            con.unregister("incoming")
-        finally:
-            con.close()
+    columns = ", ".join(frame.columns)
+
+    def write(con) -> None:
+        _ensure(con)
+        con.register("incoming", frame)
+        con.execute("BEGIN")
+        con.execute(f"DELETE FROM {table} WHERE ({key_list}) IN (SELECT {key_list} FROM incoming)")
+        con.execute(f"INSERT INTO {table} ({columns}) SELECT {columns} FROM incoming")
+        con.execute("COMMIT")
+        con.unregister("incoming")
+
+    _with_connection(write, path or db_path(), read_only=False)
     return len(frame)
 
 
@@ -258,18 +255,129 @@ def append_index(frame: pd.DataFrame, path: pathlib.Path | None = None) -> int:
     return _append(INDEX_TABLE, ("name", "datetime"), frame, path)
 
 
+# ------------------------------------------------------------------ reading
+
+#: The last bar a backtest may price from: 15:29 holds the session's closing
+#: trades. The bars after it (to 15:40) are the closing session, not trading
+#: a strategy could have done.
+LAST_BAR = "15:29:00"
+#: Another process (a backfill) may hold the file for writing; DuckDB then
+#: refuses readers. Short waits cover a batch being written.
+READ_ATTEMPTS = 8
+READ_WAIT = 1.5
+
+
+class HistoryUnavailable(Exception):
+    """nifty.db is absent, locked or unreadable."""
+
+
+def available(path: pathlib.Path | None = None) -> bool:
+    return (path or db_path()).is_file()
+
+
+def option_bars(
+    legs: Iterable[tuple[dt.date, float, str, dt.date]],
+    end: dt.date,
+    *,
+    path: pathlib.Path | None = None,
+) -> dict[tuple[dt.date, float, str], pd.DataFrame]:
+    """One-minute bars for each ``(expiry, strike, right, from_day)`` through
+    `end`, keyed by ``(expiry, strike, right)``.
+
+    The delivered table first; Choice's own rows only for the days after it
+    ends, so the two never overlap. Frames carry ``ts`` (IST) at each bar's
+    last second -- the convention Choice's candles use, so an as-of lookup
+    treats both alike -- and ``close``. Bars after LAST_BAR are left out.
+    One query for every leg: the table is not ordered by contract, so each
+    query is a scan and a query per leg would take minutes.
+    """
+    path = path or db_path()
+    if not available(path):
+        raise HistoryUnavailable("no recorded history on this machine")
+    wanted = pd.DataFrame(
+        [(symbol_for(e, k, r), f"{d:%Y-%m-%d} 00:00:00") for e, k, r, d in legs],
+        columns=["symbol", "from_dt"],
+    ).groupby("symbol", as_index=False)["from_dt"].min()
+    if wanted.empty:
+        return {}
+    since = wanted["from_dt"].min()
+    until = f"{end:%Y-%m-%d} 23:59:59"
+    # A plain IN on the symbol and one date range for all: joining on each
+    # leg's own start makes DuckDB compare every row with every leg.
+    where = (f"symbol IN (SELECT symbol FROM wanted) AND datetime >= '{since}' "
+             f"AND datetime <= '{until}' AND substr(datetime, 12) <= '{LAST_BAR}' AND close > 0")
+    columns = "symbol, datetime, close, exp, strike, CAST(type AS VARCHAR) AS opt_right"
+
+    def read(con) -> pd.DataFrame:
+        tables = {r[0] for r in con.execute(
+            "SELECT table_name FROM information_schema.tables").fetchall()}
+        con.register("wanted", wanted[["symbol"]])
+        parts = []
+        if DELIVERED_TABLE in tables:
+            parts.append(f"SELECT {columns} FROM {DELIVERED_TABLE} WHERE {where}")
+        if OPTIONS_TABLE in tables:
+            after = (f" AND datetime > (SELECT max(datetime) FROM {DELIVERED_TABLE})"
+                     if DELIVERED_TABLE in tables else "")
+            parts.append(f"SELECT {columns} FROM {OPTIONS_TABLE} WHERE {where}{after}")
+        if not parts:
+            return pd.DataFrame()
+        return con.execute(" UNION ALL ".join(parts)).df()
+
+    rows = _with_connection(read, path, read_only=True)
+    if rows.empty:
+        return {}
+    starts = dict(zip(wanted["symbol"], wanted["from_dt"]))
+    rows = rows[rows["datetime"] >= rows["symbol"].map(starts)]
+    rows["ts"] = (pd.to_datetime(rows["datetime"]) + pd.Timedelta(seconds=59)).dt.tz_localize(
+        "Asia/Kolkata")
+    out: dict[tuple[dt.date, float, str], pd.DataFrame] = {}
+    for (exp, strike, right), frame in rows.groupby(["exp", "strike", "opt_right"], sort=False):
+        key = (dt.date.fromisoformat(str(exp)[:10]), float(strike), str(right))
+        out[key] = (frame[["ts", "close"]].drop_duplicates("ts", keep="last")
+                    .sort_values("ts").reset_index(drop=True))
+    return out
+
+
+def _with_connection(work, path: pathlib.Path, *, read_only: bool):
+    """Run `work(con)` on the file, waiting out another process that holds it.
+
+    On Windows DuckDB locks the file for the whole life of a connection, so a
+    backfill writing from one process and a backtest reading in the engine
+    turn each other away. Within one process `_write_lock` orders them.
+    """
+    import time as _time
+
+    last_error: Exception | None = None
+    for attempt in range(READ_ATTEMPTS):
+        try:
+            with _write_lock:
+                con = _connect(path, read_only=read_only)
+                try:
+                    return work(con)
+                finally:
+                    con.close()
+        except Exception as exc:                # noqa: BLE001 - locked by another process, most likely
+            if "being used by another process" not in str(exc) and "lock" not in str(exc).lower():
+                raise
+            last_error = exc
+            _time.sleep(READ_WAIT * (attempt + 1))
+    # The message reaches the dashboard; the path and process stay in the log.
+    log.warning("History file stayed locked: %s", last_error)
+    raise HistoryUnavailable("the recorded history was in use by another process") from last_error
+
+
 def coverage(path: pathlib.Path | None = None) -> dict:
     """What the file holds: the delivered data's end and Choice's days."""
-    con = _connect(path, read_only=True)
-    try:
-        tables = {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
-        out: dict = {}
-        if DELIVERED_TABLE in tables:
-            out["delivered_until"] = con.execute(f"SELECT max(datetime) FROM {DELIVERED_TABLE}").fetchone()[0]
-        if OPTIONS_TABLE in tables:
-            out["choice_days"] = [r[0] for r in con.execute(
-                f"SELECT DISTINCT substr(datetime, 1, 10) FROM {OPTIONS_TABLE} ORDER BY 1").fetchall()]
-            out["choice_rows"] = con.execute(f"SELECT count(*) FROM {OPTIONS_TABLE}").fetchone()[0]
-        return out
-    finally:
-        con.close()
+    return _with_connection(_coverage, path or db_path(), read_only=True)
+
+
+def _coverage(con) -> dict:
+    tables = {r[0] for r in con.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+    out: dict = {}
+    if DELIVERED_TABLE in tables:
+        out["delivered_until"] = con.execute(f"SELECT max(datetime) FROM {DELIVERED_TABLE}").fetchone()[0]
+    if OPTIONS_TABLE in tables:
+        out["choice_days"] = [r[0] for r in con.execute(
+            f"SELECT DISTINCT substr(datetime, 1, 10) FROM {OPTIONS_TABLE} ORDER BY 1").fetchall()]
+        out["choice_rows"] = con.execute(f"SELECT count(*) FROM {OPTIONS_TABLE}").fetchone()[0]
+    return out
