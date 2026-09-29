@@ -31,6 +31,7 @@ import datetime as dt
 import logging
 import os
 import pathlib
+import re
 import threading
 from dataclasses import dataclass
 from typing import Callable, Iterable
@@ -51,6 +52,7 @@ DELIVERED_TABLE = "dtable"
 #: trades is beyond about 3% of spot, and every extra strike is a request.
 STRIKE_BAND = 0.15
 
+_SYMBOL = re.compile(r"NIFTY\d{2}[A-Z]{3}\d{2}\d+(CE|PE)")
 _MONTHS = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
 
 # One writer at a time within this process; DuckDB allows one writing process.
@@ -302,26 +304,31 @@ def option_bars(
         return {}
     since = wanted["from_dt"].min()
     until = f"{end:%Y-%m-%d} 23:59:59"
-    # A plain IN on the symbol and one date range for all: joining on each
-    # leg's own start makes DuckDB compare every row with every leg.
-    where = (f"symbol IN (SELECT symbol FROM wanted) AND datetime >= '{since}' "
-             f"AND datetime <= '{until}' AND substr(datetime, 12) <= '{LAST_BAR}' AND close > 0")
+    symbols = list(wanted["symbol"])
+    if not all(_SYMBOL.fullmatch(s) for s in symbols):
+        raise ValueError("unexpected option symbol")
+    # One date range for all legs and the symbols written into the query.
+    # Joining on each leg's own start made DuckDB compare every row with every
+    # leg; a registered pandas frame, or a UNION of the two tables, hung
+    # DuckDB 1.5 outright. Two plain scans, joined here, take seconds.
+    where = (f"symbol IN ({', '.join(repr(s) for s in symbols)}) "
+             f"AND datetime >= '{since}' AND datetime <= '{until}' "
+             f"AND substr(datetime, 12) <= '{LAST_BAR}' AND close > 0")
     columns = "symbol, datetime, close, exp, strike, CAST(type AS VARCHAR) AS opt_right"
 
     def read(con) -> pd.DataFrame:
         tables = {r[0] for r in con.execute(
             "SELECT table_name FROM information_schema.tables").fetchall()}
-        con.register("wanted", wanted[["symbol"]])
         parts = []
+        delivered_until = None
         if DELIVERED_TABLE in tables:
-            parts.append(f"SELECT {columns} FROM {DELIVERED_TABLE} WHERE {where}")
+            parts.append(con.execute(f"SELECT {columns} FROM {DELIVERED_TABLE} WHERE {where}").df())
+            delivered_until = con.execute(f"SELECT max(datetime) FROM {DELIVERED_TABLE}").fetchone()[0]
         if OPTIONS_TABLE in tables:
-            after = (f" AND datetime > (SELECT max(datetime) FROM {DELIVERED_TABLE})"
-                     if DELIVERED_TABLE in tables else "")
-            parts.append(f"SELECT {columns} FROM {OPTIONS_TABLE} WHERE {where}{after}")
-        if not parts:
-            return pd.DataFrame()
-        return con.execute(" UNION ALL ".join(parts)).df()
+            after = f" AND datetime > '{delivered_until}'" if delivered_until else ""
+            parts.append(con.execute(f"SELECT {columns} FROM {OPTIONS_TABLE} WHERE {where}{after}").df())
+        parts = [part for part in parts if not part.empty]
+        return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
     rows = _with_connection(read, path, read_only=True)
     if rows.empty:
