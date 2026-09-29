@@ -55,6 +55,10 @@ yarn-error.log*
 # Data caches
 data/cache/
 *.parquet
+# Market-data databases (nifty.db is 7 GB of licensed option history).
+*.duckdb
+*.db
+nifty.db
 *.csv
 !engine/tests/fixtures/*.csv
 scripmaster_cache/
