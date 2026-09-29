@@ -129,6 +129,10 @@ async def _lifespan(_: FastAPI):
     # exactly when a run sits in the database with no worker behind it.
     threading.Thread(target=_watchdog_pass, name="forward-watchdog-boot", daemon=True).start()
     _start_watchdog()
+    # Keeps nifty.db current: each trading evening's one-minute option bars.
+    from engine.data import history_job
+
+    history_job.start(registry)
     yield
 
 

@@ -13,6 +13,7 @@ websocket-client>=1.7.0
 websockets>=12.0
 
 # API + persistence
+duckdb>=1.1.0            # nifty.db, the one-minute option history
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 sqlalchemy>=2.0.28

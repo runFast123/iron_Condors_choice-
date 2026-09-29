@@ -71,3 +71,10 @@ def _no_exchange_archive(monkeypatch):
     from engine.data import nse_bhavcopy
 
     monkeypatch.setattr(nse_bhavcopy, "shared_archive", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_history_collection(monkeypatch, tmp_path):
+    """Tests never write the real nifty.db, nor start the evening collector."""
+    monkeypatch.setenv("NIFTY_HISTORY_DB", str(tmp_path / "history.duckdb"))
+    monkeypatch.setenv("HISTORY_COLLECTOR", "off")
