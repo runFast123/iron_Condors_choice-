@@ -317,25 +317,30 @@ def option_bars(
     path = path or db_path()
     if not available(path):
         raise HistoryUnavailable("no recorded history on this machine")
-    wanted = pd.DataFrame(
-        [(symbol_for(e, k, r), f"{d:%Y-%m-%d} 00:00:00") for e, k, r, d in legs],
-        columns=["symbol", "from_dt"],
-    ).groupby("symbol", as_index=False)["from_dt"].min()
-    if wanted.empty:
+    keys: dict[str, tuple[dt.date, float, str]] = {}
+    starts: dict[str, dt.date] = {}
+    for e, k, r, d in legs:
+        symbol = symbol_for(e, k, r)
+        keys[symbol] = (e, float(k), r)
+        starts[symbol] = min(d, starts.get(symbol, d))
+    if not keys:
         return {}
-    since = wanted["from_dt"].min()
-    until = f"{end:%Y-%m-%d} 23:59:59"
-    symbols = list(wanted["symbol"])
+    symbols = list(keys)
     if not all(_SYMBOL.fullmatch(s) for s in symbols):
         raise ValueError("unexpected option symbol")
-    # One date range for all legs and the symbols written into the query.
-    # Joining on each leg's own start made DuckDB compare every row with every
-    # leg; a registered pandas frame, or a UNION of the two tables, hung
-    # DuckDB 1.5 outright. Two plain scans, joined here, take seconds.
-    where = (f"symbol IN ({', '.join(repr(s) for s in symbols)}) "
-             f"AND datetime >= '{since}' AND datetime <= '{until}' "
-             f"AND substr(datetime, 12) <= '{LAST_BAR}' AND close > 0")
-    columns = "symbol, datetime, close, exp, strike, CAST(type AS VARCHAR) AS opt_right"
+    since = f"{min(starts.values()):%Y-%m-%d} 00:00:00"
+    until = f"{end:%Y-%m-%d} 23:59:59"
+    # The symbols as an inline table, each with a small number, and only that
+    # number, the bar's time and its close come back: an all-data run reads
+    # millions of bars, and as text columns they took gigabytes. Not a pandas
+    # frame registered with DuckDB, nor a UNION of the two tables: both hung
+    # DuckDB 1.5 outright. One date range for all legs; each leg's own start
+    # is applied here.
+    values = ", ".join(f"('{s}', {i})" for i, s in enumerate(symbols))
+    select = ("SELECT v.leg, strptime(t.datetime, '%Y-%m-%d %H:%M:%S') AS bar, t.close "
+              "FROM {table} t JOIN (VALUES " + values + ") v(symbol, leg) ON t.symbol = v.symbol "
+              f"WHERE t.datetime >= '{since}' AND t.datetime <= '{until}' "
+              f"AND substr(t.datetime, 12) <= '{LAST_BAR}' AND t.close > 0")
 
     def read(con) -> pd.DataFrame:
         tables = {r[0] for r in con.execute(
@@ -343,26 +348,29 @@ def option_bars(
         parts = []
         delivered_until = None
         if DELIVERED_TABLE in tables:
-            parts.append(con.execute(f"SELECT {columns} FROM {DELIVERED_TABLE} WHERE {where}").df())
+            parts.append(con.execute(select.format(table=DELIVERED_TABLE)).df())
             delivered_until = con.execute(f"SELECT max(datetime) FROM {DELIVERED_TABLE}").fetchone()[0]
         if OPTIONS_TABLE in tables:
-            after = f" AND datetime > '{delivered_until}'" if delivered_until else ""
-            parts.append(con.execute(f"SELECT {columns} FROM {OPTIONS_TABLE} WHERE {where}{after}").df())
+            after = f" AND t.datetime > '{delivered_until}'" if delivered_until else ""
+            parts.append(con.execute(select.format(table=OPTIONS_TABLE) + after).df())
         parts = [part for part in parts if not part.empty]
         return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
     rows = _with_connection(read, path, read_only=True)
     if rows.empty:
         return {}
-    starts = dict(zip(wanted["symbol"], wanted["from_dt"]))
-    rows = rows[rows["datetime"] >= rows["symbol"].map(starts)]
-    rows["ts"] = (pd.to_datetime(rows["datetime"]) + pd.Timedelta(seconds=59)).dt.tz_localize(
-        "Asia/Kolkata")
+    first = pd.to_datetime(pd.Series([starts[s] for s in symbols])).to_numpy()
+    rows = rows[rows["bar"].to_numpy() >= first[rows["leg"].to_numpy()]]
+    # Stamped at the bar's last second, as Choice stamps its candles.
+    frame = pd.DataFrame({
+        "leg": rows["leg"].to_numpy(),
+        "ts": (rows["bar"] + pd.Timedelta(seconds=59)).dt.tz_localize("Asia/Kolkata").reset_index(drop=True),
+        "close": rows["close"].to_numpy(),
+    })
     out: dict[tuple[dt.date, float, str], pd.DataFrame] = {}
-    for (exp, strike, right), frame in rows.groupby(["exp", "strike", "opt_right"], sort=False):
-        key = (dt.date.fromisoformat(str(exp)[:10]), float(strike), str(right))
-        out[key] = (frame[["ts", "close"]].drop_duplicates("ts", keep="last")
-                    .sort_values("ts").reset_index(drop=True))
+    for leg, bars in frame.groupby("leg", sort=False):
+        out[keys[symbols[int(leg)]]] = (bars[["ts", "close"]].drop_duplicates("ts", keep="last")
+                                        .sort_values("ts").reset_index(drop=True))
     return out
 
 
