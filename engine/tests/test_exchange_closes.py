@@ -427,7 +427,9 @@ def test_a_price_comes_from_the_previous_session_only():
 
 
 def test_an_anchored_price_matches_a_market_that_kept_its_smile():
-    provider = anchored(two_days(spread=0.99))
+    # The synthetic market is priced on calendar time, so it is measured on it
+    # (April 2026 has two weekday holidays the trading clock would discount).
+    provider = anchored(two_days(spread=0.99), clock=TradingClock(lambda day: True))
     quote = provider.quote(request(D1, dt.time(11, 0), 22_600, "PE", 23_050))
     when = dt.datetime.combine(D1, dt.time(11, 0), tzinfo=IST)
     years = years_to_expiry(when, EXPIRY)

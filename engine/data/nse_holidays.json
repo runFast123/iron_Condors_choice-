@@ -6,7 +6,8 @@
     "shift every year and are deliberately NOT guessed here. Add them to 'dates' from NSE's annual",
     "holiday circular. The engine also learns closures from Choice's MarketStatus endpoint and",
     "persists them, so an unlisted holiday is caught once and remembered thereafter.",
-    "Dates in 'dates' are ISO (YYYY-MM-DD) and represent full market closures, not muhurat sessions."
+    "Dates in 'dates' are ISO (YYYY-MM-DD) and represent full market closures, not muhurat sessions.",
+    "Past dates are weekdays with no F&O session in the exchange's own records; 2026-10-20 and 2026-11-24 are where the exchange moved that week's expiry to the Monday. Diwali 2026 (November) is not listed yet: add it from the circular."
   ],
   "recurring_fixed": [
     "01-26",
@@ -15,5 +16,38 @@
     "10-02",
     "12-25"
   ],
-  "dates": []
+  "dates": [
+    "2024-01-22",
+    "2024-03-08",
+    "2024-03-25",
+    "2024-03-29",
+    "2024-04-11",
+    "2024-04-17",
+    "2024-05-20",
+    "2024-06-17",
+    "2024-07-17",
+    "2024-11-01",
+    "2024-11-15",
+    "2024-11-20",
+    "2025-02-26",
+    "2025-03-14",
+    "2025-03-31",
+    "2025-04-10",
+    "2025-04-14",
+    "2025-04-18",
+    "2025-08-27",
+    "2025-10-22",
+    "2025-11-05",
+    "2026-01-15",
+    "2026-03-03",
+    "2026-03-26",
+    "2026-03-31",
+    "2026-04-03",
+    "2026-04-14",
+    "2026-05-28",
+    "2026-06-26",
+    "2026-09-14",
+    "2026-10-20",
+    "2026-11-24"
+  ]
 }

@@ -159,3 +159,33 @@ def test_missed_days_are_caught_up(monkeypatch):
 def test_it_can_be_switched_off(monkeypatch, value):
     monkeypatch.setenv(history_job.ENV_SWITCH, value)
     assert history_job._enabled() is False
+
+
+def test_a_day_with_no_bars_at_all_is_asked_once(monkeypatch):
+    """An unlisted holiday: the first evening pass finds nothing, and the job
+    does not spend the rest of the evening asking again."""
+    class Closed(Market):
+        def option_candles(self, *a, **k):
+            self.asked.append(a)
+            return pd.DataFrame()
+
+        def index_candles(self, *a, **k):
+            return pd.DataFrame()
+
+    market = Closed()
+    today = evening().date()
+    monkeypatch.setattr(history_job, "_empty_days", set())
+    monkeypatch.setattr(history_job, "_last_collected", lambda: today - dt.timedelta(days=1))
+    reg = Registry(Session(Choice(today), market))
+    assert history_job.run_once(reg, now=evening())["rows"] == 0
+    asked = len(market.asked)
+    assert history_job.run_once(reg, now=evening()) is None and len(market.asked) == asked
+
+
+def test_known_2026_closures_are_not_trading_days():
+    from engine.data.market_calendar import MarketCalendar
+
+    calendar = MarketCalendar.load()
+    for day in (dt.date(2026, 9, 14), dt.date(2026, 10, 20), dt.date(2026, 11, 24)):
+        assert not calendar.is_trading_day(day)
+    assert calendar.is_trading_day(dt.date(2026, 10, 19))

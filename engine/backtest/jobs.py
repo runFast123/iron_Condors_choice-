@@ -65,7 +65,9 @@ log = logging.getLogger(__name__)
 #   5 -> modelled premiums anchored to the exchange's previous-day closing
 #        prices for the same contracts; the India VIX model alone priced
 #        out-of-the-money legs about 13% too high on average.
-RESULT_VERSION = 5
+#   6 -> the exchange's movable holidays known, so a holiday week's contract
+#        expires on the day the exchange listed (30 Mar 2026, not 31 Mar).
+RESULT_VERSION = 6
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
 #: first, since it is the one every older result is missing.

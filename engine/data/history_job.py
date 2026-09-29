@@ -33,6 +33,10 @@ ENV_SWITCH = "HISTORY_COLLECTOR"
 #: contracts that expired meanwhile, and a long gap is a job for a person.
 MAX_CATCH_UP_DAYS = 10
 
+# Days a full collection came back with no bars at all: a closure the
+# calendar did not know. Asked once, not every five minutes until midnight.
+_empty_days: set[dt.date] = set()
+
 
 def _enabled() -> bool:
     return (os.environ.get(ENV_SWITCH) or "").strip().lower() not in ("off", "0", "false", "no")
@@ -84,7 +88,7 @@ def run_once(registry, now: dt.datetime | None = None) -> dict | None:
     now = now or dt.datetime.now(tz=IST)
     calendar = MarketCalendar.load()
     today = now.date()
-    if not calendar.is_trading_day(today) or now.time() < COLLECT_FROM:
+    if not calendar.is_trading_day(today) or now.time() < COLLECT_FROM or today in _empty_days:
         return None
     last = _last_collected()
     if last is not None and last >= today:
@@ -106,6 +110,9 @@ def run_once(registry, now: dt.datetime | None = None) -> dict | None:
         "with_bars": report.with_bars, "rows": report.rows, "failed": report.failed,
         "index_rows": report.index_rows, "seconds": round(time.monotonic() - started),
     }
+    if report.rows == 0 and report.failed == 0:
+        _empty_days.add(today)
+        log.warning("History job: no bars at all for %s..%s; treating %s as a closed day", start, today, today)
     log.info("History job collected %s", summary)
     return summary
 

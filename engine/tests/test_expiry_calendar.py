@@ -58,10 +58,12 @@ def test_no_listed_contracts_falls_back_rather_than_crashing():
 
 
 def test_weekly_expiries_land_on_the_expiry_weekday():
+    # Holi (3 Mar) and Mahavir Jayanti (31 Mar) were holidays; the exchange
+    # listed those weeks' contracts on the Mondays.
     got = weekly_expiries(dt.date(2026, 3, 1), dt.date(2026, 3, 31), weekday=TUESDAY)
     assert got == [
-        dt.date(2026, 3, 3), dt.date(2026, 3, 10), dt.date(2026, 3, 17),
-        dt.date(2026, 3, 24), dt.date(2026, 3, 31),
+        dt.date(2026, 3, 2), dt.date(2026, 3, 10), dt.date(2026, 3, 17),
+        dt.date(2026, 3, 24), dt.date(2026, 3, 30),
     ]
 
 
@@ -91,7 +93,7 @@ def test_a_holiday_on_republic_day_also_rolls_back():
 
 def test_monthly_expiries_are_the_last_weekly_of_each_month():
     got = monthly_expiries(dt.date(2026, 3, 1), dt.date(2026, 5, 31), weekday=TUESDAY)
-    assert got == [dt.date(2026, 3, 31), dt.date(2026, 4, 28), dt.date(2026, 5, 26)]
+    assert got == [dt.date(2026, 3, 30), dt.date(2026, 4, 28), dt.date(2026, 5, 26)]
 
 
 # ========================================================= the full calendar
@@ -189,7 +191,7 @@ def test_a_monthly_campaign_gets_month_end_contracts_not_weeklies():
     monthly, _ = expiry_calendar(start, end, [], cadence="monthly")
 
     assert len(weekly) > len(monthly) * 3, "monthly should be far sparser"
-    assert monthly == [dt.date(2026, 3, 31), dt.date(2026, 4, 28), dt.date(2026, 5, 26)]
+    assert monthly == [dt.date(2026, 3, 30), dt.date(2026, 4, 28), dt.date(2026, 5, 26)]
     for expiry in monthly:
         later_same_month = [
             w for w in weekly if (w.year, w.month) == (expiry.year, expiry.month) and w > expiry
