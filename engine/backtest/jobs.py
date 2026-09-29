@@ -224,6 +224,19 @@ def _fetch_with_backup(
     return merged, taken, note, choice_error
 
 
+#: At or below this share of modelled lookups a run is described as real
+#: prices with a small modelled remainder, not as a modelled run.
+MOSTLY_REAL = 0.02
+
+
+def _share(part: int, whole: int) -> str:
+    """A percentage that never rounds a real remainder to "0%"."""
+    pct = 100 * part / max(1, whole)
+    if 0 < pct < 0.1:
+        return "under 0.1%"
+    return f"{pct:.1f}%" if pct < 10 else f"{pct:.0f}%"
+
+
 def _daily_closes(frame: pd.DataFrame) -> pd.DataFrame:
     """One-minute bars to one bar a day: the day's last trade, stamped at the
     start of the day as a daily candle is."""
@@ -456,13 +469,13 @@ class BacktestRunner:
         spans: dict[tuple[dt.date, float, str], tuple[int, Any, Any, dt.datetime]] = {}
         info: dict[str, Any] = {
             "available": history_store.available(), "used": False,
-            "legs_asked": 0, "legs_found": 0, "legs_used": 0, "note": None,
+            "legs_asked": 0, "legs_found": 0, "legs_used": 0, "note": None, "skipped": None,
         }
         if not legs or not info["available"]:
             return provider, spans, info
         if resolution in ("W", "M"):
             # A weekly or monthly bar spans many sessions; no minute is its price.
-            info["note"] = "not used for weekly or monthly bars"
+            info["skipped"] = "not used for weekly or monthly bars"
             return provider, spans, info
         info["legs_asked"] = len(legs)
         self._step("history", 0.855, f"Reading {len(legs)} option legs from the recorded history")
@@ -947,9 +960,17 @@ class BacktestRunner:
                      "had none, from the recorded one-minute history, the backup source or the "
                      "exchange's closing record -- listed below."
             )
+        elif provider.modeled_quotes <= MOSTLY_REAL * provider.total_quotes:
+            note_text = (
+                f"Almost every price in this replay is a real traded price. Only "
+                f"{_share(provider.modeled_quotes, provider.total_quotes)} of the price lookups "
+                "came from the model: moments when the contract had not traded in the 15 "
+                "minutes before, priced from the smile the market traded at the previous "
+                "session's close. The breakdown by leg is below."
+            )
         elif anchor_counts.get("anchored_quotes"):
             note_text = (
-                f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
+                f"{_share(provider.modeled_quotes, provider.total_quotes)} of "
                 "the price lookups in this replay came from the model rather than a real "
                 "candle. Wherever the exchange's record reaches, the model is anchored to the "
                 "smile the market actually traded at the previous session's close, carried "
@@ -958,7 +979,7 @@ class BacktestRunner:
             )
         else:
             note_text = (
-                f"{100 * provider.modeled_quotes / max(1, provider.total_quotes):.0f}% of "
+                f"{_share(provider.modeled_quotes, provider.total_quotes)} of "
                 "the price lookups in this replay came from the model rather than a real "
                 "candle -- Black-76, driven by India VIX and a strike skew. The breakdown "
                 "by leg is below."
@@ -1032,6 +1053,10 @@ class BacktestRunner:
             # for legs Choice no longer serves, asked before the backup.
             "history": {**history_info, "quotes": provider.history_quotes},
             "legs_history": len(used_history),
+            # Distinct legs priced from any real trade at least once -- Choice's,
+            # the recorded history's or the backup's. Not a sum: one leg can be
+            # served partly by Choice and partly by the history.
+            "legs_priced_real": len(used | set(used_history) | set(used_backup)),
             # Legs priced from the backup at least once. Counted apart from the
             # Choice split above, which still says what Choice itself served.
             "legs_backup": len(used_backup),

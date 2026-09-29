@@ -107,3 +107,32 @@ def test_nothing_about_the_history_names_another_company(monkeypatch, recorded):
     job = _run(monkeypatch, FakeMarket(spot=_spot_at_ten()))
     payload = json.dumps({"result": job.result, "public": job.public()}, default=str)
     assert not OTHER_VENDORS.search(payload)
+
+
+def test_legs_with_real_prices_are_counted_once(monkeypatch, recorded):
+    from engine.tests.test_jobs import FakeMarket
+
+    job = _run(monkeypatch, FakeMarket(spot=_spot_at_ten(), option_frames="first-bar-only"))
+    assert job.status == "done", job.error
+    prov = job.result["provenance"]
+    assert prov["legs_priced_real"] <= prov["legs_total"]
+    assert prov["legs_priced_real"] == prov["legs_total"]      # every leg: Choice, then history
+
+
+def test_weekly_bars_skip_the_history_without_calling_it_a_fault(monkeypatch, recorded):
+    from engine.tests.test_jobs import FakeMarket
+
+    job = _run(monkeypatch, FakeMarket(spot=_spot_at_ten()), resolution="W")
+    assert job.status == "done", job.error
+    info = job.result["provenance"]["history"]
+    assert info["used"] is False and info["note"] is None and info["skipped"]
+    assert recorded == []
+
+
+def test_a_small_modelled_remainder_is_never_called_zero_percent():
+    from engine.backtest.jobs import _share
+
+    assert _share(4181, 603820) == "0.7%"
+    assert _share(1, 603820) == "under 0.1%"
+    assert _share(0, 10) == "0.0%"
+    assert _share(35, 100) == "35%"

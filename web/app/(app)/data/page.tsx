@@ -13,6 +13,10 @@ export default async function DataHealthPage() {
   const failures = provenance.failures ?? [];
   const legsTotal = provenance.legs_requested ?? 0;
   const legsReal = provenance.legs_with_choice_data ?? 0;
+  // Legs priced from a real trade -- Choice's, the recorded history's or the
+  // backup's. Older results carry only Choice's count.
+  const legsElsewhere = (provenance.legs_history ?? 0) + (provenance.legs_backup ?? 0);
+  const legsCovered = provenance.legs_priced_real ?? legsReal;
   const backup = provenance.backup;
   const gate = provenance.vix_gate;
   const settlement = provenance.settlement;
@@ -46,9 +50,9 @@ export default async function DataHealthPage() {
             <Stat label="Spot bars" value={num(provenance.bars)} hint={provenance.spot_source} />
             <Stat
               label="Option legs"
-              value={`${num(legsReal)}/${num(legsTotal)}`}
-              tone={legsTotal > 0 && legsReal === legsTotal ? "pos" : "neg"}
-              hint="with Choice history"
+              value={`${num(legsCovered)}/${num(legsTotal)}`}
+              tone={legsTotal > 0 && legsCovered === legsTotal ? "pos" : "neg"}
+              hint={legsElsewhere > 0 ? `with real prices; ${num(legsReal)} from Choice` : "with Choice history"}
             />
             <Stat label="Quotes" value={num(p.total_quotes)} hint="premium lookups" />
             <Stat
@@ -84,7 +88,8 @@ export default async function DataHealthPage() {
             <Stat
               label="Modeled"
               value={num(p.modeled_quotes)}
-              tone={p.modeled_quotes > 0 ? "neg" : "pos"}
+              // A sliver of modelled lookups is not a fault (the banner draws the same line).
+              tone={p.modeled_quotes === 0 ? "pos" : 1 - p.real_fraction > 0.02 ? "neg" : undefined}
               hint={
                 anchoredQuotes > 0
                   ? `${pct(1 - p.real_fraction)}, ${pct(p.anchored_fraction ?? 0, 0)} anchored`
@@ -97,7 +102,7 @@ export default async function DataHealthPage() {
 
         <Card
           title="Sources"
-          hint="Every series below is served by Choice FinX, except where a badge says BACKUP: the backtest's backup source, used only where Choice had nothing."
+          hint="Every series below is served by Choice FinX, except where a badge says otherwise: HISTORY is the recorded one-minute history kept with the engine, BACKUP the backtest's backup source, EXCHANGE the exchange's daily record -- each used only where Choice had nothing."
           pad={0}
         >
           <div className="scroll-x">
@@ -138,7 +143,7 @@ export default async function DataHealthPage() {
                 <Row
                   name="Option premiums"
                   source={provenance.premium_source}
-                  ok={!awaiting && legsTotal > 0 && legsReal === legsTotal}
+                  ok={!awaiting && legsTotal > 0 && legsCovered === legsTotal}
                   awaiting={awaiting}
                   fromBackup={(provenance.legs_backup ?? 0) > 0}
                   note={`Historical candles per option leg. A leg Choice has no usable history for is taken from the recorded one-minute history where it holds the contract (badged HISTORY${provenance.legs_history ? `; ${num(provenance.legs_history)} leg(s) in this run` : ""}), then from the backup source where it has one (badged BACKUP${provenance.legs_backup ? `; ${num(provenance.legs_backup)} leg(s) in this run` : ""}), and modelled with Black-76 otherwise (badged MODELED), anchored to the exchange's closing prices wherever its record reaches.`}
@@ -152,11 +157,13 @@ export default async function DataHealthPage() {
                     badge={
                       history.used ? <Badge tone="brand">HISTORY</Badge>
                         : history.note ? <Badge tone="warn">UNAVAILABLE</Badge>
-                          : <Badge tone="brand">NOT NEEDED</Badge>
+                          : <Badge tone="brand">{history.skipped ? "NOT USED" : "NOT NEEDED"}</Badge>
                     }
                     note={
                       history.note
                         ? `Not used in this run: ${history.note}.`
+                        : history.skipped
+                          ? `Every NIFTY option's one-minute trades since 2018; ${history.skipped}, since no one minute is the price of a whole week or month.`
                         : history.legs_asked
                           ? `Every NIFTY option's one-minute trades since 2018, kept current each evening from Choice. Of ${num(history.legs_asked)} leg(s) Choice could not fully price, it held ${num(history.legs_found)} and priced ${num(history.legs_used)}${history.quotes ? ` (${num(history.quotes)} lookups)` : ""}.`
                           : "Every NIFTY option's one-minute trades since 2018, kept current each evening from Choice. Choice priced every leg of this run, so it was not needed."

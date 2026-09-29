@@ -48,14 +48,22 @@ def _enabled() -> bool:
     return (os.environ.get(ENV_SWITCH) or "").strip().lower() not in ("off", "0", "false", "no")
 
 
+class _Unreadable(Exception):
+    """nifty.db exists but could not be read: skip this pass."""
+
+
 def _last_collected() -> dt.date | None:
+    """The last day collected in full; None when there is no file yet."""
     from engine.data import history_store
 
+    if not history_store.available():
+        return None
     try:
         info = history_store.coverage()
-    except Exception as exc:                    # noqa: BLE001 - locked or missing: not today
-        log.info("History store unavailable: %s", exc)
-        return None
+    except Exception as exc:                    # noqa: BLE001 - locked or unreadable
+        # Not "nothing collected": that would re-fetch a finished day, and
+        # against a file that stays locked, every five minutes until midnight.
+        raise _Unreadable(str(exc)) from exc
     # Only finished collections count: a day with some bars may be a run that
     # was cut short, and its missing contracts would never be asked for.
     candidates = [
@@ -98,7 +106,11 @@ def run_once(registry, now: dt.datetime | None = None) -> dict | None:
     today = now.date()
     if not calendar.is_trading_day(today) or now.time() < COLLECT_FROM or today in _empty_days:
         return None
-    last = _last_collected()
+    try:
+        last = _last_collected()
+    except _Unreadable as exc:
+        log.info("History job: nifty.db unreadable (%s); will retry", exc)
+        return None
     if last is not None and last >= today:
         return None
     start = today if last is None else max(last + dt.timedelta(days=1), today - dt.timedelta(days=MAX_CATCH_UP_DAYS))
@@ -119,9 +131,16 @@ def run_once(registry, now: dt.datetime | None = None) -> dict | None:
         "index_rows": report.index_rows, "seconds": round(time.monotonic() - started),
     }
     log.info("History job collected %s", summary)
-    if report.rows == 0 and report.failed == 0:
-        _empty_days.add(today)
-        log.warning("History job: no bars at all for %s..%s; treating %s as a closed day", start, today, today)
+    if report.rows == 0:
+        if report.failed == 0:
+            _empty_days.add(today)
+            log.warning("History job: no bars at all for %s..%s; treating %s as a closed day",
+                        start, today, today)
+        else:
+            # Nothing served and requests failing: an outage, not a holiday.
+            # Never recorded as done; the next pass asks again.
+            log.warning("History job: Choice served nothing and %d requests failed; will retry",
+                        report.failed)
         return summary
     _attempts[today] = _attempts.get(today, 0) + 1
     if report.failed > report.legs * MAX_FAILED_SHARE and _attempts[today] < MAX_ATTEMPTS:

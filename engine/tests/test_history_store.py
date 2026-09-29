@@ -305,3 +305,59 @@ def test_a_run_with_many_failures_is_tried_again_but_not_all_evening(monkeypatch
         assert history_job._last_collected() == today - dt.timedelta(days=1)
     history_job.run_once(reg, now=evening())
     assert history_job._last_collected() == today
+
+
+def test_an_outage_at_collection_time_is_not_a_holiday(monkeypatch):
+    """Choice answers a failed window with no bars, not an error. Read as a
+    closed day, today's expiring contracts would never be asked for again."""
+    from types import SimpleNamespace
+
+    class Down(Market):
+        def __init__(self):
+            super().__init__()
+            self.reports = []
+
+        def option_candles(self, *a, **k):
+            self.reports.append(SimpleNamespace(windows_failed=[("a", "b", "HTTP 500")]))
+            return pd.DataFrame()
+
+        def index_candles(self, *a, **k):
+            return pd.DataFrame()
+
+    monkeypatch.setattr(history_job, "_empty_days", set())
+    monkeypatch.setattr(history_job, "_attempts", {})
+    today = evening().date()
+    hs.mark_collected(today - dt.timedelta(days=1), today - dt.timedelta(days=1), hs.CollectReport())
+    reg = Registry(Session(Choice(today), Down()))
+    summary = history_job.run_once(reg, now=evening())
+    assert summary["rows"] == 0 and summary["failed"] == summary["legs"] > 0
+    assert today not in history_job._empty_days
+    assert history_job._last_collected() == today - dt.timedelta(days=1)
+    # Choice recovers: the next pass collects the day.
+    reg = Registry(Session(Choice(today), Market()))
+    assert history_job.run_once(reg, now=evening())["rows"] > 0
+    assert history_job._last_collected() == today
+
+
+def test_an_unreadable_file_skips_the_pass_rather_than_refetching(monkeypatch):
+    market = Market()
+    monkeypatch.setattr(hs, "available", lambda path=None: True)
+
+    def locked(path=None):
+        raise hs.HistoryUnavailable("the recorded history was in use by another process")
+
+    monkeypatch.setattr(hs, "coverage", locked)
+    reg = Registry(Session(Choice(evening().date()), market))
+    assert history_job.run_once(reg, now=evening()) is None and market.asked == []
+
+
+def test_only_a_lock_is_waited_out(tmp_path):
+    calls = []
+
+    def broken(con):
+        calls.append(1)
+        raise RuntimeError("Catalog Error: table does not exist -- no block here")
+
+    with pytest.raises(RuntimeError):
+        hs._with_connection(broken, tmp_path / "h.duckdb", read_only=False)
+    assert calls == [1]

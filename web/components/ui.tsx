@@ -171,6 +171,18 @@ export function Badge({
  * unavailable, every premium on the page is a Black-76 model output, and a
  * reader must not mistake that for broker-verified data.
  */
+/** At or below this share of modelled lookups a run reads as real prices
+ *  with a small modelled remainder (the engine uses the same line). */
+const MOSTLY_REAL = 0.02;
+
+/** A share as a percentage that never rounds a real remainder to 0% or 100%. */
+function sharePct(x: number): string {
+  const p = 100 * x;
+  if (p > 0 && p < 0.1) return "<0.1%";
+  if (p < 100 && p > 99.9) return ">99.9%";
+  return `${p < 10 || p > 90 ? p.toFixed(1) : p.toFixed(0)}%`;
+}
+
 export function ProvenanceBanner({
   verified,
   realFraction,
@@ -230,10 +242,10 @@ export function ProvenanceBanner({
   const modeled = 1 - realFraction;
   if (modeled <= 0) {
     const others = historyFraction + backupFraction + exchangeFraction;
-    const parts = [`${(100 * (1 - others)).toFixed(0)}% from Choice FinX`];
-    if (historyFraction > 0) parts.push(`${(100 * historyFraction).toFixed(0)}% from the recorded one-minute history`);
-    if (backupFraction > 0) parts.push(`${(100 * backupFraction).toFixed(0)}% from the backup source`);
-    if (exchangeFraction > 0) parts.push(`${(100 * exchangeFraction).toFixed(0)}% from the exchange's record of closing trades`);
+    const parts = [`${sharePct(1 - others)} from Choice FinX`];
+    if (historyFraction > 0) parts.push(`${sharePct(historyFraction)} from the recorded one-minute history`);
+    if (backupFraction > 0) parts.push(`${sharePct(backupFraction)} from the backup source`);
+    if (exchangeFraction > 0) parts.push(`${sharePct(exchangeFraction)} from the exchange's record of closing trades`);
     return (
       <div
         className="card"
@@ -249,6 +261,11 @@ export function ProvenanceBanner({
     );
   }
   const accuracy = exchange?.accuracy ?? null;
+  // A sliver of modelled lookups -- a thin option with no trade in the last
+  // fifteen minutes -- is not a modelled run. Warning over it, with a
+  // percentage that rounds to "0%", contradicted itself.
+  const mostlyReal = modeled <= MOSTLY_REAL;
+  const tone = mostlyReal ? "var(--pos)" : "var(--warn)";
   return (
     <div
       className="card"
@@ -257,18 +274,25 @@ export function ProvenanceBanner({
         display: "flex",
         gap: 10,
         alignItems: "flex-start",
-        borderColor: "var(--warn)",
+        borderColor: tone,
         background: "var(--surface-2)",
       }}
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--warn)" strokeWidth="2"
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={tone} strokeWidth="2"
            strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true">
-        <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+        {mostlyReal
+          ? <path d="M20 6 9 17l-5-5" />
+          : <path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />}
       </svg>
       <div>
         <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
-          <Badge tone="warn">{(modeled * 100).toFixed(0)}% MODELED</Badge>
-          <strong style={{ fontSize: 12.5 }}>These P&amp;L figures are not broker-verified.</strong>
+          {mostlyReal && <Badge tone="pos">{sharePct(realFraction)} REAL</Badge>}
+          <Badge tone={mostlyReal ? "brand" : "warn"}>{sharePct(modeled)} MODELED</Badge>
+          <strong style={{ fontSize: 12.5 }}>
+            {mostlyReal
+              ? "Almost every price is a real traded price."
+              : <>These P&amp;L figures are not broker-verified.</>}
+          </strong>
         </div>
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--ink-muted)", maxWidth: "88ch", lineHeight: 1.55 }}>
           {note}
@@ -291,10 +315,10 @@ export function ProvenanceBanner({
               : ""}
             {legs.unresolved ? ` ${legs.unresolved} could not be resolved to a contract.` : ""}
             {legs.history
-              ? ` Of the legs Choice could not price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
+              ? ` Of the legs Choice could not fully price, ${legs.history} were priced from real one-minute trades in the recorded history instead.`
               : ""}
             {legs.backup
-              ? ` ${legs.history ? "And" : "Of the legs Choice could not price,"} ${legs.backup} ${legs.history ? "more " : ""}were priced from real candles from the backup source instead.`
+              ? ` ${legs.history ? "And" : "Of the legs Choice could not fully price,"} ${legs.backup} ${legs.history ? "more " : ""}were priced from real candles from the backup source instead.`
               : ""}
             {legs.history || legs.backup || accuracy
               ? ""

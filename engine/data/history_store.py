@@ -174,6 +174,8 @@ def collect(
     for i, leg in enumerate(legs, 1):
         if progress is not None:
             progress(i, len(legs), leg)
+        reports = getattr(market, "reports", None)
+        mark = len(reports) if reports is not None else 0
         try:
             frame = market.option_candles(NIFTY, leg.expiry, leg.strike, leg.right, start, end, "1")
         except ChoiceAuthError:
@@ -182,6 +184,11 @@ def collect(
             report.failed += 1
             log.info("No history for %s %g %s: %s", leg.expiry, leg.strike, leg.right, exc)
             continue
+        # A window Choice failed to serve comes back as no bars, not an
+        # error. Counted as a failure, or an outage at collection time would
+        # read as a closed day and the day would never be asked for again.
+        if reports is not None and any(r.windows_failed for r in reports[mark:]):
+            report.failed += 1
         rows = option_rows(frame, leg.expiry, leg.strike, leg.right)
         if not rows.empty:
             report.with_bars += 1
@@ -276,6 +283,11 @@ LAST_BAR = "15:29:00"
 #: refuses readers. Short waits cover a batch being written.
 READ_ATTEMPTS = 8
 READ_WAIT = 1.5
+
+
+# What DuckDB says when another process holds the file: Windows' sharing
+# violation, or the lock conflict it reports elsewhere.
+_LOCKED = re.compile(r"being used by another process|could not set lock|conflicting lock", re.IGNORECASE)
 
 
 class HistoryUnavailable(Exception):
@@ -373,7 +385,7 @@ def _with_connection(work, path: pathlib.Path, *, read_only: bool):
                 finally:
                     con.close()
         except Exception as exc:                # noqa: BLE001 - locked by another process, most likely
-            if "being used by another process" not in str(exc) and "lock" not in str(exc).lower():
+            if not _LOCKED.search(str(exc)):
                 raise
             last_error = exc
             _time.sleep(READ_WAIT * (attempt + 1))

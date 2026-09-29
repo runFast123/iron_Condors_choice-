@@ -19,6 +19,9 @@ export interface HistoryUse {
   legs_found: number;
   legs_used: number;
   quotes?: number;
+  /** Why it was deliberately not asked (weekly or monthly bars); not a fault. */
+  skipped?: string | null;
+  /** What went wrong reading it. */
   note: string | null;
 }
 
@@ -161,6 +164,8 @@ export interface Provenance {
   history?: HistoryUse;
   /** Legs priced from the recorded one-minute history at least once. */
   legs_history?: number;
+  /** Distinct legs priced from any real trade at least once. */
+  legs_priced_real?: number;
   /** How many expiries settled against NIFTY's official close, and which
    *  fell back to their last bar. */
   settlement?: { official_close: number; last_bar: string[] };
