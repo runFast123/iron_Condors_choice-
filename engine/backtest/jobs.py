@@ -770,7 +770,7 @@ class BacktestRunner:
                 by_expiry[entry.split(" ", 1)[0]] = by_expiry.get(entry.split(" ", 1)[0], 0) + 1
             log.warning(
                 "[%s] Choice resolved %d legs and returned no candles for any of them: %s. "
-                "These are modelled.",
+                "They go to the recorded history, then the model.",
                 job.job_id, len(served_nothing),
                 ", ".join(f"{k} ({v} legs)" for k, v in sorted(by_expiry.items())),
             )
