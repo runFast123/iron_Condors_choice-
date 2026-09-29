@@ -770,3 +770,21 @@ def test_older_files_take_their_underlying_from_choices_closes():
     frame["underlying"] = math.nan                             # the legacy format has none
     history = ChainHistory({D0: frame}, underlying={D0: 23_000.0})
     assert history.underlying(D0) == 23_000.0
+
+
+def test_loading_keeps_only_the_runs_expiries(tmp_path):
+    """Eight years of full daily files in memory came to gigabytes; a run
+    trades a handful of expiries per day."""
+    frame = market_day(D0, 23_000)
+    other = frame.assign(expiry=dt.date(2026, 5, 26))
+    both = pd.concat([frame, other], ignore_index=True)
+
+    class Two(nse_bhavcopy.BhavcopyArchive):
+        def day(self, day, *, session=False):
+            return both
+
+    archive = Two.__new__(Two)
+    frames, _ = archive.load([D0], expiries=[EXPIRY])
+    assert set(frames[D0]["expiry"]) == {EXPIRY} and len(frames[D0]) == len(frame)
+    frames, _ = archive.load([D0])
+    assert len(frames[D0]) == len(both)

@@ -431,6 +431,7 @@ class BhavcopyArchive:
         progress: Callable[[int, int, dt.date], None] | None = None,
         *,
         sessions: Iterable[dt.date] = (),
+        expiries: Iterable[dt.date] | None = None,
     ) -> tuple[dict[dt.date, pd.DataFrame], str | None]:
         """Every day in `days` the exchange traded, and a note on what failed.
 
@@ -439,8 +440,12 @@ class BhavcopyArchive:
         whose file cannot be read costs that day, nothing more; and nothing in
         here can fail the backtest calling it.
 
-        `sessions` are days the caller knows traded (see `day`).
+        `sessions` are days the caller knows traded (see `day`). With
+        `expiries`, each day keeps only those contracts, as it is read: a day's
+        file holds some 3,000 contracts, and eight years of them in memory at
+        once came to gigabytes when a run trades a handful per day.
         """
+        keep = set(expiries) if expiries is not None else None
         wanted = sorted(set(days))
         known = set(sessions)
         frames: dict[dt.date, pd.DataFrame] = {}
@@ -464,6 +469,8 @@ class BhavcopyArchive:
                 log.exception("Exchange file for %s failed unexpectedly", day)
                 unreadable.append(f"the exchange's file for {day:%d %b %Y} failed ({type(exc).__name__})")
                 continue
+            if frame is not None and keep is not None:
+                frame = frame[frame["expiry"].isin(keep)].reset_index(drop=True)
             if frame is not None and not frame.empty:
                 frames[day] = frame
         notes = [refused] if refused else []
@@ -494,7 +501,7 @@ def shared_archive() -> BhavcopyArchive | None:
 # ------------------------------------------------------------ in-memory view
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ContractDay:
     """One contract's figures for one day."""
 

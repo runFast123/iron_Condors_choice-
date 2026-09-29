@@ -439,7 +439,7 @@ class BacktestRunner:
                     f"Downloading the exchange's closing prices, day {i} of {n} ({when})",
                 )
 
-        frames, note = archive.load(sorted(wanted), progress, sessions=session_days)
+        frames, note = archive.load(sorted(wanted), progress, sessions=session_days, expiries=expiries)
         history = nse_bhavcopy.ChainHistory(frames, expiries=expiries, underlying=underlying)
         today = dt.datetime.now(tz=IST).date()
         # Today's record is published in the evening; its absence is not a gap.
