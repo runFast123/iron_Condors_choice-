@@ -8,6 +8,8 @@ import { RunBacktest } from "@/components/RunBacktest";
 import { engine, engineConfigured } from "@/lib/engine";
 import { getSessionToken } from "@/lib/session";
 import Link from "next/link";
+import { Fragment } from "react";
+import type { Condor, EquityPoint } from "@/lib/types";
 
 /** The latest job, or null — never a reason to fail the whole page. */
 async function latestJob() {
@@ -257,7 +259,7 @@ export default async function Overview() {
 
         <Card
           title="Condors opened"
-          hint={`${condors.length} condors opened. Each row is one 100-point step.`}
+          hint={`${condors.length} condors opened. Each row is one 100-point step; a shaded row marks where one expiry's campaign ends and the next begins.`}
           pad={0}
         >
           <div className="scroll-x">
@@ -276,8 +278,26 @@ export default async function Overview() {
                 </tr>
               </thead>
               <tbody>
-                {condors.map((c) => (
-                  <tr key={c.index}>
+                {condors.map((c, i) => (
+                  <Fragment key={c.index}>
+                  {(i === 0 || c.expiry !== condors[i - 1].expiry) && (
+                    <tr>
+                      <td
+                        colSpan={9}
+                        style={{
+                          background: "var(--surface-2)",
+                          fontSize: 12,
+                          color: "var(--ink-2)",
+                          padding: "7px 12px",
+                          lineHeight: 1.5,
+                          whiteSpace: "normal",
+                        }}
+                      >
+                        {campaignNote(c, i === 0 ? null : condors[i - 1], equity)}
+                      </td>
+                    </tr>
+                  )}
+                  <tr>
                     <td className="tnum" style={{ color: "var(--ink-muted)" }}>{c.index + 1}</td>
                     <td className="tnum" style={{ fontWeight: 600 }}>{num(c.level)}</td>
                     <td>
@@ -308,6 +328,7 @@ export default async function Overview() {
                       <Outcome status={c.status} reason={c.exit_reason} />
                     </td>
                   </tr>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -320,11 +341,40 @@ export default async function Overview() {
   );
 }
 
+/** Where NIFTY stood at a moment, from the replay's own equity points. */
+function spotAt(equity: EquityPoint[], iso: string): number | null {
+  const t = new Date(iso).getTime();
+  for (const p of equity) {
+    if (new Date(p.ts).getTime() >= t && p.spot != null) return p.spot;
+  }
+  return null;
+}
+
+/**
+ * The line above a campaign's first condor. Without it the table read as one
+ * continuous ladder, and a new month starting at 24,000 straight after a
+ * 24,500 rung looked like a mistake: it is a new campaign, re-anchored where
+ * NIFTY stood when the old contracts expired, because offsetting only works
+ * within one expiry.
+ */
+function campaignNote(first: Condor, previous: Condor | null, equity: EquityPoint[]): string {
+  const spot = spotAt(equity, first.entry_time);
+  const where = spot != null ? ` (NIFTY ${num(Math.round(spot))})` : "";
+  if (previous == null) {
+    return `Campaign for the ${shortDate(first.expiry)} expiry: anchored at ${num(first.level)}${where} on ${shortDate(first.entry_time)}.`;
+  }
+  return (
+    `New campaign for the ${shortDate(first.expiry)} expiry: the ${shortDate(previous.expiry)} contracts expired, ` +
+    `so it re-anchored at ${num(first.level)}${where} on ${shortDate(first.entry_time)}. Levels count from there.`
+  );
+}
+
 function Outcome({ status, reason }: { status: string; reason: string | null }) {
   const map: Record<string, { tone: "pos" | "neg" | "neutral"; label: string }> = {
     EXPIRED: { tone: "neutral", label: "Held to expiry" },
     CLOSED_TARGET: { tone: "pos", label: "Target hit" },
     CLOSED_STOP: { tone: "neg", label: "Stopped out" },
+    CLOSED: { tone: "neutral", label: "Closed" },
     OPEN: { tone: "neutral", label: "Open" },
   };
   const item = map[status] ?? { tone: "neutral" as const, label: status };

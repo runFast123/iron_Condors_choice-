@@ -15,6 +15,36 @@ export interface LiveSession {
   last_error?: string | null;
   /** Which MultipleTouchline payload shape Choice accepted. */
   quote_format?: string | null;
+  /** A stopped run only: whether it can be started again now, and if not why. */
+  resumable?: boolean;
+  resume_blocked?: string | null;
+}
+
+/** What a run was started with, named as the start form names it. */
+export interface RunSettings {
+  strategy: "ladder" | "hic";
+  name: string;
+  /** The time frame the ladder acts on, in minutes. 1 is every minute. */
+  bar_minutes: number;
+  expiry_cadence: "weekly" | "monthly";
+  lots: number;
+  step: number;
+  max_condors: number;
+  direction: "down" | "up" | "both";
+  anchor_mode: "floor" | "round" | "nearest" | "explicit" | null;
+  max_down: number | null;
+  max_up: number | null;
+  max_entry_vix: number | null;
+  min_entry_dte: number | null;
+  min_credit_ratio: number | null;
+  take_profit: number | null;
+  stop_loss: number | null;
+  daily_loss_limit: number | null;
+  full_band_steps?: number;
+  half_mode?: string;
+  debit_shift?: number;
+  max_put_spreads?: number;
+  max_call_spreads?: number;
 }
 
 export interface LiveEvent {
@@ -97,6 +127,8 @@ export interface FillQuality {
 }
 
 export interface LiveState {
+  /** Absent from engines that predate it, and from very old stopped runs. */
+  settings?: RunSettings | null;
   session: LiveSession;
   fill_quality?: FillQuality;
   /** Latest mid per option token, as of `session.last_tick`. */

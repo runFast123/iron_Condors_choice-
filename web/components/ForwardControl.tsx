@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import type { LiveState } from "@/lib/live";
+import type { LiveState, RunSettings } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime, istClock, istDay } from "@/lib/format";
 import { Badge } from "@/components/ui";
@@ -49,6 +49,46 @@ const HINT: CSSProperties = {
  *  had names, which is why it is the default everywhere. */
 const DEFAULT_RUN = "ladder";
 
+/** The engine's run key for a name: the same rule as `slugify_run_key`. */
+function runKeyFor(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
+    .slice(0, 24).replace(/-+$/g, "");
+}
+
+const TIME_FRAME: Record<number, string> = {
+  1: "acts on every minute",
+  5: "5-minute bars",
+  15: "15-minute bars",
+  30: "30-minute bars",
+  60: "hourly bars",
+};
+
+/** One line saying what a run was started with -- the thing to check first
+ *  when a backtest and a live run disagree. */
+function describeSettings(s: RunSettings): string {
+  const parts: string[] = [];
+  if (s.strategy === "hic") {
+    parts.push(
+      `Hybrid iron condor, band ${s.full_band_steps ?? 1}`,
+      `${s.max_put_spreads ?? 0} put / ${s.max_call_spreads ?? 0} call spreads`,
+    );
+  } else {
+    const way = s.direction === "both" ? "two-way" : s.direction === "up" ? "up-only" : "down-only";
+    const caps = s.direction === "both" && (s.max_down != null || s.max_up != null)
+      ? ` (${s.max_down ?? "–"} down / ${s.max_up ?? "–"} up)` : "";
+    parts.push(`Ladder, ${way}${caps}`);
+    if (s.anchor_mode) parts.push(`${s.anchor_mode} anchor`);
+  }
+  parts.push(TIME_FRAME[s.bar_minutes] ?? `${s.bar_minutes}-minute bars`);
+  parts.push(`${s.expiry_cadence} expiry`);
+  parts.push(`${s.step} pts a step, max ${s.max_condors}`);
+  parts.push(s.max_entry_vix != null ? `no entries above VIX ${s.max_entry_vix}` : "no VIX rule");
+  if (s.min_entry_dte != null) parts.push(`none within ${s.min_entry_dte} days of expiry`);
+  if (s.min_credit_ratio != null) parts.push(`credit at least ${Math.round(s.min_credit_ratio * 100)}% of the wing`);
+  parts.push(`${s.lots} lot${s.lots === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
 export function ForwardControl({
   initial,
   runKey: initialRunKey,
@@ -95,8 +135,14 @@ export function ForwardControl({
   // The VIX rule, both strategies: no new positions while India VIX is above
   // this. On at 15 for a new run; cleared ("") switches it off.
   const [maxVix, setMaxVix] = useState<number | "">(15);
+  // The time frame the ladder acts on: a level fires on the close of a bar
+  // this many minutes long, as in a backtest at that bar size. 1 acts on every
+  // minute's price, which is what every run did before this existed.
+  const [barMinutes, setBarMinutes] = useState(1);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Something to say that is not a failure: a start that found the name taken.
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Tick history for the live chart. Seeded from the engine's database so a
   // reload shows the whole session rather than restarting from an empty line,
@@ -247,6 +293,7 @@ export function ForwardControl({
 
   async function post(path: string, body?: unknown, label = "working") {
     setError(null);
+    setNotice(null);
     setBusy(label);
     try {
       const res = await fetch(path, {
@@ -257,6 +304,9 @@ export function ForwardControl({
       const payload = await res.json();
       if (!res.ok) setError(payload.error ?? `Request failed (${res.status}).`);
       else {
+        // A start under a name a live run already holds starts nothing; the
+        // engine says so, and the page used to switch to that run in silence.
+        if (payload.note) setNotice(payload.note as string);
         if (payload.run_key) selectRun(payload.run_key as string);
         if (payload.state) {
           setRawState(payload.state as LiveState);
@@ -281,6 +331,7 @@ export function ForwardControl({
         step: 100,
         poll_seconds: 10,
         expiry_cadence: cadence,
+        bar_minutes: barMinutes,
         // Null, not omitted, when cleared: an omitted field takes the
         // engine's default of 15, which is the opposite of "off".
         max_entry_vix: maxVix === "" ? null : Number(maxVix),
@@ -314,6 +365,42 @@ export function ForwardControl({
     // blank one rather than silently reusing the last run's name.
     setStarting(false);
     setRunName("");
+  };
+
+  /** Carry on a stopped run: same run, same positions, same settings. */
+  const resume = async () => {
+    await post(`/api/forward/resume?run=${encodeURIComponent(runKey)}`, undefined, "resuming");
+  };
+
+  /** Open the start form filled in with a stopped run's settings and name. */
+  const startAgain = () => {
+    const s = state?.settings;
+    if (s) {
+      setStrategy(s.strategy);
+      setRunName(s.name ?? "");
+      setLots(s.lots);
+      setCadence(s.expiry_cadence);
+      setBarMinutes(s.bar_minutes ?? 1);
+      setMaxVix(s.max_entry_vix ?? "");
+      if (s.strategy === "hic") {
+        setBandSteps(s.full_band_steps ?? 1);
+        setPutSpreads(s.max_put_spreads ?? 10);
+        setCallSpreads(s.max_call_spreads ?? 10);
+        setDebitShift(s.debit_shift === 200 ? 200 : 0);
+      } else {
+        setDirection(s.direction);
+        setAnchorMode(
+          s.anchor_mode === "nearest" || s.anchor_mode === "round" ? s.anchor_mode
+            : s.anchor_mode === "floor" ? "floor"
+              : s.direction === "down" ? "floor" : "nearest",
+        );
+        setMaxDown(s.max_down ?? "");
+        setMaxUp(s.max_up ?? "");
+        setMinDte(s.min_entry_dte ?? "");
+        setMinCredit(s.min_credit_ratio ?? "");
+      }
+    }
+    setStarting(true);
   };
 
   const stop = async (key: string = runKey) => {
@@ -451,6 +538,10 @@ export function ForwardControl({
 
   const liveRuns = runs.filter((r) => r.running);
   const atCap = liveRuns.length >= maxRuns;
+  // The name the form would start under, and whether a live run holds it. A
+  // start under a taken name starts nothing, so it is said here, before.
+  const wantedKey = runKeyFor(runName) || strategy;
+  const nameTaken = starting && liveRuns.some((r) => r.run_key === wantedKey);
 
   return (
     <section className="card" style={{ overflow: "hidden" }}>
@@ -571,6 +662,17 @@ export function ForwardControl({
             {error}
           </div>
         )}
+        {notice && (
+          <div className="auth-alert auth-alert-info" role="status" style={{ marginBottom: 14 }}>
+            {notice}
+          </div>
+        )}
+        {!starting && state?.settings && (
+          <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--ink-2)", lineHeight: 1.6 }}>
+            <span style={{ color: "var(--ink-muted)" }}>Settings:</span>{" "}
+            {describeSettings(state.settings)}
+          </p>
+        )}
 
         {!state || starting ? (
           <>
@@ -621,11 +723,18 @@ export function ForwardControl({
                   maxLength={40}
                   style={{ width: 170 }}
                 />
-                <span
-                  style={{ ...HINT, maxWidth: 200 }}
-                >
-                  Name two runs differently to compare them on the same ticks.
-                </span>
+                {nameTaken ? (
+                  <span style={{ ...HINT, maxWidth: 200, color: "var(--warn)" }}>
+                    A test named &ldquo;{wantedKey}&rdquo; is already running. Give this one
+                    a different name.
+                  </span>
+                ) : (
+                  <span
+                    style={{ ...HINT, maxWidth: 200 }}
+                  >
+                    Name two runs differently to compare them on the same ticks.
+                  </span>
+                )}
               </label>
               <label style={FIELD}>
                 Expiry
@@ -638,6 +747,25 @@ export function ForwardControl({
                   <option value="weekly">Weekly</option>
                   <option value="monthly">Monthly</option>
                 </select>
+              </label>
+
+              <label style={FIELD}>
+                Time frame
+                <select
+                  value={barMinutes}
+                  onChange={(e) => setBarMinutes(Number(e.target.value))}
+                  className="auth-input"
+                  style={{ minWidth: 150 }}
+                >
+                  <option value={1}>Every minute</option>
+                  <option value={5}>5-minute bars</option>
+                  <option value={15}>15-minute bars</option>
+                  <option value={30}>30-minute bars</option>
+                  <option value={60}>Hourly bars</option>
+                </select>
+                <span style={{ ...HINT, maxWidth: 200 }}>
+                  A level fires on a bar&rsquo;s close, as in a backtest at that bar size.
+                </span>
               </label>
 
               {strategy === "hic" ? (
@@ -854,7 +982,7 @@ export function ForwardControl({
             >
               <button
                 onClick={start}
-                disabled={busy !== null}
+                disabled={busy !== null || nameTaken}
                 className="auth-submit"
                 style={{ marginTop: 0, minWidth: 150 }}
               >
@@ -876,17 +1004,31 @@ export function ForwardControl({
                 <span style={{ flex: "1 1 320px" }}>
                   <strong>This run has stopped</strong>
                   {session?.stopped_reason ? ` (${session.stopped_reason})` : ""}. Its chart,
-                  positions and P&amp;L are shown as they stood when it stopped.
+                  positions and P&amp;L are shown as they stood when it stopped.{" "}
+                  <em>Resume</em> carries it on, positions and all; <em>start fresh</em> opens a
+                  new run with the same settings from today&rsquo;s price.
+                  {session?.resume_blocked ? <> {session.resume_blocked}</> : null}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setStarting(true)}
-                  disabled={atCap}
-                  className="btn-quiet"
-                  style={{ fontSize: 12, padding: "5px 12px" }}
-                >
-                  Start a new run
-                </button>
+                <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    onClick={() => void resume()}
+                    disabled={busy !== null || session?.resumable === false}
+                    className="auth-submit"
+                    style={{ marginTop: 0, fontSize: 12, padding: "6px 14px" }}
+                  >
+                    {busy === "resuming" ? "Resuming…" : "Resume this run"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={startAgain}
+                    disabled={atCap}
+                    className="btn-quiet"
+                    style={{ fontSize: 12, padding: "5px 12px" }}
+                  >
+                    Start fresh with these settings
+                  </button>
+                </span>
               </div>
             )}
             {running && session?.last_error && (

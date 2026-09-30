@@ -198,6 +198,12 @@ export const engine = {
       body,
     }),
 
+  forwardResume: (token: string, run?: string) =>
+    call<{ ok: boolean; run_key?: string; state: unknown }>(`/forward/resume${runQuery(run)}`, {
+      method: "POST",
+      token,
+    }),
+
   forwardStop: (token: string, run?: string) =>
     call<{ ok: boolean; state: unknown }>(`/forward/stop${runQuery(run)}`, {
       method: "POST",

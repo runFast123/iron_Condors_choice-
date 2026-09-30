@@ -22,6 +22,7 @@ const OUTCOME: Record<Condor["status"], { label: string; tone: "pos" | "neg" | "
   EXPIRED: { label: "Held to expiry", tone: "neutral" },
   CLOSED_TARGET: { label: "Take-profit", tone: "pos" },
   CLOSED_STOP: { label: "Stop-loss", tone: "neg" },
+  CLOSED: { label: "Closed", tone: "neutral" },
 };
 
 function pnlColour(value: number | null): string {

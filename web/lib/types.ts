@@ -260,7 +260,7 @@ export interface Condor {
   side?: "anchor" | "down" | "up";
   entry_time: string;
   expiry: string;
-  status: "OPEN" | "CLOSED_TARGET" | "CLOSED_STOP" | "EXPIRED";
+  status: "OPEN" | "CLOSED_TARGET" | "CLOSED_STOP" | "EXPIRED" | "CLOSED";
   exit_time: string | null;
   exit_reason: string | null;
   credit: number;
