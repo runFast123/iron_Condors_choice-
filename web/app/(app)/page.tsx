@@ -57,8 +57,15 @@ export default async function Overview() {
         }
         right={
           <div style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap" }}>
-            <Badge tone="brand">
-              {params.qty > 0 ? `${params.lots} lot · ${num(params.qty)} qty` : "lot size from scrip master"}
+            <Badge
+              tone="brand"
+              title={(provenance.lot_sizes?.length ?? 0) > 1
+                ? "Each contract at the lot size it traded at; NIFTY's lot has changed over the years."
+                : undefined}
+            >
+              {(provenance.lot_sizes?.length ?? 0) > 1
+                ? `${params.lots} lot · ${provenance.lot_sizes!.join(" → ")} qty by contract`
+                : params.qty > 0 ? `${params.lots} lot · ${num(params.qty)} qty` : "lot size from scrip master"}
             </Badge>
             <Badge tone={params.direction === "both" ? "warn" : "neutral"}>
               {directionLabel}
@@ -136,11 +143,20 @@ export default async function Overview() {
         <>
         <StatGrid>
           <Stat
-            label="Net P&L"
+            label={(m.open_positions ?? 0) > 0 ? "Net P&L (closed)" : "Net P&L"}
             value={inr(m.net_pnl, { sign: true })}
             tone={m.net_pnl > 0 ? "pos" : m.net_pnl < 0 ? "neg" : "neutral"}
             delta={`after ${inr(m.total_costs)} costs`}
           />
+          {(m.open_positions ?? 0) > 0 && (
+            <Stat
+              label="Open P&L"
+              value={inr(m.open_pnl ?? 0, { sign: true })}
+              tone={(m.open_pnl ?? 0) > 0 ? "pos" : (m.open_pnl ?? 0) < 0 ? "neg" : "neutral"}
+              delta={`${m.open_positions} still open, marked at the last price`}
+              hint="not yet a profit or a loss: these have not expired"
+            />
+          )}
           {attr && (attr.up_condors > 0 || params.direction === "both") ? (
             <>
               <Stat
@@ -155,9 +171,17 @@ export default async function Overview() {
                 tone={attr.up_pnl > 0 ? "pos" : attr.up_pnl < 0 ? "neg" : "neutral"}
                 delta={`${attr.up_condors} condors · ${inr(attr.up_credit)} credit`}
               />
+              {(attr.anchor_condors ?? 0) > 0 && (
+                <Stat
+                  label="Anchor P&L"
+                  value={inr(attr.anchor_pnl ?? 0, { sign: true })}
+                  tone={(attr.anchor_pnl ?? 0) > 0 ? "pos" : (attr.anchor_pnl ?? 0) < 0 ? "neg" : "neutral"}
+                  delta={`${attr.anchor_condors} condors · one per campaign`}
+                />
+              )}
             </>
           ) : (
-            <Stat label="Win rate" value={pct(m.win_rate)} delta={`${m.wins}W / ${m.losses}L of ${m.condors}`} />
+            <Stat label="Win rate" value={pct(m.win_rate)} delta={`${m.wins}W / ${m.losses}L of ${m.condors} closed`} />
           )}
           <Stat
             label="Profit factor"
@@ -232,18 +256,18 @@ export default async function Overview() {
             </p>
           </Card>
 
-          <Card title="Risk &amp; return" hint="Ratios use peak capital at risk as the denominator, since a credit ladder deploys no fixed capital.">
+          <Card title="Risk &amp; return" hint="Returns are on peak capital at risk, since a credit ladder deploys no fixed capital. Sharpe and Sortino use daily returns with no risk-free rate subtracted, annualised over 252 days.">
             <StatGrid min={130}>
-              <Stat label="Sharpe" value={ratio(m.sharpe)} />
-              <Stat label="Sortino" value={ratio(m.sortino)} />
+              <Stat label="Sharpe" value={ratio(m.sharpe)} hint="risk-free rate 0" />
+              <Stat label="Sortino" value={ratio(m.sortino)} hint="risk-free rate 0" />
               {/* Untoned when unknown: red on a dash reads as a bad result
                   rather than an absent one, which is what it did on every
                   run shorter than a quarter. */}
               <Stat
-                label="CAGR"
-                value={pct(m.cagr)}
-                tone={m.cagr == null ? "neutral" : m.cagr > 0 ? "pos" : "neg"}
-                hint={m.cagr == null ? "needs a quarter of data" : undefined}
+                label="Annual return"
+                value={pct(m.annual_return ?? null)}
+                tone={m.annual_return == null ? "neutral" : m.annual_return > 0 ? "pos" : "neg"}
+                hint={m.annual_return == null ? "needs a quarter of data" : "simple, on peak risk"}
               />
               {/* From the value, not from the label. A run where everything
                   lost has a "best" that is still a loss, and painting it green
@@ -253,6 +277,9 @@ export default async function Overview() {
               <Stat label="Worst condor" value={inr(m.worst, { sign: true })}
                     tone={m.worst > 0 ? "pos" : m.worst < 0 ? "neg" : undefined} />
               <Stat label="Total credit" value={inr(m.total_credit)} hint="premium collected" />
+              {(m.total_debit ?? 0) > 0 && (
+                <Stat label="Total debit" value={inr(m.total_debit ?? 0)} hint="premium paid for bought spreads" />
+              )}
             </StatGrid>
           </Card>
         </div>
@@ -375,7 +402,7 @@ function Outcome({ status, reason }: { status: string; reason: string | null }) 
     CLOSED_TARGET: { tone: "pos", label: "Target hit" },
     CLOSED_STOP: { tone: "neg", label: "Stopped out" },
     CLOSED: { tone: "neutral", label: "Closed" },
-    OPEN: { tone: "neutral", label: "Open" },
+    OPEN: { tone: "neutral", label: "Still open" },
   };
   const item = map[status] ?? { tone: "neutral" as const, label: status };
   return <Badge tone={item.tone} title={reason ?? undefined}>{item.label}</Badge>;

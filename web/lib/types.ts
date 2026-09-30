@@ -159,6 +159,8 @@ export interface Provenance {
   coverage?: Record<string, number>;
   failures?: CoverageFailure[];
   lot_size?: number;
+  /** The lot sizes this run's contracts traded at, oldest first. */
+  lot_sizes?: number[];
   /** Absent on runs from before the backup source existed. */
   backup?: BackupUse;
   /** Legs priced from the backup source at least once. */
@@ -210,6 +212,10 @@ export interface Attribution {
   up_condors: number;
   down_credit: number;
   up_credit: number;
+  /** Each campaign's anchor condor, apart from either side. */
+  anchor_pnl?: number;
+  anchor_condors?: number;
+  anchor_credit?: number;
 }
 
 export interface Metrics {
@@ -227,6 +233,13 @@ export interface Metrics {
    *  Zero is a real answer to a different question and must not stand in. */
   sharpe: number | null; sortino: number | null;
   calmar: number | null; cagr: number | null;
+  /** Simple annual rate on peak capital at risk (the strategy never reinvests). */
+  annual_return?: number | null;
+  /** Positions still open when the range ended, marked at the last prices;
+   *  `net_pnl` is closed trades only, `total_pnl` both. */
+  open_positions?: number; open_pnl?: number; total_pnl?: number;
+  /** Premium paid for structures bought at a debit, apart from credit. */
+  total_debit?: number;
   max_concurrent: number; avg_days_held: number; capital_at_risk: number;
   real_price_fraction: number; modeled_quotes: number;
 }
