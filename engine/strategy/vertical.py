@@ -94,8 +94,10 @@ class VerticalSpread(PositionUnit):
         A vertical has exactly two: both legs worthless, and both in the money.
         Everything between is the straight line joining them.
         """
-        costs = self.entry_costs + self.exit_costs
-        near = self.credit - costs
+        # Scenarios at expiry: entry costs only. At the near plateau nothing
+        # is in the money; the far one is reached with the bought leg's STT
+        # on exercise, small beside the spread, left out as the condor's is.
+        near = self.credit - self.entry_costs
         return near, near + self.far_plateau_intrinsic
 
     @property

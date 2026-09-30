@@ -402,16 +402,21 @@ def test_every_run_names_the_surface_that_produced_it():
     assert "chain-fit" in prov["vol_source"] or "flat-term" in prov["vol_source"]
 
 
-def test_a_stored_chain_fit_is_applied_and_credited(store):
+def test_a_stored_chain_fit_is_applied_and_credited(store, monkeypatch):
     """Without a fit the surface is flat, which prices a 1-DTE weekly off the
     30-day VIX."""
+    import engine.backtest.jobs as jobs_module
+
+    # The fake market's calendar is fixed; the fit's freshness is not.
+    monkeypatch.setattr(jobs_module, "CALIBRATION_MAX_AGE_DAYS", 10_000)
+    fitted = TODAY - dt.timedelta(days=10)
     store.save_calibration(
-        dt.date.today().isoformat(),
+        fitted.isoformat(),
         {"atm_vol": 0.15, "slope": -2.4, "curvature": 55.0,
          "term_exponent": -0.28, "observations": 96},
     )
-    job = BacktestJob(job_id="cal-1", user_id="u1", params=params())
-    BacktestRunner(FakeMarket(), job, db=store).run()
+    job = BacktestJob(job_id="cal-1", user_id="u1", params=params(days=5))
+    BacktestRunner(FakeMarket(days=5), job, db=store).run()
     assert job.status == "done", job.error
 
     prov = job.result["provenance"]
@@ -419,6 +424,20 @@ def test_a_stored_chain_fit_is_applied_and_credited(store):
     assert "term^-0.28" in prov["vol_source"]
     assert prov["iv_calibration"]["observations"] == 96
     assert prov["term_exponent"] == pytest.approx(-0.28)
+
+
+def test_a_chain_fit_is_not_applied_to_bars_before_it_was_measured(store):
+    """The chain's shape as it traded recently is not the shape it had in the
+    months before: a run starting earlier than the fit does not use it."""
+    store.save_calibration(
+        (TODAY - dt.timedelta(days=10)).isoformat(),
+        {"atm_vol": 0.15, "slope": -2.4, "curvature": 55.0,
+         "term_exponent": -0.28, "observations": 96},
+    )
+    job = BacktestJob(job_id="cal-3", user_id="u1", params=params())
+    BacktestRunner(FakeMarket(), job, db=store).run()
+    assert job.status == "done", job.error
+    assert "chain-fit" not in job.result["provenance"]["vol_source"]
 
 
 def test_a_stale_fit_is_ignored_rather_than_trusted(store):

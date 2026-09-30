@@ -193,6 +193,12 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
 
     equity = result.equity
     stride = max(1, len(equity) // 1500)
+    # Thinned for the chart, but never past the last bar -- where the reported
+    # P&L is -- nor past the deepest drawdown.
+    keep = set(range(0, len(equity), stride))
+    if equity:
+        keep.add(len(equity) - 1)
+        keep.add(min(range(len(equity)), key=lambda i: equity[i].drawdown))
     curve = [
         {
             "ts": p.ts.isoformat(),
@@ -201,7 +207,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "open_condors": p.open_condors,
             "spot": round(p.spot, 2) if p.spot is not None else None,
         }
-        for p in equity[::stride]
+        for p in (equity[i] for i in sorted(keep))
     ]
 
     spots = [p.spot for p in equity if p.spot]
@@ -209,20 +215,20 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
     grid = [lo + (hi - lo) * i / 200 for i in range(201)]
     payoff, campaign = _campaign_payoff(result.condors, grid)
 
-    down_condors = [c for c in result.condors if getattr(c, "side", "down") in ("down", "anchor")]
-    up_condors = [c for c in result.condors if getattr(c, "side", "down") == "up"]
-    down_pnl = sum(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0) for c in down_condors)
-    up_pnl = sum(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0) for c in up_condors)
-    down_credit = sum(c.credit for c in down_condors)
-    up_credit = sum(c.credit for c in up_condors)
-    attribution = {
-        "down_pnl": round(down_pnl, 2),
-        "up_pnl": round(up_pnl, 2),
-        "down_condors": len(down_condors),
-        "up_condors": len(up_condors),
-        "down_credit": round(down_credit, 2),
-        "up_credit": round(up_credit, 2),
-    }
+    # Three buckets. Each campaign's anchor belongs to neither side, and on a
+    # two-way ladder counting it as down-side credited twenty neutral condors
+    # to the declines.
+    def _pnl(c) -> float:
+        return c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0)
+
+    buckets = {"down": [], "up": [], "anchor": []}
+    for c in result.condors:
+        buckets.get(getattr(c, "side", "down"), buckets["down"]).append(c)
+    attribution = {}
+    for side, group in buckets.items():
+        attribution[f"{side}_pnl"] = round(sum(_pnl(c) for c in group), 2)
+        attribution[f"{side}_condors"] = len(group)
+        attribution[f"{side}_credit"] = round(sum(c.credit for c in group), 2)
 
     bundle = {
         "provenance": provenance,

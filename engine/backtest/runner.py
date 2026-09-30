@@ -557,7 +557,8 @@ class Backtest:
         result.metrics = metrics_mod.compute(
             realised=realised,
             equity=equity,
-            total_credit=sum(c.credit for c in condors),
+            total_credit=sum(c.credit for c in condors if c.credit > 0),
+            total_debit=sum(-c.credit for c in condors if c.credit < 0),
             total_costs=sum(c.entry_costs + c.exit_costs for c in condors if not c.is_open),
             open_positions=len(open_at_end),
             open_pnl=open_pnl,

@@ -38,7 +38,10 @@ class Metrics:
     net_pnl: float = 0.0
     gross_pnl: float = 0.0
     total_costs: float = 0.0
+    # Premium received on structures opened for a credit, and premium paid on
+    # those bought for a debit (HIC's spreads) -- apart, not netted.
     total_credit: float = 0.0
+    total_debit: float = 0.0
     # Positions still open when the range ended, marked at the last prices.
     # Reported apart, never as if they had closed.
     open_positions: int = 0
@@ -70,7 +73,11 @@ class Metrics:
     sharpe: float | None = None
     sortino: float | None = None
     calmar: float | None = None
-    cagr: float | None = None
+    # Simple annual rate: total P&L over peak capital at risk, per year. Not
+    # compounded -- the strategy trades a fixed number of lots and never
+    # reinvests, so a compounded "CAGR" described returns it cannot earn.
+    annual_return: float | None = None
+    cagr: float | None = None            # retired; always None
 
     max_concurrent: int = 0
     avg_days_held: float = 0.0
@@ -149,6 +156,7 @@ def compute(
     equity: Sequence[EquityPoint],
     total_credit: float,
     total_costs: float,
+    total_debit: float = 0.0,
     capital_at_risk: float,
     max_concurrent: int,
     holding_days: Sequence[float] = (),
@@ -165,6 +173,7 @@ def compute(
     metrics = Metrics(
         condors=len(realised),
         total_credit=total_credit,
+        total_debit=total_debit,
         total_costs=total_costs,
         capital_at_risk=capital_at_risk,
         max_concurrent=max_concurrent,
@@ -230,16 +239,12 @@ def compute(
         # whole metric set with it. Below a quarter there is no meaningful
         # annual rate to report, so none is reported.
         if span >= MIN_CAGR_DAYS and capital_at_risk > 0:
-            total_return = metrics.net_pnl / capital_at_risk
-            years = span / 365.0
-            if total_return > -1:
-                try:
-                    metrics.cagr = (1.0 + total_return) ** (1.0 / years) - 1.0
-                except OverflowError:
-                    metrics.cagr = float("inf")
+            # Where the equity curve ends: closed trades and open marks.
+            total_return = metrics.total_pnl / capital_at_risk
+            metrics.annual_return = total_return / (span / 365.0)
         # Calmar needs both halves. Without an annual rate, or without a
         # drawdown to divide by, there is no ratio -- not a ratio of zero.
-        if metrics.cagr is not None and metrics.max_drawdown < 0 and metrics.max_drawdown_pct:
-            metrics.calmar = metrics.cagr / abs(metrics.max_drawdown_pct)
+        if metrics.annual_return is not None and metrics.max_drawdown < 0 and metrics.max_drawdown_pct:
+            metrics.calmar = metrics.annual_return / abs(metrics.max_drawdown_pct)
 
     return metrics

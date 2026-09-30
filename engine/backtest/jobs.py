@@ -76,7 +76,10 @@ log = logging.getLogger(__name__)
 #        condor's whole credit); each contract at its own lot size; charges
 #        at the rates in force on the trade date, STT on exercise charged to
 #        in-the-money longs; fills pay half the bid-ask spread, as live; no
-#        mid-day price held inside a range not yet traded.
+#        mid-day price held inside a range not yet traded; max profit/loss
+#        as expiry scenarios; daily bars valued at their 15:30 close; no VIX
+#        or chain shape from after a bar; anchor condors reported apart;
+#        simple annual return in place of a compounded "CAGR".
 RESULT_VERSION = 8
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
@@ -604,9 +607,10 @@ class BacktestRunner:
                     + (f" ({note})" if note else "")
                 )
         if vix_map:
-            # The latest day's level, not the last one added: backup days are
-            # added after Choice's and can sit anywhere in the range.
-            surface = from_vix(vix_map[max(vix_map)])
+            # The base surface prices only a moment with no India VIX reading
+            # at all, so its level is a fixed default -- not the range's last
+            # day, which handed every earlier bar a VIX from its future.
+            surface = IVSurface(atm_vol=DEFAULT_ATM_VOL)
             choice_days = len(vix_map) - len(vix_daily_backup)
             if not vix_daily_backup:
                 vol_source = "choice:INDIAVIX"
@@ -626,6 +630,12 @@ class BacktestRunner:
         # rather than assumed; India VIX still sets the day-by-day level,
         # because that is the one thing there is real history for.
         calibration = self._calibration()
+        # Fitted to the chain as it traded recently: a shape the market had
+        # then, not in 2019. Used only for a run that starts after it.
+        if calibration and spots and spots[0][0].date() < dt.date.fromisoformat(
+            str(calibration["as_of_date"])[:10]
+        ):
+            calibration = None
         if calibration:
             surface = replace(
                 surface,

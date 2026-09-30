@@ -67,7 +67,7 @@
    "level": 24000.0,
    "status": "EXPIRED",
    "credit": 5288.554,
-   "max_loss": 9857.3227,
+   "max_loss": 9817.9477,
    "breakevens": [
     23731.431,
     24268.569
@@ -112,7 +112,7 @@
    "level": 23900.0,
    "status": "EXPIRED",
    "credit": 5177.1133,
-   "max_loss": 9959.1033,
+   "max_loss": 9929.1033,
    "breakevens": [
     23632.788,
     24167.212
@@ -157,7 +157,7 @@
    "level": 23800.0,
    "status": "EXPIRED",
    "credit": 5164.6728,
-   "max_loss": 9962.0587,
+   "max_loss": 9941.4337,
    "breakevens": [
     23532.8274,
     24067.1726
@@ -202,7 +202,7 @@
    "level": 23700.0,
    "status": "EXPIRED",
    "credit": 5144.6132,
-   "max_loss": 9972.6481,
+   "max_loss": 9961.3981,
    "breakevens": [
     23432.9686,
     23967.0314
@@ -247,7 +247,7 @@
    "level": 23600.0,
    "status": "EXPIRED",
    "credit": 7282.0841,
-   "max_loss": 7834.7058,
+   "max_loss": 7832.8308,
    "breakevens": [
     23304.4627,
     23895.5373

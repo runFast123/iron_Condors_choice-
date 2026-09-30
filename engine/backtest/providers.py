@@ -51,10 +51,20 @@ class PriceRequest:
     spot: float
 
     @property
+    def valued_at(self) -> dt.datetime:
+        """The moment the price is for. A daily bar is stamped at midnight
+        and stands for the day's 15:30 close; valued at midnight, a modelled
+        option carried 15.5 hours of extra life -- about 28% too rich the day
+        before expiry -- and read the previous day's India VIX."""
+        if self.when.time() == dt.time(0, 0):
+            return dt.datetime.combine(self.when.date(), SESSION_CLOSE, tzinfo=self.when.tzinfo)
+        return self.when
+
+    @property
     def days_to_expiry(self) -> float:
         """Calendar days remaining, floored at zero on expiry day itself."""
         expiry_close = dt.datetime.combine(self.expiry, dt.time(15, 30), tzinfo=self.when.tzinfo)
-        return max(0.0, (expiry_close - self.when).total_seconds() / 86_400.0)
+        return max(0.0, (expiry_close - self.valued_at).total_seconds() / 86_400.0)
 
 
 @dataclass(frozen=True)
@@ -172,7 +182,7 @@ class ModelPriceProvider:
     def quote(self, request: PriceRequest) -> Quote | None:
         days = request.days_to_expiry
         years = days / 365.0
-        surface = self._surface_for(request.when)
+        surface = self._surface_for(request.valued_at)
         forward = forward_price(request.spot, self.rate, years)
         vol = surface.vol(forward, request.strike, days)
         g = greeks(forward, request.strike, years, vol, self.rate, request.right)
@@ -277,10 +287,11 @@ class ExchangeAnchoredPriceProvider:
             if quote is None:
                 return None
             return quote.price, quote.iv, quote.delta, False
-        years = years_to_expiry(request.when, request.expiry)
+        at = request.valued_at
+        years = years_to_expiry(at, request.expiry)
         forward = request.spot * math.exp(smile.carry * years)
-        vix_now = self.vix_at(request.when) if self.vix_at is not None else None
-        ratio_now = self.clock.ratio(request.when, request.expiry) if self.clock else None
+        vix_now = self.vix_at(at) if self.vix_at is not None else None
+        ratio_now = self.clock.ratio(at, request.expiry) if self.clock else None
         vol = carried_vol(smile, float(request.strike), forward, vix_now, ratio_now)
         g = greeks(forward, float(request.strike), years, vol, self.rate, request.right)
         return max(self.fallback.min_price, g.price), vol, g.delta, True

@@ -203,11 +203,14 @@ def test_breakevens_are_where_the_payoff_is_actually_zero():
     assert c.payoff_at_expiry(hi) == pytest.approx(0.0, abs=0.01)
 
 
-def test_max_profit_accounts_for_exit_costs_like_max_loss_does():
+def test_max_profit_is_the_expiry_scenario_not_the_exit_taken():
+    """The best case is every leg expiring worthless, which costs nothing to
+    settle; what an early exit actually cost is realised P&L, not this."""
     cfg = StrategyConfig(lots=1, lot_size=LOT, strike_step=50.0)
     c = condor(cfg, [15.0, 15.0, 55.0, 60.0], entry_costs=500.0, exit_costs=400.0)
     best = max(c.payoff_at_expiry(float(s)) for s in range(21_000, 27_001, 25))
     assert best == pytest.approx(c.max_profit, abs=0.01)
+    assert c.max_profit == pytest.approx(c.net_credit)
 
 
 # =================================================================== fills

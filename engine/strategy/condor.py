@@ -360,9 +360,12 @@ class PositionUnit:
         return sum(fl.pnl(prices[fl.leg]) for fl in marked) - self.entry_costs
 
     def payoff_at_expiry(self, spot: float) -> float:
-        """P&L if the structure is settled at ``spot``, net of all costs."""
+        """P&L if the structure is held and settled at ``spot``, net of what it
+        cost to open. A scenario: the costs of an exit actually taken belong
+        to the realised P&L, and subtracting them here charged every
+        hypothetical spot the same early-exit bill."""
         gross = sum(fl.leg.payoff(spot, fl.entry_price) for fl in self.legs)
-        return gross - self.entry_costs - self.exit_costs
+        return gross - self.entry_costs
 
     def realised_pnl(self) -> float:
         """P&L using recorded exit prices; 0 while still open."""
@@ -488,8 +491,10 @@ class Condor(PositionUnit):
 
     @property
     def max_profit(self) -> float:
-        """Best case at expiry, net of every cost the structure will incur."""
-        return self.net_credit - self.exit_costs
+        """Best case at expiry: every leg expires worthless, which costs
+        nothing to settle. Not net of the costs a position actually paid to
+        leave early -- that is its realised P&L, not its best case."""
+        return self.net_credit
 
     @property
     def max_loss(self) -> float:
@@ -498,11 +503,12 @@ class Condor(PositionUnit):
         Only one wing can finish in the money, so the exposure is one wing's
         width rather than both.
 
-        Exit costs are included once they are known, and they are subtracted
-        from ``max_profit`` for the same reason: a risk figure that understates
-        risk, or a profit figure that overstates it, is the wrong way round.
+        A scenario at expiry, so the costs are the scenario's own: the loss is
+        reached with the long leg exactly at the money, which settles with no
+        STT and no order. The costs of an exit actually taken belong to the
+        realised P&L, not to this.
         """
-        return self.wing_width * self.config.qty - self.net_credit + self.exit_costs
+        return self.wing_width * self.config.qty - self.net_credit
 
     @property
     def breakevens(self) -> tuple[float, ...]:

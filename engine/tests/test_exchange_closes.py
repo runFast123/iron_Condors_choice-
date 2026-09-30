@@ -791,3 +791,20 @@ def test_loading_keeps_only_the_runs_expiries(tmp_path):
     assert set(frames[D0]["expiry"]) == {EXPIRY} and len(frames[D0]) == len(frame)
     frames, _ = archive.load([D0])
     assert len(frames[D0]) == len(both)
+
+
+def test_a_daily_bar_is_valued_at_its_close_not_at_midnight():
+    """Stamped at midnight, a daily bar was priced with 15.5 hours of extra
+    life -- about 28% too rich on an at-the-money option the day before
+    expiry -- and with the previous day's India VIX."""
+    from engine.backtest.providers import PriceRequest
+
+    midnight = dt.datetime.combine(D1, dt.time(0, 0), tzinfo=IST)
+    daily = PriceRequest(expiry=EXPIRY, strike=23_000.0, right="PE", when=midnight, spot=23_000.0)
+    close = PriceRequest(expiry=EXPIRY, strike=23_000.0, right="PE",
+                         when=dt.datetime.combine(D1, dt.time(15, 30), tzinfo=IST), spot=23_000.0)
+    assert daily.valued_at == close.when
+    assert daily.days_to_expiry == pytest.approx(close.days_to_expiry)
+    intraday = PriceRequest(expiry=EXPIRY, strike=23_000.0, right="PE",
+                            when=dt.datetime.combine(D1, dt.time(10, 0), tzinfo=IST), spot=23_000.0)
+    assert intraday.valued_at == intraday.when

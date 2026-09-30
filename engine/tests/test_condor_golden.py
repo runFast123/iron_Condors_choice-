@@ -72,12 +72,15 @@ def test_a_plain_condor_reports_the_figures_it_always_has():
     assert c.breakevens == pytest.approx((23_675.0, 24_325.0))
 
 
-def test_costs_move_both_ends_the_way_they_always_have():
+def test_entry_costs_move_both_ends_and_realised_exit_costs_neither():
+    """Max profit and max loss are scenarios at expiry. They used to take the
+    realised exit costs too: a 200 early-exit bill made the best case 200
+    worse and the worst case 200 deeper, for a position that never saw it."""
     c = condor(entry_costs=300.0, exit_costs=200.0)
 
     assert c.net_credit == pytest.approx(9_075.0)
-    assert c.max_profit == pytest.approx(8_875.0)
-    assert c.max_loss == pytest.approx(6_125.0)
+    assert c.max_profit == pytest.approx(9_075.0)
+    assert c.max_loss == pytest.approx(5_925.0)
 
 
 def test_a_bigger_lot_scales_every_figure():
