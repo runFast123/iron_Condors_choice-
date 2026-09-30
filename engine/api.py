@@ -1427,6 +1427,49 @@ def forward_ticks(
     return {"ticks": store.ticks(session_id, limit=max(1, min(limit, 5_000)))}
 
 
+#: A settled campaign's NIFTY path never changes; asked once per engine life.
+_CAMPAIGN_BARS: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+
+@app.get("/forward/campaign", dependencies=[Depends(check_engine_key)])
+def forward_campaign(
+    expiry: str,
+    session: UserSession = Depends(current_user),
+    run_key: str = Depends(run_param),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """NIFTY over one of a run's campaigns, for its chart.
+
+    The tick table keeps about the last six days, so a month-old campaign has
+    no ticks left to draw. Choice's own 15-minute NIFTY bars cover it, from
+    the campaign's first position to its expiry.
+    """
+    runner = session.runner_for(run_key)
+    state = runner.snapshot() if runner is not None else _saved_snapshot(session, run_key)
+    campaigns = (state or {}).get("campaigns") or []
+    campaign = next((c for c in campaigns if c["expiry"] == expiry), None)
+    if campaign is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"This run has no campaign expiring {expiry}.")
+    session_id = runner.session_id if runner is not None else run_key
+    key = (str(session_id), expiry)
+    bars = _CAMPAIGN_BARS.get(key)
+    if bars is None:
+        start = dt.date.fromisoformat(campaign["started_at"][:10])
+        end = min(dt.date.fromisoformat(expiry), dt.datetime.now(tz=IST).date())
+        try:
+            frame = market.nifty(start, end + dt.timedelta(days=1), "15", strict=False)
+        except ChoiceError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Choice could not serve NIFTY for {start}..{end}: {exc}") from exc
+        bars = [
+            {"ts": row.ts.isoformat(), "spot": round(float(row.close), 2)}
+            for row in frame.itertuples()
+            if start <= row.ts.date() <= end
+        ]
+        if campaign["status"] == "settled":
+            _CAMPAIGN_BARS[key] = bars
+    return {"run_key": run_key, "campaign": campaign, "bars": bars}
+
+
 @app.get("/forward/history", dependencies=[Depends(check_engine_key)])
 def forward_history(session: UserSession = Depends(current_user)) -> dict[str, Any]:
     return {"sessions": store.forward_history(session.user_id)}

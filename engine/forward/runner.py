@@ -953,6 +953,58 @@ class ForwardRunner:
             self.save()
         return settled
 
+    def _campaigns_locked(self) -> list[dict[str, Any]]:
+        """Each expiry's campaign: when it ran, what it opened, where it
+        stands. Built from the positions themselves, so nothing extra is
+        stored and a restored run reports its past campaigns too."""
+        by_expiry: dict[dt.date, list[PositionUnit]] = {}
+        for unit in self.condors:
+            by_expiry.setdefault(unit.expiry, []).append(unit)
+        settled_at: dict[str, dict[str, Any]] = {}
+        for event in self.events:
+            detail = event.detail or {}
+            if "settlement_spot" in detail and detail.get("expiry"):
+                settled_at[str(detail["expiry"])] = {"spot": detail["settlement_spot"], "ts": event.ts}
+        out = []
+        for expiry, units in sorted(by_expiry.items(), reverse=True):
+            open_units = [u for u in units if u.is_open]
+            realised = sum(u.realised_pnl() for u in units if not u.is_open)
+            unmarked = [u for u in open_units if u.index not in self.last_mtm]
+            unrealised = sum(self.last_mtm.get(u.index, 0.0) for u in open_units)
+            status = (
+                "active" if expiry == self.expiry
+                else "settling" if open_units
+                else "settled" if all(u.status is CondorStatus.EXPIRED for u in units)
+                else "closed"          # closed before expiry, not settled at it
+            )
+            anchor = next((u.level for u in units if getattr(u, "side", "") == "anchor"), units[0].level)
+            ends = [u.exit_time for u in units if u.exit_time is not None]
+            settlement = settled_at.get(expiry.isoformat())
+            pnls = [u.realised_pnl() if not u.is_open else self.last_mtm.get(u.index, 0.0) for u in units]
+            out.append({
+                "expiry": expiry.isoformat(),
+                "status": status,
+                "started_at": min(u.entry_time for u in units).isoformat(),
+                "ended_at": (max(ends).isoformat() if ends and not open_units else None),
+                "anchor": anchor,
+                "positions": len(units),
+                "open": len(open_units),
+                "down": sum(1 for u in units if getattr(u, "side", "down") == "down"),
+                "up": sum(1 for u in units if getattr(u, "side", "down") == "up"),
+                "credit": round(sum(u.credit for u in units), 2),
+                "realised": round(realised, 2),
+                "unrealised": round(unrealised, 2),
+                # None while an open position has never been marked: unknown,
+                # not zero.
+                "pnl": None if unmarked else round(realised + unrealised, 2),
+                "best": round(max(pnls), 2),
+                "worst": round(min(pnls), 2),
+                "levels": sorted({u.level for u in units}, reverse=True),
+                "settlement_spot": settlement["spot"] if settlement else None,
+                "settled_on": settlement["ts"] if settlement else None,
+            })
+        return out
+
     def settings(self) -> dict[str, Any]:
         """What this run was started with, as the dashboard shows it and a
         restart with the same settings sends it back."""
@@ -1390,6 +1442,11 @@ class ForwardRunner:
 
         return {
             "settings": self.settings(),
+            # One entry per expiry the run has traded, newest first. The run's
+            # total mixes every campaign -- a settled September and a
+            # morning-old October read as one -21,824 -- so each is also
+            # reported on its own.
+            "campaigns": self._campaigns_locked(),
             "session": {
                 "mode": self.mode,
                 "status": "stopped" if self.stopped_reason else "running",

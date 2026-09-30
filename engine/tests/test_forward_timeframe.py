@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 
 import pandas as pd
+import pytest
 
 from engine.config import IST
 from engine.forward.runner import BAR_WAIT, ForwardRunner
@@ -322,3 +323,70 @@ def test_nothing_rolls_when_nothing_was_open():
         c.close(morning, "closed early", CondorStatus.CLOSED_TARGET, 0.0)
     r._roll_on_expiry_day(morning)
     assert r.settling is None and r.expiry is None
+
+
+# ==================================================== campaigns, one by one
+
+
+def _two_campaigns():
+    """A run whose first expiry has settled and whose second is trading."""
+    from engine.tests.test_forward_expiry import EVENING, EXPIRY, OFFICIAL, live
+
+    r = live(closes=[(EXPIRY, OFFICIAL)])
+    r._settle_and_roll(EVENING, OFFICIAL)
+    nxt = EXPIRY + dt.timedelta(days=28)
+    r.expiry = nxt
+    unit = r._open_condor(22_700.0, nxt, side="anchor")
+    r.last_mtm[r.condors[-1].index] = -250.0
+    return r, EXPIRY, nxt
+
+
+def test_each_campaign_is_reported_on_its_own():
+    """The run's total mixed a settled September with a morning-old October."""
+    r, old, new = _two_campaigns()
+    campaigns = r.snapshot()["campaigns"]
+    assert [c["expiry"] for c in campaigns] == [new.isoformat(), old.isoformat()], "newest first"
+    live_c, settled = campaigns
+    assert live_c["status"] == "active" and live_c["pnl"] == -250.0 and live_c["open"] == 1
+    assert settled["status"] == "settled" and settled["open"] == 0 and settled["positions"] == 3
+    assert settled["pnl"] == round(sum(c.realised_pnl() for c in r.condors if c.expiry == old), 2)
+    assert settled["settlement_spot"] is not None
+    assert r.snapshot()["pnl"]["total"] == pytest.approx(settled["pnl"] + live_c["pnl"])
+
+
+def test_a_campaign_closed_before_expiry_is_not_called_settled():
+    from engine.strategy.condor import CondorStatus
+
+    r, old, new = _two_campaigns()
+    wrong = new - dt.timedelta(days=21)
+    r._open_condor(22_700.0, wrong, side="anchor")
+    r.condors[-1].close(dt.datetime.now(tz=IST), "opened on the wrong expiry", CondorStatus.CLOSED, 0.0)
+    by = {c["expiry"]: c for c in r.snapshot()["campaigns"]}
+    assert by[wrong.isoformat()]["status"] == "closed"
+
+
+def test_a_past_campaigns_chart_comes_from_choices_bars(monkeypatch, registry):
+    import engine.api as api
+    from engine.tests.test_parallel_runs import _session
+
+    r, old, new = _two_campaigns()
+    session = _session(registry)
+    r.run_key = "ladder"
+    session.set_runner("ladder", r)
+    start = min(c.entry_time for c in r.condors if c.expiry == old).date()
+
+    class Market:
+        def nifty(self, a, b, resolution="D", strict=True):
+            assert resolution == "15"
+            return pd.DataFrame({
+                "ts": pd.to_datetime([dt.datetime.combine(start, dt.time(9, 29, 59), tzinfo=IST)]),
+                "close": [23_410.0],
+            })
+
+    body = api.forward_campaign(expiry=old.isoformat(), session=session, run_key="ladder", market=Market())
+    assert body["campaign"]["status"] == "settled" and body["bars"][0]["spot"] == 23_410.0
+    import pytest as _pytest
+    from fastapi import HTTPException
+    with _pytest.raises(HTTPException):
+        api.forward_campaign(expiry="2020-01-01", session=session, run_key="ladder", market=Market())
+    session.set_runner("ladder", None)
