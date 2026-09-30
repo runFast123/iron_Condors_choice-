@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { istClock, istDay } from "@/lib/format";
 
 export interface LivePoint {
@@ -76,17 +76,24 @@ export function LiveChart({
   firedLevels,
   nextTrigger,
   height = 300,
+  levelTitle = "open",
 }: {
   points: LivePoint[];
   firedLevels: number[];
   nextTrigger: number | null;
   height?: number;
+  /** The tag on each fired level: "open" live, "opened" for a finished campaign. */
+  levelTitle?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const linesRef = useRef<any[]>([]);
   const lastTimeRef = useRef<number>(0);
+  // Set once the library has loaded and the chart exists. It loads
+  // asynchronously, and data that arrived before it -- all of it, for a
+  // finished campaign, which never gets another point -- was never drawn.
+  const [ready, setReady] = useState(false);
 
   // Create once. Re-creating on every tick would reset pan/zoom and flicker.
   useEffect(() => {
@@ -148,6 +155,7 @@ export function LiveChart({
       chartRef.current = chart;
       seriesRef.current = series;
       (chartRef.current as any).__lib = lib;
+      setReady(true);
 
       const observer = new ResizeObserver(() => {
         if (container.current) chart.applyOptions({ width: container.current.clientWidth });
@@ -168,6 +176,7 @@ export function LiveChart({
       chartRef.current = null;
       seriesRef.current = null;
       lastTimeRef.current = 0;
+      setReady(false);
     };
   }, [height]);
 
@@ -194,7 +203,7 @@ export function LiveChart({
       series.update({ time: latest.t as any, value: latest.price });
     }
     lastTimeRef.current = latest.t;
-  }, [points]);
+  }, [points, ready]);
 
   // Redraw the ladder levels whenever they change.
   useEffect(() => {
@@ -218,7 +227,7 @@ export function LiveChart({
           lineWidth: 1,
           lineStyle: lib.LineStyle.Solid,
           axisLabelVisible: true,
-          title: "open",
+          title: levelTitle,
         }),
       );
     }
@@ -235,7 +244,7 @@ export function LiveChart({
         }),
       );
     }
-  }, [firedLevels, nextTrigger]);
+  }, [firedLevels, nextTrigger, ready, levelTitle]);
 
   return <div ref={container} style={{ width: "100%", minHeight: height }} />;
 }

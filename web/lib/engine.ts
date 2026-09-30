@@ -210,6 +210,12 @@ export const engine = {
       token,
     }),
 
+  forwardCampaign: (token: string, expiry: string, run?: string) =>
+    call<{ run_key: string; campaign: unknown; bars: { ts: string; spot: number }[] }>(
+      `/forward/campaign${runQuery(run)}${run ? "&" : "?"}expiry=${encodeURIComponent(expiry)}`,
+      { token },
+    ),
+
   forwardTicks: (token: string, run?: string) =>
     call<{ ticks: { ts: string; spot: number }[] }>(`/forward/ticks${runQuery(run)}`, { token }),
 };

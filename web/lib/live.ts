@@ -20,6 +20,32 @@ export interface LiveSession {
   resume_blocked?: string | null;
 }
 
+/** One expiry's campaign within a run. The run's total mixes every campaign;
+ *  this is each on its own. */
+export interface LiveCampaign {
+  expiry: string;
+  /** active: trading now; settling: rolled away, awaiting its official close;
+   *  settled: held to expiry and settled; closed: closed before expiry. */
+  status: "active" | "settling" | "settled" | "closed";
+  started_at: string;
+  ended_at: string | null;
+  anchor: number;
+  positions: number;
+  open: number;
+  down: number;
+  up: number;
+  credit: number;
+  realised: number;
+  unrealised: number;
+  /** Null while an open position has never been marked. */
+  pnl: number | null;
+  best: number;
+  worst: number;
+  levels: number[];
+  settlement_spot: number | null;
+  settled_on: string | null;
+}
+
 /** What a run was started with, named as the start form names it. */
 export interface RunSettings {
   strategy: "ladder" | "hic";
@@ -129,6 +155,8 @@ export interface FillQuality {
 export interface LiveState {
   /** Absent from engines that predate it, and from very old stopped runs. */
   settings?: RunSettings | null;
+  /** Newest first. Absent from engines that predate campaigns. */
+  campaigns?: LiveCampaign[];
   session: LiveSession;
   fill_quality?: FillQuality;
   /** Latest mid per option token, as of `session.last_tick`. */

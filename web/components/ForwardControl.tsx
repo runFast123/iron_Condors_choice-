@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { LiveState, RunSettings } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
-import { inr, num, pct, dateTime, istClock, istDay } from "@/lib/format";
+import { inr, num, pct, dateTime, istClock, istDay, shortDate } from "@/lib/format";
 import { Badge } from "@/components/ui";
+import { CampaignStrip } from "@/components/CampaignStrip";
+import { PastCampaign } from "@/components/PastCampaign";
+import { useCountUp } from "@/lib/useCountUp";
 import { UnitKindBadge } from "@/components/UnitKindBadge";
 import { LiveChart, type LivePoint } from "@/components/charts/LiveChart";
 
@@ -152,6 +155,27 @@ export function ForwardControl({
   const session = state?.session;
   const running = session?.status === "running";
   const openPositions = (state?.positions ?? []).filter((p) => p.status === "OPEN");
+
+  // Campaigns: one per expiry the run has traded. The run's total mixes all
+  // of them -- a settled September and a morning-old October read as one
+  // figure -- so the page is scoped to one campaign at a time, the live one
+  // unless another is picked.
+  const [campaignPick, setCampaignPick] = useState<string | null>(null);
+  useEffect(() => setCampaignPick(null), [runKey]);
+  const campaigns = state?.campaigns ?? [];
+  const current = campaigns.find((c) => c.status === "active") ?? null;
+  const viewedExpiry = campaignPick ?? current?.expiry ?? campaigns[0]?.expiry ?? "";
+  const viewed = campaigns.find((c) => c.expiry === viewedExpiry) ?? null;
+  const pastView = viewed != null && viewed.status !== "active";
+  const campaignPositions = (state?.positions ?? []).filter((p) => current != null && p.expiry === current.expiry);
+  const sideTotal = (side: "down" | "up" | "anchor") =>
+    campaignPositions.filter((p) => (p.side ?? "down") === side).reduce((sum, p) => sum + (p.pnl ?? 0), 0);
+  const campaignPnl = useCountUp(current?.pnl ?? null);
+  const campaignStart = current ? Date.parse(current.started_at) / 1000 : null;
+  const chartTicks = campaigns.length > 1 && campaignStart != null
+    ? ticks.filter((t) => t.t >= campaignStart)
+    : ticks;
+  const runTotal = useCountUp(state?.pnl.total ?? null);
   // Positions with no mark yet. Their value is unknown, not zero -- after an
   // engine restart outside market hours there is no tick to compute one.
   const unmarked = state?.pnl.unmarked_condors ?? 0;
@@ -673,6 +697,13 @@ export function ForwardControl({
             {describeSettings(state.settings)}
           </p>
         )}
+        {!starting && campaigns.length > 1 && (
+          <CampaignStrip
+            campaigns={campaigns}
+            selected={viewedExpiry}
+            onSelect={(expiry) => setCampaignPick(expiry === current?.expiry ? null : expiry)}
+          />
+        )}
 
         {!state || starting ? (
           <>
@@ -1037,6 +1068,10 @@ export function ForwardControl({
               </div>
             )}
 
+            {pastView && viewed ? (
+              <PastCampaign key={viewed.expiry} run={runKey} campaign={viewed} positions={state?.positions ?? []} />
+            ) : (
+            <div key="live" className="fade-up">
             <div
               style={{
                 border: "1px solid var(--border)",
@@ -1061,13 +1096,13 @@ export function ForwardControl({
                       900 ticks, which at a ten-second poll reaches back into
                       yesterday's session — so "900 ticks" gave no hint that
                       the left of the chart was a different day. */}
-                  NIFTY live &middot; {ticks.length} tick{ticks.length === 1 ? "" : "s"}
-                  {ticks.length > 1 && (
+                  NIFTY live &middot;{current && campaigns.length > 1 ? ` ${shortDate(current.expiry)} campaign ·` : ""} {chartTicks.length} tick{chartTicks.length === 1 ? "" : "s"}
+                  {chartTicks.length > 1 && (
                     <>
                       {" "}&middot;{" "}
-                      {istDay(ticks[0].t) === istDay(ticks[ticks.length - 1].t)
-                        ? `${istDay(ticks[0].t)}, ${istClock(ticks[0].t)}–${istClock(ticks[ticks.length - 1].t)}`
-                        : `${istDay(ticks[0].t)} ${istClock(ticks[0].t)} – ${istDay(ticks[ticks.length - 1].t)} ${istClock(ticks[ticks.length - 1].t)}`}
+                      {istDay(chartTicks[0].t) === istDay(chartTicks[chartTicks.length - 1].t)
+                        ? `${istDay(chartTicks[0].t)}, ${istClock(chartTicks[0].t)}–${istClock(chartTicks[chartTicks.length - 1].t)}`
+                        : `${istDay(chartTicks[0].t)} ${istClock(chartTicks[0].t)} – ${istDay(chartTicks[chartTicks.length - 1].t)} ${istClock(chartTicks[chartTicks.length - 1].t)}`}
                     </>
                   )}
                 </span>
@@ -1076,9 +1111,9 @@ export function ForwardControl({
                   <span style={{ color: "var(--accent)" }}>&#9476; next entry</span>
                 </span>
               </div>
-              {ticks.length > 0 ? (
+              {chartTicks.length > 0 ? (
                 <LiveChart
-                  points={ticks}
+                  points={chartTicks}
                   firedLevels={state?.ladder.fired ?? []}
                   nextTrigger={state?.ladder.next_trigger ?? null}
                 />
@@ -1101,26 +1136,50 @@ export function ForwardControl({
                 label={state?.market.stale ? "NIFTY (last candle)" : "NIFTY"}
                 value={state?.market.spot != null ? num(state.market.spot) : "—"}
               />
-              <Metric
-                label={unmarked > 0 ? "Total P&L (partial)" : "Total P&L"}
-                value={
-                  unmarked > 0 && (state?.pnl.open_condors ?? 0) === unmarked
-                    ? "--"
-                    : inr(state?.pnl.total ?? 0, { sign: true })
-                }
-                tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
-              />
+              {current && campaigns.length > 1 ? (
+                <>
+                  <Metric
+                    label="This campaign"
+                    value={campaignPnl == null ? "--" : inr(Math.round(campaignPnl), { sign: true })}
+                    tone={(current.pnl ?? 0) > 0 ? "pos" : (current.pnl ?? 0) < 0 ? "neg" : undefined}
+                    hint={`${shortDate(current.expiry)} expiry · since ${shortDate(current.started_at)}`}
+                    emphasis
+                  />
+                  <Metric
+                    label="All campaigns"
+                    value={runTotal == null ? "--" : inr(Math.round(runTotal), { sign: true })}
+                    tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
+                    hint={`${campaigns.length} campaigns, run to date`}
+                  />
+                </>
+              ) : (
+                <Metric
+                  label={unmarked > 0 ? "Total P&L (partial)" : "Total P&L"}
+                  value={
+                    unmarked > 0 && (state?.pnl.open_condors ?? 0) === unmarked
+                      ? "--"
+                      : runTotal == null ? "--" : inr(Math.round(runTotal), { sign: true })
+                  }
+                  tone={(state?.pnl.total ?? 0) > 0 ? "pos" : (state?.pnl.total ?? 0) < 0 ? "neg" : undefined}
+                  emphasis
+                />
+              )}
               {state?.ladder.direction === "both" && (
                 <>
                   <Metric
-                    label="Down-side P&L"
-                    value={inr(state?.pnl.down_pnl ?? 0, { sign: true })}
-                    tone={(state?.pnl.down_pnl ?? 0) > 0 ? "pos" : (state?.pnl.down_pnl ?? 0) < 0 ? "neg" : undefined}
+                    label="Down-side (campaign)"
+                    value={inr(sideTotal("down"), { sign: true })}
+                    tone={sideTotal("down") > 0 ? "pos" : sideTotal("down") < 0 ? "neg" : undefined}
                   />
                   <Metric
-                    label="Up-side P&L"
-                    value={inr(state?.pnl.up_pnl ?? 0, { sign: true })}
-                    tone={(state?.pnl.up_pnl ?? 0) > 0 ? "pos" : (state?.pnl.up_pnl ?? 0) < 0 ? "neg" : undefined}
+                    label="Up-side (campaign)"
+                    value={inr(sideTotal("up"), { sign: true })}
+                    tone={sideTotal("up") > 0 ? "pos" : sideTotal("up") < 0 ? "neg" : undefined}
+                  />
+                  <Metric
+                    label="Anchor (campaign)"
+                    value={inr(sideTotal("anchor"), { sign: true })}
+                    tone={sideTotal("anchor") > 0 ? "pos" : sideTotal("anchor") < 0 ? "neg" : undefined}
                   />
                 </>
               )}
@@ -1282,6 +1341,8 @@ export function ForwardControl({
                 </div>
               )}
             </div>
+            </div>
+            )}
 
           </>
         )}
@@ -1291,13 +1352,18 @@ export function ForwardControl({
 }
 
 function Metric({
-  label, value, tone, hint,
-}: { label: string; value: string; tone?: "pos" | "neg"; hint?: string }) {
+  label, value, tone, hint, emphasis,
+}: { label: string; value: string; tone?: "pos" | "neg"; hint?: string; emphasis?: boolean }) {
   const color = tone === "pos" ? "var(--pos)" : tone === "neg" ? "var(--neg)" : "var(--ink)";
   return (
-    <div style={{ background: "var(--surface-3)", borderRadius: 8, padding: "9px 11px" }}>
+    <div
+      style={{
+        background: "var(--surface-3)", borderRadius: 8, padding: "9px 11px",
+        boxShadow: emphasis ? "inset 0 0 0 1px var(--border-strong)" : undefined,
+      }}
+    >
       <div style={{ fontSize: 10.5, color: "var(--ink-muted)", fontWeight: 600 }}>{label}</div>
-      <div className="tnum" style={{ fontSize: 17, fontWeight: 700, color, marginTop: 2 }}>
+      <div className="tnum" style={{ fontSize: emphasis ? 20 : 17, fontWeight: 700, color, marginTop: 2 }}>
         {value}
       </div>
       {hint && (
