@@ -49,6 +49,8 @@ class CondorStatus(str, Enum):
     CLOSED_TARGET = "CLOSED_TARGET"
     CLOSED_STOP = "CLOSED_STOP"
     EXPIRED = "EXPIRED"
+    # Closed at market for a reason that is neither -- a correction, say.
+    CLOSED = "CLOSED"
 
 
 class PriceSource(str, Enum):

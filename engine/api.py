@@ -31,7 +31,7 @@ import time
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -52,7 +52,13 @@ from engine.backtest.jobs import CALIBRATION_MAX_AGE_DAYS
 from engine.data.expiry_calendar import nearest_listed_expiry
 from engine.pricing.calibrate import calibrate
 from engine.data.market import NIFTY, ChoiceMarketData
-from engine.forward.runner import ForwardRunner, UnsupportedStateVersion, market_calendar, market_is_open
+from engine.forward.runner import (
+    ForwardRunner,
+    UnsupportedStateVersion,
+    market_calendar,
+    market_is_open,
+    settings_from_state,
+)
 from engine.store.db import DEFAULT_RUN_KEY, HIC, LADDER, STRATEGIES, Store
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import StrategyConfig
@@ -319,6 +325,10 @@ class StartForwardRequest(BaseModel):
     # 15 for every new run unless the request says otherwise -- null switches
     # it off. Runs already trading keep the rules they started with.
     max_entry_vix: float | None = Field(default=15.0, gt=0, le=100)
+    # The time frame the ladder acts on, in minutes: a level fires on the close
+    # of a bar this long, as a backtest at that bar size decides it. 1 acts on
+    # every minute's price, which is how every run worked before this existed.
+    bar_minutes: Literal[1, 5, 15, 30, 60] = 1
 
 
 # ----------------------------------------------------------------- dependencies
@@ -1014,7 +1024,11 @@ def forward_start(
     run_key = slugify_run_key(body.name) if body.name else strategy_id
     live = session.runner_for(run_key)
     if live is not None and live.stopped_reason is None:
+        # Nothing new starts under a name a live run holds. Said, not implied:
+        # the page used to switch to the other run as if this one had begun.
         return {"ok": True, "already_running": True, "run_key": run_key,
+                "note": (f"A test named {run_key!r} is already running, so nothing new was "
+                         "started. Give the new test its own name to run it alongside."),
                 "state": live.snapshot()}
 
     # Adopt a saved run before minting a new one.
@@ -1076,6 +1090,7 @@ def forward_start(
         run_key=run_key,
         run_label=(body.name or strategy_id).strip()[:40],
         daily_loss_limit=body.daily_loss_limit,
+        bar_minutes=body.bar_minutes,
     )
     session.set_runner(run_key, runner)
 
@@ -1115,6 +1130,70 @@ def forward_start(
 
     _start_tick_thread(runner, session, body.poll_seconds)
     return {"ok": True, "state": runner.snapshot()}
+
+
+@app.post("/forward/resume", dependencies=[Depends(check_engine_key)])
+def forward_resume(
+    session: UserSession = Depends(current_user),
+    run_key: str = Depends(run_param),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """Start a stopped run again: the same run, with its ladder, its positions
+    and its history, carrying on from where it stopped.
+
+    "Start a new run" was the only way back, and it opened a blank form: with
+    the name left empty the new run took the strategy's name, a live run
+    already held it, and the page switched to that run as if the stopped one
+    had started. An expiry that passed while it was stopped settles against
+    its official close at the first tick, and the ladder re-anchors after it.
+    """
+    live = session.runner_for(run_key)
+    if live is not None and live.stopped_reason is None:
+        return {"ok": True, "already_running": True, "run_key": run_key, "state": live.snapshot()}
+    row = _stopped_rows(session).get(run_key)
+    if row is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"There is no stopped run named {run_key!r} to resume.")
+    blocked = _resume_blocked(session)
+    if blocked:
+        raise HTTPException(status.HTTP_409_CONFLICT, blocked)
+    record = store.forward_session(row["session_id"])
+    if record is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This run's saved state could not be read.")
+    try:
+        runner = ForwardRunner.restore(
+            record["state"], market=market, costs=CostModel(),
+            state_path=_state_path(session, run_key), store=store,
+            session_id=record["session_id"], user_id=session.user_id,
+            strategy_id=record["strategy_id"], run_key=run_key, run_label=record["run_label"],
+        )
+    except UnsupportedStateVersion as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "This run was saved in a form this engine cannot read."
+        ) from exc
+    runner.stopped_reason = None
+    session.set_runner(run_key, runner)
+    runner.emit(
+        "info", "Forward run resumed by user",
+        condors=len([c for c in runner.condors if c.is_open]),
+        fired=len(runner.ladder.fired_levels),
+    )
+    if runner.is_market_open():
+        runner.tick()
+    else:
+        runner.settle_if_expired()
+    runner.save()
+    _start_tick_thread(runner, session, poll_seconds=15.0)
+    log.info("Run %s (%s) resumed by user %s", run_key, record["session_id"], session.user_id)
+    return {"ok": True, "resumed": True, "run_key": run_key, "state": runner.snapshot()}
+
+
+def _resume_blocked(session: UserSession) -> str | None:
+    """Why a stopped run cannot be started again now, or None."""
+    running = [k for k, r in session.runners().items() if r.stopped_reason is None]
+    if len(running) >= MAX_RUNS_PER_USER:
+        return (f"You already have {len(running)} forward tests running. "
+                "Stop one to resume this one.")
+    return None
 
 
 @app.post("/forward/tick", dependencies=[Depends(check_engine_key)])
@@ -1303,7 +1382,18 @@ def forward_state(
             info = dict(state.get("session") or {})
             info["status"] = "stopped"
             info["stopped_reason"] = info.get("stopped_reason") or row.get("stopped_reason")
+            blocked = _resume_blocked(session)
+            info["resumable"] = blocked is None
+            info["resume_blocked"] = blocked
             state = {**state, "session": info}
+            if not state.get("settings"):
+                # Saved before snapshots carried their settings.
+                record = store.forward_session(row["session_id"])
+                if record is not None:
+                    state["settings"] = settings_from_state(
+                        record["state"], strategy_id=record["strategy_id"],
+                        name=record["run_label"] or run_key,
+                    )
     return {
         "run_key": run_key,
         "running": runner is not None and runner.stopped_reason is None,

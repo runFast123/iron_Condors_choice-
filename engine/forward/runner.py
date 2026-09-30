@@ -71,6 +71,15 @@ MARKET_CLOSE = MARKET_CLOSE_TIME
 # that the delete never sits on the polling path.
 TICK_PRUNE_EVERY = 500
 
+#: Time frames a run can act on, in minutes. 1 is every minute's price, which
+#: is how every run worked before this existed.
+BAR_MINUTES = (1, 5, 15, 30, 60)
+#: How long after a bar ends to wait for Choice to serve it before acting on
+#: the latest price instead.
+BAR_WAIT = dt.timedelta(minutes=3)
+#: The trading session's length in minutes, 09:15 to 15:30.
+SESSION_MINUTES = 375
+
 # A real iron condor collects a meaningful fraction of its wing width -- tens
 # of percent for a weekly. Below this the premiums are wrong, not merely thin.
 MIN_CREDIT_FRACTION = 0.02
@@ -249,6 +258,7 @@ class ForwardRunner:
         run_key: str | None = None,
         run_label: str = "",
         daily_loss_limit: float | None = None,
+        bar_minutes: int = 1,
     ) -> None:
         self.market = market
         self.strategy = strategy
@@ -260,6 +270,19 @@ class ForwardRunner:
         # Weekly or monthly. A forward run on a different cadence from the
         # backtest that justified it is a different strategy.
         self.expiry_cadence = expiry_cadence
+        # The time frame the ladder acts on: a level fires on the close of a
+        # bar this many minutes long, exactly as a backtest at that bar size
+        # decides it. At 1 it acts on every minute's price, as runs always did.
+        # A backtest on 15-minute bars and a run acting on every minute fire
+        # the same level at different times -- 14:59 against 14:20 on 15 Sep --
+        # so the two can only be compared on the same time frame.
+        self.bar_minutes = bar_minutes if bar_minutes in BAR_MINUTES else 1
+        # The end of the last bar acted on, so a bar is acted on once.
+        self.last_bar_end: dt.datetime | None = None
+        # An expiry the ladder rolled away from on its expiry day, whose
+        # positions still settle at that day's official close.
+        self.settling: dt.date | None = None
+        self._bar_wait_warned: dt.datetime | None = None
         self.state_path = state_path or Path("web/data/live.json")
         # Durable home for this run. Without it the run exists only for as long
         # as this process does, which is the failure being fixed here.
@@ -700,7 +723,10 @@ class ForwardRunner:
         self.last_mtm = out
         return out
 
-    def _close(self, condor: Condor, quotes: dict[Leg, Quote], reason: str) -> None:
+    def _close(
+        self, condor: Condor, quotes: dict[Leg, Quote], reason: str,
+        status: CondorStatus | None = None,
+    ) -> None:
         """Close a condor, crossing the spread the other way on every leg."""
         if not condor.is_open:
             # Two callers reaching this for the same condor booked its P&L
@@ -742,7 +768,8 @@ class ForwardRunner:
                     ),
                 )
             )
-        status = CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
+        if status is None:
+            status = CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
         condor.close(now, reason, status, exit_costs)
         self.realised += condor.realised_pnl()
         self.emit(
@@ -752,20 +779,23 @@ class ForwardRunner:
 
     # ----------------------------------------------------- expiry settlement
 
-    def _expiry_is_settled(self, now: dt.datetime) -> bool:
+    def _expiry_is_settled(self, now: dt.datetime, expiry: dt.date | None = None) -> bool:
         """Whether this campaign's expiry is past its settlement.
 
         On expiry day only after the close: the positions trade and mark right
         up to it, and settling at midday would book an intrinsic against a
         spot with hours left to move.
         """
-        if self.expiry is None:
+        expiry = self.expiry if expiry is None else expiry
+        if expiry is None:
             return False
-        if now.date() > self.expiry:
+        if now.date() > expiry:
             return True
-        return now.date() == self.expiry and now.time() >= MARKET_CLOSE_TIME
+        return now.date() == expiry and now.time() >= MARKET_CLOSE_TIME
 
-    def _settlement_spot(self, now: dt.datetime, spot: float) -> tuple[float | None, str]:
+    def _settlement_spot(
+        self, now: dt.datetime, spot: float, expiry: dt.date | None = None
+    ) -> tuple[float | None, str]:
         """The index level to settle against, and where it came from.
 
         NSE settles index options against NIFTY's official closing price -- an
@@ -785,10 +815,11 @@ class ForwardRunner:
         fetched nothing settles, because leaving positions open and visibly
         unsettled is recoverable and booking a fiction is not.
         """
-        if self.expiry is None:
+        expiry = self.expiry if expiry is None else expiry
+        if expiry is None:
             return None, ""
-        if now.date() < self.expiry or (
-            now.date() == self.expiry and now.time() < OFFICIAL_CLOSE_READY
+        if now.date() < expiry or (
+            now.date() == expiry and now.time() < OFFICIAL_CLOSE_READY
         ):
             return None, ""
         try:
@@ -796,26 +827,27 @@ class ForwardRunner:
             # midnight at the start of expiry day, so whether that day's own
             # candle came back depended on how Choice treats the boundary.
             frame = self.market.nifty(
-                self.expiry - dt.timedelta(days=10), self.expiry + dt.timedelta(days=1)
+                expiry - dt.timedelta(days=10), expiry + dt.timedelta(days=1)
             )
         except ChoiceError as exc:
-            self._warn_settle("Cannot settle: no NIFTY close for the expiry", error=str(exc))
+            self._warn_settle("Cannot settle: no NIFTY close for the expiry", expiry, error=str(exc))
             return None, ""
         for row in reversed(list(frame.itertuples())):
             ts = row.ts.to_pydatetime() if hasattr(row.ts, "to_pydatetime") else row.ts
-            if ts.date() == self.expiry:
-                return float(row.close), f"the official NIFTY close on {self.expiry:%d-%b-%Y}"
-        self._warn_settle("Cannot settle: the expiry date is missing from the NIFTY series")
+            if ts.date() == expiry:
+                return float(row.close), f"the official NIFTY close on {expiry:%d-%b-%Y}"
+        self._warn_settle("Cannot settle: the expiry date is missing from the NIFTY series", expiry)
         return None, ""
 
-    def _warn_settle(self, message: str, **fields) -> None:
+    def _warn_settle(self, message: str, expiry: dt.date | None = None, **fields) -> None:
         """Say once per expiry that it cannot settle yet. Every tick retries,
         and repeating it every few seconds flushed the run's event log."""
-        key = (self.expiry, message)
+        expiry = self.expiry if expiry is None else expiry
+        key = (expiry, message)
         if key in self._settle_warned:
             return
         self._settle_warned = self._settle_warned | {key}
-        self.emit("warn", message, expiry=self.expiry.isoformat() if self.expiry else None, **fields)
+        self.emit("warn", message, expiry=expiry.isoformat() if expiry else None, **fields)
 
     def _settle(self, unit: PositionUnit, now: dt.datetime, spot: float, note: str) -> None:
         """Close one position at intrinsic value.
@@ -844,6 +876,95 @@ class ForwardRunner:
         unit.close(now, f"expired; settled at intrinsic against {note}",
                    CondorStatus.EXPIRED, exit_costs)
 
+    def _bar_close(self, now: dt.datetime, spot: float) -> float | None:
+        """The close of the latest bar of `bar_minutes` that has completed and
+        not yet been acted on; None mid-bar, or once it has been.
+
+        Bars run from 09:15 on the time frame's grid, the last one cut short at
+        15:30 -- Choice's own candles, which is what a backtest at the same bar
+        size replays. The close is Choice's candle for that bar: the index is
+        served from candles anyway, and it is the figure the backtest used.
+        """
+        n = self.bar_minutes
+        opened = dt.datetime.combine(now.date(), MARKET_OPEN_TIME, tzinfo=IST)
+        elapsed = (now - opened).total_seconds() / 60.0
+        if elapsed >= SESSION_MINUTES:
+            index = -(-SESSION_MINUTES // n) - 1          # the last, perhaps short, bar
+            end = opened + dt.timedelta(minutes=SESSION_MINUTES)
+        else:
+            index = int(elapsed // n) - 1
+            if index < 0:
+                return None                               # the first bar is still forming
+            end = opened + dt.timedelta(minutes=(index + 1) * n)
+        start = opened + dt.timedelta(minutes=index * n)
+        if self.last_bar_end is not None and end <= self.last_bar_end:
+            return None
+        close = None
+        try:
+            frame = self.market.nifty(
+                now.date(), now.date() + dt.timedelta(days=1), str(n), strict=False
+            )
+        except ChoiceError as exc:
+            frame = None
+            log.info("%s-minute NIFTY bar unavailable: %s", n, exc)
+        if frame is not None and not frame.empty:
+            for row in frame.itertuples():
+                ts = row.ts.to_pydatetime() if hasattr(row.ts, "to_pydatetime") else row.ts
+                if start <= ts < end:
+                    close = float(row.close)
+        if close is None:
+            if now - end < BAR_WAIT:
+                return None                               # not served yet; asked again next tick
+            # Choice has not served the bar: act on the latest price rather
+            # than skip the bar, and say so once.
+            if self._bar_wait_warned != end:
+                self._bar_wait_warned = end
+                self.emit(
+                    "warn",
+                    f"No {n}-minute bar from Choice for {start:%H:%M}-{end:%H:%M}; "
+                    "acted on the latest price instead",
+                )
+            close = spot
+        self.last_bar_end = end
+        return close
+
+    def settle_if_expired(self, now: dt.datetime | None = None) -> bool:
+        """Settle an expired campaign outside market hours.
+
+        The tick loop sleeps while the market is shut, so an expiry used to
+        stay open on the dashboard until the next morning's first tick. On
+        expiry evening, once the official close is published, the positions
+        settle then. The next campaign still starts at the next open: its
+        anchor is where NIFTY trades then.
+        """
+        now = now or dt.datetime.now(tz=IST)
+        with self._lock:
+            settled = False
+            if self.settling is not None and self._expiry_is_settled(now, self.settling):
+                if self._settle_expiry(now, self.last_spot or 0.0, self.settling):
+                    self.settling, settled = None, True
+            if self.expiry is not None and self._expiry_is_settled(now):
+                self._settle_and_roll(now, self.last_spot or 0.0)
+                settled = settled or self.expiry is None
+            if settled:
+                self._snapshot_cache = self._snapshot_locked()
+        if settled:
+            self.save()
+        return settled
+
+    def settings(self) -> dict[str, Any]:
+        """What this run was started with, as the dashboard shows it and a
+        restart with the same settings sends it back."""
+        # getattr: a runner assembled piecemeal (a test double) still snapshots.
+        strategy_id = getattr(self, "strategy_id", LADDER)
+        return run_settings(
+            self.strategy, strategy_id=strategy_id,
+            name=getattr(self, "run_label", "") or getattr(self, "run_key", None) or strategy_id,
+            bar_minutes=getattr(self, "bar_minutes", 1),
+            expiry_cadence=getattr(self, "expiry_cadence", "weekly"),
+            daily_loss_limit=getattr(self, "daily_loss_limit", None),
+        )
+
     def _settle_and_roll(self, now: dt.datetime, spot: float) -> None:
         """Settle an expired book, then start a fresh campaign.
 
@@ -861,9 +982,22 @@ class ForwardRunner:
         expired = self.expiry
         if expired is None:
             return
-        settlement, note = self._settlement_spot(now, spot)
-        if settlement is None:
+        if not self._settle_expiry(now, spot, expired):
             return                      # already explained; try again next tick
+        self.expiry = None
+        self.ladder.reset()
+        self.emit(
+            "info",
+            "Ladder re-anchored for the next expiry, because offsetting only "
+            "works within one",
+        )
+
+    def _settle_expiry(self, now: dt.datetime, spot: float, expired: dt.date) -> bool:
+        """Settle every open position on `expired` against its official close.
+        False, with nothing booked, while that close cannot be had."""
+        settlement, note = self._settlement_spot(now, spot, expired)
+        if settlement is None:
+            return False
 
         settled = 0
         for unit in self.condors:
@@ -886,12 +1020,31 @@ class ForwardRunner:
             settlement_spot=round(settlement, 2),
             realised=round(self.realised, 2),
         )
+        return True
+
+    def _roll_on_expiry_day(self, now: dt.datetime) -> None:
+        """Expiry day: open nothing more on a contract that settles in hours.
+
+        The backtest rolls at the first bar of expiry day -- the old campaign's
+        positions settle at the close, the next campaign anchors where NIFTY
+        opens -- and the live run carried on opening rungs on the dying
+        contract instead: 22,700 and 22,600 on 29 Sep, for ₹1,164 and ₹1,209,
+        then rolled the next morning. Same rule now, so the two agree.
+        """
+        rolled = self.expiry
+        if rolled is None:
+            return
+        still_open = sum(1 for u in self.condors if u.is_open and u.expiry == rolled)
+        self.settling = rolled if still_open else None
         self.expiry = None
         self.ladder.reset()
         self.emit(
             "info",
-            "Ladder re-anchored for the next expiry, because offsetting only "
-            "works within one",
+            f"{rolled:%d-%b-%Y} expires today: nothing more opens on it"
+            + (f", and its {still_open} open position{'' if still_open == 1 else 's'} "
+               "settle at the official close" if still_open else "")
+            + ". The ladder re-anchors for the next expiry now, as the backtest does.",
+            expiry=rolled.isoformat(), open_positions=still_open,
         )
 
     # ------------------------------------------------------------ VIX rule
@@ -1074,6 +1227,9 @@ class ForwardRunner:
         # Settle before resolving, so a campaign that has expired books its
         # P&L and clears the way for the next one rather than sitting open
         # against contracts that no longer trade.
+        if self.settling is not None and self._expiry_is_settled(now, self.settling):
+            if self._settle_expiry(now, spot, self.settling):
+                self.settling = None
         if self.expiry is not None and self._expiry_is_settled(now):
             self._settle_and_roll(now, spot)
             if self.expiry is not None:
@@ -1082,6 +1238,8 @@ class ForwardRunner:
                 # stopped trading, and a rung opened now would be opened on
                 # it; the old path went on firing into the dead expiry.
                 return
+        elif self.expiry is not None and now.date() >= self.expiry:
+            self._roll_on_expiry_day(now)
 
         if self.expiry is None:
             try:
@@ -1106,8 +1264,13 @@ class ForwardRunner:
         allowed = self._vix_allows_entries(now)
         passed_before = len(self.ladder.passed)
         # No usable India VIX reading yet: nothing is decided this tick, and the
-        # ladder is left exactly where it was for the next one.
-        fresh = [] if allowed is None else self.ladder.on_price(spot, now, entries_allowed=allowed)
+        # ladder is left exactly where it was for the next one. On a longer
+        # time frame nothing is decided mid-bar either: the ladder acts on the
+        # close of each bar as it completes, and only then.
+        decision = None
+        if allowed is not None:
+            decision = spot if self.bar_minutes <= 1 else self._bar_close(now, spot)
+        fresh = [] if decision is None else self.ladder.on_price(decision, now, entries_allowed=allowed)
         passed = self.ladder.passed[passed_before:]
         if passed:
             self.emit(
@@ -1225,6 +1388,7 @@ class ForwardRunner:
         summary = netting_summary(self.condors, open_only=True)
 
         return {
+            "settings": self.settings(),
             "session": {
                 "mode": self.mode,
                 "status": "stopped" if self.stopped_reason else "running",
@@ -1424,6 +1588,12 @@ class ForwardRunner:
                 if self.stopped_reason or self._suspended:
                     break
                 if not self.is_market_open():
+                    # An expiry settles the evening it expires, not at the next
+                    # open (a no-op until the official close is published).
+                    try:
+                        self.settle_if_expired()
+                    except Exception:               # noqa: BLE001 - retried next minute
+                        log.exception("Evening settlement failed")
                     # Log the transition once, not every minute all weekend.
                     if not idle_logged:
                         nxt = market_calendar.next_open()
@@ -1558,6 +1728,9 @@ class ForwardRunner:
             # Persisted because a resumed run that silently changed cadence is
             # a different strategy from the one the user started.
             "expiry_cadence": self.expiry_cadence,
+            "bar_minutes": self.bar_minutes,
+            "last_bar_end": self.last_bar_end.isoformat() if self.last_bar_end else None,
+            "settling": self.settling.isoformat() if self.settling else None,
             "started_at": self.started_at.isoformat(),
             "last_tick": self.last_tick.isoformat() if self.last_tick else None,
             "last_spot": self.last_spot,
@@ -1632,8 +1805,12 @@ class ForwardRunner:
             run_key=run_key or state.get("run_key"),
             run_label=run_label if run_label is not None else (state.get("run_label") or ""),
             daily_loss_limit=state.get("daily_loss_limit"),
-            expiry_cadence=state.get("expiry_cadence") or "weekly",
+            expiry_cadence=state.get("expiry_cadence") or _cadence_traded(state),
+            # Runs from before time frames existed acted on every minute.
+            bar_minutes=int(state.get("bar_minutes") or 1),
         )
+        runner.last_bar_end = _parse_dt(state.get("last_bar_end"))
+        runner.settling = _parse_date(state.get("settling"))
         runner.started_at = _parse_dt(state.get("started_at")) or runner.started_at
         runner.last_tick = _parse_dt(state.get("last_tick"))
         runner.last_spot = state.get("last_spot")
@@ -1682,6 +1859,79 @@ class ForwardRunner:
             log.error("%s: %s", run_key or resolved_strategy_id, skew)
             runner.emit("error", skew)
         return runner
+
+
+#: The furthest a weekly run's contract can be from the day it opens: the
+#: next weekly, pushed back a day or two by a holiday.
+WEEKLY_REACH = dt.timedelta(days=9)
+
+
+def _cadence_traded(state: dict[str, Any]) -> str:
+    """The cadence of a run saved before its cadence was.
+
+    Assuming "weekly" put two ladders started as monthly on 9 and 10 Sep -- each
+    opened on the 29 Sep contract with the 15 Sep weekly listed -- onto the
+    6 Oct weekly at their first roll. A weekly run never holds a contract more
+    than about a week out, so one that did was monthly.
+    """
+    for raw in state.get("condors") or []:
+        expiry = _parse_date(raw.get("expiry"))
+        opened = _parse_dt(raw.get("entry_time"))
+        if expiry is not None and opened is not None and expiry - opened.date() > WEEKLY_REACH:
+            return "monthly"
+    return "weekly"
+
+
+def run_settings(
+    strategy: StrategyConfig,
+    *,
+    strategy_id: str,
+    name: str,
+    bar_minutes: int,
+    expiry_cadence: str,
+    daily_loss_limit: float | None,
+) -> dict[str, Any]:
+    """A run's settings, named as the start form names them."""
+    out: dict[str, Any] = {
+        "strategy": strategy_id,
+        "name": name,
+        "bar_minutes": bar_minutes,
+        "expiry_cadence": expiry_cadence,
+        "lots": strategy.lots,
+        "step": strategy.step,
+        "max_condors": strategy.max_condors,
+        "direction": strategy.direction,
+        "anchor_mode": strategy.anchor_mode,
+        "max_down": strategy.max_down,
+        "max_up": strategy.max_up,
+        "max_entry_vix": strategy.max_entry_vix,
+        "min_entry_dte": strategy.min_entry_dte,
+        "min_credit_ratio": strategy.min_credit_ratio,
+        "take_profit": strategy.take_profit_pct,
+        "stop_loss": strategy.stop_loss_mult,
+        "daily_loss_limit": daily_loss_limit,
+    }
+    if isinstance(strategy, HicConfig):
+        out.update(
+            full_band_steps=strategy.full_band_steps, half_mode=strategy.half_mode,
+            debit_shift=strategy.debit_shift, max_put_spreads=strategy.max_put_spreads,
+            max_call_spreads=strategy.max_call_spreads,
+        )
+    return out
+
+
+def settings_from_state(state: dict[str, Any], *, strategy_id: str, name: str) -> dict[str, Any] | None:
+    """The settings of a saved run, for one whose snapshot predates them."""
+    try:
+        strategy, _ = _strategy_from_state(state["strategy"], strategy_id)
+    except Exception:                               # noqa: BLE001 - shown without, not failed
+        return None
+    return run_settings(
+        strategy, strategy_id=strategy_id, name=name,
+        bar_minutes=int(state.get("bar_minutes") or 1),
+        expiry_cadence=state.get("expiry_cadence") or "weekly",
+        daily_loss_limit=state.get("daily_loss_limit"),
+    )
 
 
 def _float_or_none(value: Any) -> float | None:

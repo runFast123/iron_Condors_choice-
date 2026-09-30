@@ -288,6 +288,30 @@ class Store:
             )
         ]
 
+    def forward_session(self, session_id: str) -> dict[str, Any] | None:
+        """One run's latest stored row, state included; None if absent or
+        unreadable."""
+        rows = self._rows("SELECT * FROM forward_sessions WHERE session_id = ?", (session_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            state = json.loads(row["state_json"])
+        except (TypeError, json.JSONDecodeError):
+            log.warning("Forward session %s has unreadable state", session_id)
+            return None
+        return {
+            "session_id": row["session_id"],
+            "user_id": row["user_id"],
+            "status": row["status"],
+            "stopped_reason": row["stopped_reason"],
+            "strategy_id": row["strategy_id"] or LADDER,
+            "run_key": row["run_key"] or (row["strategy_id"] or LADDER),
+            "run_label": row["run_label"] or "",
+            "started_at": row["started_at"],
+            "state": state,
+        }
+
     def mark_stopped(self, session_id: str, reason: str) -> None:
         self._write(
             "UPDATE forward_sessions SET status='stopped', stopped_reason=?, updated_at=? "

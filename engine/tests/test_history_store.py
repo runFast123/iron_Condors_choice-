@@ -365,7 +365,9 @@ def test_only_a_lock_is_waited_out(tmp_path):
 
 def test_the_record_lists_every_real_expiry(tmp_path):
     path = tmp_path / "h.duckdb"
-    delivered(path)                                     # 29 Sep 2026
+    # Both trading on the same day, as consecutive expiries do: the next one
+    # does not begin where this one stops, so neither reads as renamed.
+    delivered(path, day="2026-09-11")                   # 29 Sep 2026
     hs.append_options(hs.option_rows(choice_frame(), dt.date(2026, 10, 6), 23300.0, "PE"), path)
     assert hs.expiries(path) == [EXPIRY, dt.date(2026, 10, 6)]
     assert hs.expiries(tmp_path / "absent.duckdb") == []
