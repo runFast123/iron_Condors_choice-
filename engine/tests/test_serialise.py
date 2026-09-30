@@ -74,6 +74,7 @@ def test_an_all_winning_backtest_still_produces_valid_json():
     )
     # Pinned between the shorts for the whole run: every condor expires worthless.
     spots = [(START + dt.timedelta(minutes=5 * i), 24_000.0) for i in range(40)]
+    spots.append((dt.datetime.combine(EXPIRY, dt.time(15, 30), tzinfo=START.tzinfo), 24_000.0))
     result = engine.run(spots)
 
     assert result.metrics.losses == 0

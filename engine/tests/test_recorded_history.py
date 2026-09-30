@@ -64,7 +64,8 @@ def test_legs_choice_no_longer_serves_come_from_the_recorded_history(monkeypatch
     assert prov["verified"] is False                     # real, but not all from Choice
     legs = [leg for c in job.result["condors"] for leg in c["legs"]]
     assert {leg["source"] for leg in legs} == {"history"}
-    assert {leg["entry_price"] for leg in legs} == {42.5}
+    # Traded at 42.5; filled half a 2% spread against the trader, to the tick.
+    assert {(leg["side"], leg["entry_price"]) for leg in legs} == {("SELL", 42.05), ("BUY", 42.95)}
 
 
 def test_choice_still_wins_where_it_has_the_leg(monkeypatch, recorded):

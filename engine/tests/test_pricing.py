@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import math
 
 import pytest
@@ -147,10 +149,41 @@ def test_year_fraction_is_never_negative():
 
 def test_stt_applies_only_to_the_sell_side():
     model = CostModel()
-    sell = model.breakdown(Side.SELL, 60.0, 75)
-    buy = model.breakdown(Side.BUY, 60.0, 75)
+    on = dt.date(2025, 6, 2)
+    sell = model.breakdown(Side.SELL, 60.0, 75, on)
+    buy = model.breakdown(Side.BUY, 60.0, 75, on)
     assert sell["stt"] == pytest.approx(0.001 * 60 * 75)
     assert buy["stt"] == 0.0
+
+
+@pytest.mark.parametrize("on, stt, exchange", [
+    (dt.date(2020, 6, 1), 0.0005, 0.0005),
+    (dt.date(2022, 6, 1), 0.0005, 0.00053),
+    (dt.date(2023, 6, 1), 0.000625, 0.0005),
+    (dt.date(2024, 6, 1), 0.000625, 0.000495),
+    (dt.date(2025, 6, 2), 0.001, 0.0003503),
+    (dt.date(2026, 6, 1), 0.0015, 0.0003503),
+])
+def test_the_rates_are_the_ones_in_force_on_the_trade_date(on, stt, exchange):
+    """A backtest over 2019-2026 spans four STT rates and five exchange charges;
+    today's for every year misstated each one."""
+    parts = CostModel().breakdown(Side.SELL, 100.0, 65, on)
+    assert parts["stt"] == pytest.approx(stt * 6500)
+    assert parts["exchange"] == pytest.approx(exchange * 6500)
+
+
+def test_expiry_settlement_charges_exercise_stt_to_the_long_only():
+    """The holder of an exercised option pays STT on its settlement value; the
+    writer pays none, and a cash settlement places no order to charge."""
+    model = CostModel()
+    assert model.settlement_cost(Side.SELL, 100.0, 65, dt.date(2025, 6, 2)) == 0.0
+    assert model.settlement_cost(Side.BUY, 0.0, 65, dt.date(2025, 6, 2)) == 0.0
+    assert model.settlement_cost(Side.BUY, 100.0, 65, dt.date(2025, 6, 2)) == pytest.approx(0.00125 * 6500)
+    assert model.settlement_cost(Side.BUY, 100.0, 65, dt.date(2026, 6, 2)) == pytest.approx(0.0015 * 6500)
+
+
+def test_an_explicit_rate_overrides_the_schedule():
+    assert CostModel(stt_sell_rate=0.002).breakdown(Side.SELL, 100.0, 1, dt.date(2020, 1, 1))["stt"] == pytest.approx(0.2)
 
 
 def test_stamp_duty_applies_only_to_the_buy_side():

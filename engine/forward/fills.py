@@ -97,7 +97,17 @@ class FillModel:
                 spread_modelled=False,
             )
 
-        reference = quote.ltp
+        return self.trade_fill(quote.ltp, side)
+
+    def trade_fill(self, reference: float, side: Side) -> FillPrice:
+        """A fill from a traded price with no book behind it: half the
+        modelled spread against the trader, rounded to the tick against them.
+
+        The live run fills this way whenever Choice sends no depth (every leg
+        so far), and the backtest fills its traded prices the same way -- a
+        backtest filling at the last trade collected 1-4% more credit than the
+        live run did for the same condors.
+        """
         half = max(self.min_half_spread, reference * self.modelled_spread_pct / 2.0)
         raw = reference + half if side is Side.BUY else reference - half
         price = _round_to_tick(raw, side)

@@ -853,7 +853,7 @@ class ForwardRunner:
         """Close one position at intrinsic value.
 
         Index options cash-settle, so there is no exit brokerage -- only STT on
-        in-the-money shorts, which the cost model applies. Mirrors the
+        exercise, on in-the-money longs, which the cost model applies. Mirrors the
         backtester's `_settle` exactly, so a forward run and a backtest of the
         same path book the same expiry.
         """
@@ -862,8 +862,9 @@ class ForwardRunner:
             intrinsic = fl.leg.intrinsic(spot)
             fl.exit_price = intrinsic
             fl.exit_source = PriceSource.CHOICE
-            if intrinsic > 0 and fl.leg.side is Side.SELL:
-                exit_costs += self.costs.leg_cost(Side.SELL, intrinsic, fl.leg.qty)
+            # STT on exercise, on in-the-money longs only; a cash settlement
+            # places no order. The backtest's `_settle` is the same rule.
+            exit_costs += self.costs.settlement_cost(fl.leg.side, intrinsic, fl.leg.qty, unit.expiry)
             opposite = Side.BUY if fl.leg.side is Side.SELL else Side.SELL
             self.fills.append(
                 Fill(

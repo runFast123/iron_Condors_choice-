@@ -170,7 +170,9 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "max_profit": round(c.max_profit, 2),
             "max_loss": round(c.max_loss, 2),
             "breakevens": [round(b, 2) for b in c.breakevens],
-            "pnl": round(c.realised_pnl(), 2),
+            # An open position's P&L is its latest mark, and says so.
+            "pnl": round(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0), 2),
+            "open_at_end": c.is_open,
             "modeled": c.uses_modeled_prices,
             "legs": [
                 {
@@ -209,8 +211,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
 
     down_condors = [c for c in result.condors if getattr(c, "side", "down") in ("down", "anchor")]
     up_condors = [c for c in result.condors if getattr(c, "side", "down") == "up"]
-    down_pnl = sum(c.realised_pnl() for c in down_condors)
-    up_pnl = sum(c.realised_pnl() for c in up_condors)
+    down_pnl = sum(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0) for c in down_condors)
+    up_pnl = sum(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0) for c in up_condors)
     down_credit = sum(c.credit for c in down_condors)
     up_credit = sum(c.credit for c in up_condors)
     attribution = {

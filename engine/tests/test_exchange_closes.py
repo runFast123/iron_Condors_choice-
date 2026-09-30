@@ -440,14 +440,17 @@ def test_an_anchored_price_matches_a_market_that_kept_its_smile():
     assert provider.anchored == 1 and provider.vix_only == 0
 
 
-def test_a_modelled_price_is_held_inside_the_days_real_range():
+def test_a_mid_day_price_is_never_held_to_a_range_not_yet_traded():
+    """At 10:00 the day's low and high are not known -- the low might print
+    at 14:30. Holding a mid-day price inside them was look-ahead."""
     history = two_days(scale1=1.0)
     provider = anchored(history, vix=lambda when: 16.0 if when.date() == D0 else 32.0)
     contract = history.contract(D1, EXPIRY, 22_600.0, "PE")
     quote = provider.quote(request(D1, dt.time(10, 0), 22_600, "PE", 23_050))
-    # VIX doubled, the market did not: the model runs far above anything traded.
-    assert quote.price == pytest.approx(contract.high)
-    assert provider.clamped == 1
+    # VIX doubled, the market did not: the model runs above anything traded,
+    # and nothing that happens later in the day may pull it back.
+    assert quote.price > contract.high
+    assert provider.clamped == 0
 
 
 def test_the_closing_bar_takes_the_real_last_trade():

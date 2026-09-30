@@ -325,7 +325,10 @@ def _backtest(direction: str, prices: list[float], **kw):
         ModelPriceProvider(surface=IVSurface(atm_vol=0.14)),
         weekly_expiry_resolver([expiry]),
     )
-    return engine.run([(start + dt.timedelta(minutes=5 * i), p) for i, p in enumerate(prices)])
+    path = [(start + dt.timedelta(minutes=5 * i), p) for i, p in enumerate(prices)]
+    # Held to expiry: a bar at its close, so the comparison is of settled books.
+    path.append((dt.datetime.combine(expiry, dt.time(15, 30), tzinfo=IST), prices[-1]))
+    return engine.run(path)
 
 
 # Falls 200, then rallies 600 through the anchor and settles near the high --

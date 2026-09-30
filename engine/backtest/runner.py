@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -28,6 +28,7 @@ from engine.backtest import metrics as metrics_mod
 from engine.backtest.metrics import EquityPoint, Metrics
 from engine.backtest.providers import PriceProvider, PriceRequest
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE
+from engine.forward.fills import FillModel
 from engine.pricing.costs import CostModel
 from engine.strategy.condor import (
     Condor,
@@ -70,6 +71,16 @@ class BacktestParams:
     roll_to_next_expiry: bool = True
     min_dte: int = 1
     label: str = ""
+    # The lot size of the contract expiring on a date. None: the strategy's
+    # own `lot_size` for every trade. A run over years must not size a 2022
+    # trade at today's lot (see engine/data/lot_sizes.py).
+    lot_size_for: Callable[[dt.date], int] | None = None
+    # How a traded price becomes a fill: half the bid-ask spread against the
+    # trader on every leg opened or closed early (not at expiry, which settles
+    # in cash). None fills at the traded price itself -- frictionless, for
+    # isolating strategy behaviour. A backtest job always sets it, to the
+    # same model the live run uses.
+    fill_model: FillModel | None = None
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -280,6 +291,11 @@ class Backtest:
             out[leg] = (quote.price, quote.source)
         return out
 
+    def _fill(self, price: float, side: Side) -> float:
+        """What a leg traded at `price` fills at, on `side`."""
+        model = self.params.fill_model
+        return price if model is None else model.trade_fill(price, side).price
+
     def _mark(self, condor: Condor, when: dt.datetime, spot: float) -> dict[Leg, float]:
         marks: dict[Leg, float] = {}
         for fl in condor.legs:
@@ -409,9 +425,16 @@ class Backtest:
                         (when, passed.level,
                          f"passed while India VIX was above {limit:g}; not opened")
                     )
+            # The contract's own lot size, so quantities, costs, max loss and
+            # P&L are in the units that contract actually traded in.
+            strategy = params.strategy
+            if params.lot_size_for is not None and expiry is not None:
+                size = params.lot_size_for(expiry)
+                if size != strategy.lot_size:
+                    strategy = replace(strategy, lot_size=size)
             for trigger in fresh:
                 try:
-                    legs = _legs_for(trigger.level, ladder, params.strategy)
+                    legs = _legs_for(trigger.level, ladder, strategy)
                 except ValueError as exc:
                     result.skipped.append((when, trigger.level, str(exc)))
                     continue
@@ -421,11 +444,12 @@ class Backtest:
                     continue
 
                 filled = [
-                    FilledLeg(leg=leg, entry_price=price, source=source)
+                    FilledLeg(leg=leg, entry_price=self._fill(price, leg.side), source=source)
                     for leg, (price, source) in priced.items()
                 ]
                 entry_costs = sum(
-                    params.costs.leg_cost(fl.leg.side, fl.entry_price, fl.leg.qty) for fl in filled
+                    params.costs.leg_cost(fl.leg.side, fl.entry_price, fl.leg.qty, when.date())
+                    for fl in filled
                 ) + sum(params.costs.slippage(fl.leg.qty) for fl in filled)
 
                 kind, k = _kind_for(trigger.level, ladder, params.strategy)
@@ -435,7 +459,7 @@ class Backtest:
                     entry_time=when,
                     expiry=expiry,
                     legs=filled,
-                    config=params.strategy,
+                    config=strategy,
                     entry_costs=entry_costs,
                     index=next_index,
                     side=trigger.side,
@@ -472,13 +496,15 @@ class Backtest:
                     # default and what every API path sends today -- but it is
                     # a setting, and a setting that half-works is worse than
                     # one that does not exist.
+                    # Closed crossing the spread the other way, as live.
+                    exits = {fl.leg: self._fill(marks[fl.leg], _flip(fl.leg.side)) for fl in condor.legs}
                     exit_costs = sum(
-                        params.costs.leg_cost(_flip(fl.leg.side), marks[fl.leg], fl.leg.qty)
+                        params.costs.leg_cost(_flip(fl.leg.side), exits[fl.leg], fl.leg.qty, when.date())
                         + params.costs.slippage(fl.leg.qty)
                         for fl in condor.legs
                     )
                     for fl in condor.legs:
-                        fl.exit_price = marks[fl.leg]
+                        fl.exit_price = exits[fl.leg]
                     status = (
                         CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
                     )
@@ -495,7 +521,13 @@ class Backtest:
             unrealised = 0.0
             for condor in open_condors:
                 marks = self._mark(condor, when, spot)
-                unrealised += condor.mtm(marks)
+                # A leg with no price this bar keeps the position at its last
+                # mark. `mtm` answers 0 then, and the curve showed the whole
+                # position as flat for that bar -- a false jump in equity and
+                # in drawdown.
+                if len(marks) == len(condor.legs):
+                    condor.open_pnl = condor.mtm(marks)
+                unrealised += condor.open_pnl or 0.0
 
             equity.append(
                 EquityPoint(
@@ -506,26 +538,14 @@ class Backtest:
                 )
             )
 
-        # Anything still open at the end of the range settles at the last spot.
-        last_when, last_spot = spots[-1]
-        settled_at_end = 0
-        for condor in condors:
-            if condor.is_open:
-                self._settle(condor, last_when, last_spot, params, reason="end of backtest range")
-                realised.append(condor.realised_pnl())
-                cumulative_realised += condor.realised_pnl()
-                holding_days.append((last_when - condor.entry_time).total_seconds() / 86_400)
-                settled_at_end += 1
-
-        if settled_at_end and equity:
-            # Those settlements happen after the final bar's equity point was
-            # recorded, so the curve used to end below the reported net P&L --
-            # and drawdown, Sharpe and CAGR were all computed from that
-            # truncated curve. The last bar is the settlement bar, so correct
-            # it in place rather than adding a point the series never had.
-            final = equity[-1]
-            final.equity = cumulative_realised
-            final.open_condors = 0
+        # Positions still open when the range ends stay open, marked at the
+        # last bar's prices. They used to be "settled" at intrinsic against the
+        # last spot as if they expired then: a 27 Oct condor opened on 29 Sep,
+        # out of the money with four weeks to run, booked its whole credit as
+        # profit and read "Held to expiry". What an open position is worth is
+        # its market value, which is what the final equity point already holds.
+        open_at_end = [c for c in condors if c.is_open]
+        open_pnl = sum(c.open_pnl or 0.0 for c in open_at_end)
 
         draws = metrics_mod.drawdown_series([p.equity for p in equity])
         for point, draw in zip(equity, draws):
@@ -538,7 +558,9 @@ class Backtest:
             realised=realised,
             equity=equity,
             total_credit=sum(c.credit for c in condors),
-            total_costs=sum(c.entry_costs + c.exit_costs for c in condors),
+            total_costs=sum(c.entry_costs + c.exit_costs for c in condors if not c.is_open),
+            open_positions=len(open_at_end),
+            open_pnl=open_pnl,
             capital_at_risk=peak_risk,
             max_concurrent=max_concurrent,
             holding_days=holding_days,
@@ -651,16 +673,17 @@ class Backtest:
     ) -> None:
         """Settle every leg at intrinsic value.
 
-        Index options cash-settle, so there is no exit brokerage on an expiry
-        — only STT on in-the-money shorts, which the cost model applies.
+        Index options cash-settle: no order, so no brokerage or exchange
+        charge -- only STT on exercise, paid by the holder of an in-the-money
+        long. It used to charge the full selling charges to in-the-money
+        shorts instead, and nothing to the longs that actually pay.
         """
         exit_costs = 0.0
         for fl in condor.legs:
             intrinsic = fl.leg.intrinsic(spot)
             fl.exit_price = intrinsic
             fl.exit_source = PriceSource.CHOICE
-            if intrinsic > 0 and fl.leg.side is Side.SELL:
-                exit_costs += params.costs.leg_cost(Side.SELL, intrinsic, fl.leg.qty)
+            exit_costs += params.costs.settlement_cost(fl.leg.side, intrinsic, fl.leg.qty, when.date())
         condor.close(when, reason, CondorStatus.EXPIRED, exit_costs)
 
 

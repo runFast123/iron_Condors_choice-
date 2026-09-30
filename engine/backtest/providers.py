@@ -292,10 +292,16 @@ class ExchangeAnchoredPriceProvider:
         )
         if today is not None and not today.liquid:
             today = None
+        # The day's own figures -- its closing trade, its low and high, and
+        # whether it traded enough to count -- are known at its close and not
+        # before. A 10:05 price held inside that day's full range knew a low
+        # that might not print until 14:30.
+        at_close = self.daily_bars or request.when.time() >= LAST_TRADE_FROM
+        if not at_close:
+            today = None
         if today is not None:
             closing = today.close if self.daily_bars else today.last
-            at_close = self.daily_bars or request.when.time() >= LAST_TRADE_FROM
-            if at_close and closing:
+            if closing:
                 self.exchange_prices += 1
                 return Quote(price=float(closing), source=PriceSource.EXCHANGE)
 

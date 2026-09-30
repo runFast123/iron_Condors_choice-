@@ -50,6 +50,11 @@ def observe() -> dict:
     params = BacktestParams(strategy=StrategyConfig(lots=1, lot_size=75), costs=CostModel())
     engine = Backtest(params, ModelPriceProvider(surface=SURFACE), weekly_expiry_resolver([EXPIRY]))
     path = [(START + dt.timedelta(minutes=5 * i), p) for i, p in enumerate(PRICES)]
+    # Held to its expiry, settling at the path's last level. The fixture was
+    # recorded when positions open at the end of a range were settled there
+    # at the last spot; settled at expiry at that same level, every rung,
+    # fill and P&L is unchanged -- which is the point of this check.
+    path.append((dt.datetime.combine(EXPIRY, dt.time(15, 30), tzinfo=IST), PRICES[-1]))
     result = engine.run(path)
     return {
         "prices": PRICES,

@@ -33,10 +33,18 @@ class EquityPoint:
 
 @dataclass
 class Metrics:
+    # Closed trades: settled at expiry or closed by an exit. What the trade
+    # statistics below describe, as a strategy report does.
     net_pnl: float = 0.0
     gross_pnl: float = 0.0
     total_costs: float = 0.0
     total_credit: float = 0.0
+    # Positions still open when the range ended, marked at the last prices.
+    # Reported apart, never as if they had closed.
+    open_positions: int = 0
+    open_pnl: float = 0.0
+    # Closed and open together: where the equity curve ends.
+    total_pnl: float = 0.0
 
     condors: int = 0
     wins: int = 0
@@ -146,8 +154,14 @@ def compute(
     holding_days: Sequence[float] = (),
     real_price_fraction: float = 0.0,
     modeled_quotes: int = 0,
+    open_positions: int = 0,
+    open_pnl: float = 0.0,
 ) -> Metrics:
-    """Assemble the metric set from per-condor P&L and the equity curve."""
+    """Assemble the metric set from per-condor P&L and the equity curve.
+
+    `realised` is the closed trades; `open_pnl` the mark of the positions
+    still open at the end, reported apart.
+    """
     metrics = Metrics(
         condors=len(realised),
         total_credit=total_credit,
@@ -156,6 +170,9 @@ def compute(
         max_concurrent=max_concurrent,
         real_price_fraction=real_price_fraction,
         modeled_quotes=modeled_quotes,
+        open_positions=open_positions,
+        open_pnl=open_pnl,
+        total_pnl=open_pnl,
     )
     if not realised:
         return metrics
@@ -172,6 +189,7 @@ def compute(
     losses = [p for p in realised if p < 0]
 
     metrics.net_pnl = sum(realised)
+    metrics.total_pnl = metrics.net_pnl + open_pnl
     metrics.gross_pnl = metrics.net_pnl + total_costs
     metrics.wins = len(wins)
     metrics.losses = len(losses)

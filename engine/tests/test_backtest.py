@@ -43,11 +43,17 @@ def spot_path(prices: list[float], start: dt.datetime = START, minutes: int = 5)
     return [(start + dt.timedelta(minutes=minutes * i), p) for i, p in enumerate(prices)]
 
 
-def run(prices, params=None, provider=None, expiries=(EXPIRY,), minutes=5):
+def run(prices, params=None, provider=None, expiries=(EXPIRY,), minutes=5, to_expiry=True):
+    """Replay `prices`, then -- unless `to_expiry` is False -- a bar at the
+    last expiry's close at the last price, so a position held to expiry is
+    settled rather than left open when the range ends."""
     params = params or BacktestParams(strategy=cfg(), costs=ZERO_COST)
     provider = provider or model_provider()
     engine = Backtest(params, provider, weekly_expiry_resolver(list(expiries)))
-    return engine.run(spot_path(prices, minutes=minutes))
+    path = spot_path(prices, minutes=minutes)
+    if to_expiry:
+        path.append((dt.datetime.combine(max(expiries), dt.time(15, 30), tzinfo=IST), prices[-1]))
+    return engine.run(path)
 
 
 # ============================================================== pass 1
@@ -99,7 +105,7 @@ def test_declining_market_builds_the_ladder():
 
 def test_equity_curve_is_produced_for_every_bar():
     prices = [24_000] * 30
-    result = run(prices)
+    result = run(prices, to_expiry=False)
     assert len(result.equity) == len(prices)
     assert all(p.drawdown <= 0 for p in result.equity)
     assert result.equity[0].spot == 24_000
@@ -426,3 +432,23 @@ def test_payoff_never_exceeds_the_stated_max_profit():
         while probe <= condor.level + 3_000:
             assert condor.payoff_at_expiry(probe) <= condor.max_profit + 0.01
             probe += 50.0
+
+
+# ============================================ each contract at its own lot size
+
+
+def test_each_contract_trades_at_the_lot_size_of_its_expiry():
+    """A backtest over years sized every trade at today's lot."""
+    from engine.data.lot_sizes import nifty_lot_size
+
+    assert [nifty_lot_size(dt.date(y, m, d)) for y, m, d in
+            [(2020, 3, 26), (2021, 7, 22), (2021, 7, 29), (2024, 4, 25), (2024, 5, 2),
+             (2024, 12, 26), (2025, 1, 2), (2025, 1, 30), (2025, 12, 30), (2026, 1, 6)]] == \
+        [75, 75, 50, 50, 25, 25, 75, 25, 75, 65]
+    far = dt.date.today() + dt.timedelta(days=30)
+    assert nifty_lot_size(far, current=70) == 70, "a listed contract's own size wins"
+
+    params = BacktestParams(strategy=cfg(lot_size=65), costs=ZERO_COST, lot_size_for=lambda e: 25)
+    result = run([24_000] * 5, params=params)
+    assert {fl.leg.qty for fl in result.condors[0].legs} == {25}
+    assert result.condors[0].config.lot_size == 25

@@ -39,6 +39,8 @@ from engine.backtest.serialise import empty_bundle, serialise
 from engine.backtest.vix_series import VixAsOf
 from engine.data import groww, history_store, nse_bhavcopy
 from engine.data.expiry_calendar import MAX_WEEKLY_DTE, confirm_derived_expiries, expiry_calendar
+from engine.data.lot_sizes import nifty_lot_size
+from engine.forward.fills import FillModel
 from engine.data.market_calendar import MARKET_CLOSE, MarketCalendar
 from engine.choice.errors import ChoiceAuthError, ChoiceError
 from engine.choice.instruments import HistoricalInstruments
@@ -69,7 +71,13 @@ log = logging.getLogger(__name__)
 #        expires on the day the exchange listed (30 Mar 2026, not 31 Mar).
 #   7 -> a leg Choice no longer serves is priced from the recorded one-minute
 #        history's real trades before the backup source or the model.
-RESULT_VERSION = 7
+#   8 -> positions open when the range ends stay open, marked to market (they
+#        were settled at intrinsic against the last spot, booking a month-out
+#        condor's whole credit); each contract at its own lot size; charges
+#        at the rates in force on the trade date, STT on exercise charged to
+#        in-the-money longs; fills pay half the bid-ask spread, as live; no
+#        mid-day price held inside a range not yet traded.
+RESULT_VERSION = 8
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
 #: first, since it is the one every older result is missing.
@@ -696,6 +704,12 @@ class BacktestRunner:
             anchor_mode=p.get("anchor_mode"),
             roll_to_next_expiry=bool(p.get("roll", True)),
             label=f"NIFTY ladder {first_day}..{last_day}",
+            # Each contract at its own lot size: 75, 50, 25, 75 and 65 since
+            # 2018. Today's for every year overstated a 2022 run by 30%.
+            lot_size_for=lambda expiry: nifty_lot_size(expiry, current=lot_size),
+            # Every leg opened or closed early pays half the bid-ask spread,
+            # exactly as the live run's fills do.
+            fill_model=FillModel(),
         )
         expiry_for = weekly_expiry_resolver(expiries, min_dte=1)
 
@@ -1133,6 +1147,12 @@ class BacktestRunner:
             "coverage": market.coverage_summary(since=report_mark),
             "failures": market.failures(since=report_mark)[:50],
             "lot_size": lot_size,
+            # The lot sizes this run's contracts actually traded at, oldest
+            # first -- one figure only when the range stayed inside one.
+            "lot_sizes": sorted(
+                {c.config.lot_size for c in result.condors},
+                key=lambda size: min(c.entry_time for c in result.condors if c.config.lot_size == size),
+            ),
         }
         job.result = serialise(result, provenance)
 

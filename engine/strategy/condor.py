@@ -305,6 +305,10 @@ class PositionUnit:
     #: Steps from the anchor, where the strategy counts in steps. None for a
     #: ladder rung, which is identified by its level rather than its distance.
     k: int | None = None
+    #: A backtest's latest mark-to-market of an open position, net of entry
+    #: costs; what it is worth if the range ends with it still open. None
+    #: until it has been marked with every leg priced.
+    open_pnl: float | None = None
 
     # ------------------------------------------------------------- economics
 
