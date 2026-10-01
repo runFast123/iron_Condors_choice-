@@ -84,6 +84,11 @@ class BacktestParams:
     # One campaign on one expiry, replayed: on its expiry day nothing more
     # opens (as everywhere) and that is the end of it, not a missing expiry.
     single_campaign: bool = False
+    # The live run's daily loss limit: once a day's P&L -- the book against
+    # where it stood at the previous session's last bar, so a gap counts as
+    # the new day's -- reaches minus this, nothing more opens that day. Open
+    # positions are held. None: no limit, as a plain backtest has always run.
+    daily_loss_limit: float | None = None
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -369,6 +374,13 @@ class Backtest:
         # separate spells that made, and the readings it had to go without.
         gated_bars = paused_bars = spells = no_reading = 0
 
+        # The daily loss limit, kept exactly as the live run keeps it.
+        loss_limit = abs(params.daily_loss_limit) if params.daily_loss_limit else None
+        risk_day: dt.date | None = None
+        day_base: float | None = None
+        last_equity: float | None = None
+        halted_on: dt.date | None = None
+
         for i, (when, spot) in enumerate(spots):
             try:
                 expiry = self.expiry_for(when.date())
@@ -436,6 +448,9 @@ class Backtest:
                 if size != strategy.lot_size:
                     strategy = replace(strategy, lot_size=size)
             for trigger in fresh:
+                if halted_on == when.date():
+                    result.skipped.append((when, trigger.level, "daily loss limit hit today; not opened"))
+                    continue
                 try:
                     legs = _legs_for(trigger.level, ladder, strategy)
                 except ValueError as exc:
@@ -540,6 +555,14 @@ class Backtest:
                     spot=spot,
                 )
             )
+            if loss_limit is not None:
+                today, total = when.date(), cumulative_realised + unrealised
+                if risk_day != today:
+                    risk_day = today
+                    day_base = last_equity if last_equity is not None else total
+                last_equity = total
+                if total - day_base <= -loss_limit:
+                    halted_on = today
 
         # Positions still open when the range ends stay open, marked at the
         # last bar's prices. They used to be "settled" at intrinsic against the

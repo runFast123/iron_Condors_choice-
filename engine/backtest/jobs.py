@@ -739,6 +739,7 @@ class BacktestRunner:
             # exactly as the live run's fills do.
             fill_model=FillModel(),
             single_campaign=pinned is not None,
+            daily_loss_limit=float(p["daily_loss_limit"]) if p.get("daily_loss_limit") else None,
         )
         if pinned is not None:
             expiries, derived_expiries = [pinned], set()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 
 import pytest
 
@@ -118,11 +119,10 @@ def test_the_vix_rule_holds_entries_at_the_assumed_level(synthetic):
 def test_nothing_opens_on_expiry_day(synthetic):
     now, expiry = _now_and_expiry()
     config = StrategyConfig(lots=1, lot_size=65)
-    campaign = simulate._Campaign(config, _book(expiry), simulate.ModelPriceProvider(surface=simulate.from_vix(14.0)),
-                                  simulate.CostModel(), simulate.FillModel(), True)
+    campaign = simulate._Campaign(config, _book(expiry), 0.14, now, 22_500.0,
+                                  simulate.CostModel(), simulate.FillModel(), None)
     on_expiry = [(dt.datetime.combine(expiry, dt.time(10, 0), tzinfo=IST), 22_000.0 - 100 * i) for i in range(10)]
-    _, opened = campaign.run(on_expiry)
-    assert opened == 0
+    assert campaign.run(simulate.Path(on_expiry, {})).opened == 0
 
 
 def test_a_steady_fall_opens_the_ladder_and_loses(synthetic):
@@ -142,6 +142,120 @@ def test_a_plan_beyond_the_calendar_is_refused(synthetic):
     with pytest.raises(ValueError):
         simulate.plan(market=None, config=StrategyConfig(lots=1, lot_size=65), book=_book(dt.date(2026, 10, 25)),
                       spot=22_500.0, vix=0.14, now=now, paths=100)
+
+
+def test_the_historys_trend_is_not_a_forecast():
+    """Two years of NIFTY rising is not a reason to expect it to keep rising:
+    the drift is taken out, and only the moves around it are drawn."""
+    import random
+    import statistics
+
+    rng = random.Random(3)
+    rising = [simulate.Session(dt.date(2025, 1, 1) + dt.timedelta(days=i),
+                               [rng.gauss(0.0004, 0.001) for _ in range(25)], 0.14) for i in range(300)]
+    now, expiry = _now_and_expiry()
+    days = [now.date() + dt.timedelta(days=i) for i in range(1, 19)]
+    paths = simulate._paths(rising, now, 22_500.0, 0.14, days, 400, seed=5)
+    drift = statistics.fmean(math.log(p.bars[-1][1] / 22_500.0) for p in paths)
+    assert abs(drift) < 0.004, f"{drift:.4f}: the history's +18% a month must not carry through"
+
+
+def test_vix_moves_with_the_session_drawn():
+    """A sell-off day lifts the path's VIX the way it lifted the real one, and
+    the sessions after it move more: volatility clusters."""
+    import statistics
+
+    calm = simulate.Session(dt.date(2025, 1, 1), [0.0004] * 25, 0.14, 0.13)
+    selloff = simulate.Session(dt.date(2025, 1, 2), [-0.0016] * 25, 0.14, 0.18)
+    now, _ = _now_and_expiry()
+    days = [now.date() + dt.timedelta(days=i) for i in range(1, 4)]
+    paths = simulate._paths([calm, selloff] * 50, now, 22_500.0, 0.14, days, 300, seed=1)
+    moves, lifts = [], []
+    for p in paths:
+        first = [s for w, s in p.bars if w.date() == days[0]]
+        moves.append(math.log(first[-1] / 22_500.0))
+        lifts.append(math.log(p.vix[days[1]] / p.vix[days[0]]))
+    assert statistics.correlation(moves, lifts) < -0.9
+    assert all(p.vix[days[0]] == 0.14 for p in paths), "every path starts at the VIX assumed"
+
+
+def test_expiry_settles_on_the_last_half_hour():
+    """As the exchange settles: the average of the final half hour, not the last print."""
+    expiry = dt.date(2026, 10, 27)
+    at = lambda h, m: dt.datetime.combine(expiry, dt.time(h, m, 59), tzinfo=IST)  # noqa: E731
+    bars = [(at(10, 14), 21_000.0), (at(15, 14), 22_000.0), (at(15, 29), 22_100.0)]
+    assert simulate.settlement_price(bars, expiry) == 22_050.0
+
+
+def _crash_then_expiry(now, expiry):
+    """Twenty-five bars falling 1,500 points on the day, then flat to expiry."""
+    day = now.date()
+    bars = [(dt.datetime.combine(day, t, tzinfo=IST), 22_500.0 - 60.0 * (i + 1))
+            for i, t in enumerate(simulate.BAR_CLOSES)]
+    bars += [(dt.datetime.combine(expiry, t, tzinfo=IST), 21_000.0) for t in simulate.BAR_CLOSES[-2:]]
+    return simulate.Path(bars, {})
+
+
+def test_the_daily_loss_limit_holds_back_rungs_as_live():
+    now = dt.datetime.combine(dt.date(2026, 10, 1), dt.time(9, 0), tzinfo=IST)
+    expiry = dt.date(2026, 10, 27)
+    config = StrategyConfig(lots=1, lot_size=65, max_condors=20)
+    path = _crash_then_expiry(now, expiry)
+
+    def run(limit, book=None):
+        return simulate._Campaign(config, book or _book(expiry), 0.14, now, 22_500.0,
+                                  simulate.CostModel(), simulate.FillModel(), limit).run(path)
+
+    free, limited = run(None), run(3_000.0)
+    assert free.held_back == 0 and free.opened >= 10
+    assert limited.held_back > 0 and limited.opened + limited.held_back == free.opened
+    # A run that has already lost the limit today opens nothing more today.
+    lost = simulate.Book(expiry, [], 0.0, None, day_pnl=-3_500.0)
+    assert run(3_000.0, lost).opened == 0
+    halted = simulate.Book(expiry, [], 0.0, None, halted_today=True)
+    assert run(None, halted).opened == 0
+
+
+def test_the_backtest_keeps_the_daily_loss_limit_too():
+    """A replay must hold back what the live run would have: the same limit,
+    measured from the previous session's last bar."""
+    from engine.backtest.providers import ModelPriceProvider
+    from engine.backtest.runner import Backtest, BacktestParams, weekly_expiry_resolver
+    from engine.pricing.costs import ZERO_COST
+    from engine.pricing.iv_surface import IVSurface
+
+    expiry = dt.date(2026, 10, 27)
+    start = dt.datetime(2026, 10, 5, 9, 15, tzinfo=IST)
+    # Two sessions, each falling 1,000 points in ten-minute steps.
+    spots = [(start + dt.timedelta(days=d, minutes=10 * i), 23_000.0 - 1_000 * d - 50.0 * i)
+             for d in range(2) for i in range(21)]
+
+    def run(limit):
+        return Backtest(
+            BacktestParams(strategy=StrategyConfig(lots=1, lot_size=65, max_condors=40), costs=ZERO_COST,
+                           daily_loss_limit=limit),
+            ModelPriceProvider(surface=IVSurface(atm_vol=0.14)),
+            weekly_expiry_resolver([expiry]),
+        ).run(spots)
+
+    free, limited = run(None), run(2_000.0)
+    held = [s for s in limited.skipped if "daily loss limit" in s[2]]
+    assert held and len(limited.condors) == len(free.condors) - len(held)
+    assert {s[0].date() for s in held} == {start.date(), (start + dt.timedelta(days=1)).date()}, \
+        "the limit resets each session"
+
+
+def test_a_replay_carries_the_runs_loss_limit():
+    params = replay.backtest_params({**SETTINGS, "daily_loss_limit": 25_000.0}, CAMPAIGN)
+    assert params["daily_loss_limit"] == 25_000.0
+    assert replay.merged_settings(SETTINGS, {"daily_loss_limit": 10_000})["daily_loss_limit"] == 10_000
+
+
+def test_two_plans_can_be_compared_path_by_path(synthetic):
+    a = _plan(StrategyConfig(lots=1, lot_size=65))
+    b = _plan(StrategyConfig(lots=1, lot_size=65, max_down=2))
+    assert len(a["paths_pnl"]) == len(b["paths_pnl"]) == 200
+    assert a["nifty_at_expiry"] == b["nifty_at_expiry"] and a["vix_at_expiry"] == b["vix_at_expiry"]
 
 
 # ================================================================== api

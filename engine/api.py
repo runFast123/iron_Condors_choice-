@@ -1586,6 +1586,8 @@ _PLAN_FIELDS = {
     "min_entry_dte": int, "min_credit_ratio": float, "full_band_steps": int, "half_mode": str,
     "debit_shift": float, "max_put_spreads": int, "max_call_spreads": int,
 }
+#: Run settings a plan may change that are not the strategy's.
+_PLAN_RUN_FIELDS = {"daily_loss_limit": float}
 
 
 @app.post("/playground/plan", dependencies=[Depends(check_engine_key)])
@@ -1608,6 +1610,10 @@ def playground_plan(
         if key in body.settings:
             value = body.settings[key]
             changes[key] = None if value in (None, "") else kind(value)
+    loss_limit = runner.daily_loss_limit
+    if "daily_loss_limit" in body.settings:
+        value = body.settings["daily_loss_limit"]
+        loss_limit = None if value in (None, "", 0) else abs(float(value))
     if not hasattr(runner.strategy, "full_band_steps"):
         for key in ("full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads"):
             changes.pop(key, None)
@@ -1630,6 +1636,10 @@ def playground_plan(
             open_units=[] if fresh else [u for u in units if u.is_open],
             realised=0.0 if fresh else sum(u.realised_pnl() for u in units if not u.is_open),
             ladder_state=None if fresh else runner.ladder.dump_state(),
+            # Where today's loss limit stands on the live run, so a plan made
+            # mid-session starts the day where the run actually is.
+            day_pnl=0.0 if fresh else float(runner.day_pnl() or 0.0),
+            halted_today=False if fresh else runner.entries_halted(dt.datetime.now(tz=IST).date()),
         )
         spot = body.spot or runner.last_spot
         vix = body.vix or runner.last_vix
@@ -1646,8 +1656,9 @@ def playground_plan(
         def progress(value: float, message: str) -> None:
             job.progress, job.message = value, message
         out = pg_simulate.plan(market=market, config=config, book=book, spot=float(spot),
-                               vix=float(vix) / 100.0, paths=body.paths, progress=progress)
-        out["settings"] = {**(runner.settings()), **{k: v for k, v in changes.items()}}
+                               vix=float(vix) / 100.0, paths=body.paths, daily_loss_limit=loss_limit,
+                               progress=progress)
+        out["settings"] = {**(runner.settings()), **changes, "daily_loss_limit": loss_limit}
         return out
 
     job = playground_jobs.start(session.user_id, "plan",
