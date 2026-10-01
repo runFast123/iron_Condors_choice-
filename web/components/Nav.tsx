@@ -39,6 +39,7 @@ const SECTIONS: { title: string; items: Item[] }[] = [
     items: [
       { href: "/forward", label: "Live Monitor", run: true, icon: "M12 2v4m0 12v4M2 12h4m12 0h4M7.8 7.8l2.8 2.8m2.8 2.8 2.8 2.8m0-8.4-2.8 2.8m-2.8 2.8-2.8 2.8" },
       { href: "/forward/log", label: "Log & History", run: true, icon: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" },
+      { href: "/playground", label: "Playground", icon: "M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z" },
     ],
   },
   {

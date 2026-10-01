@@ -55,6 +55,9 @@ export interface RunSettings {
   expiry_cadence: "weekly" | "monthly";
   lots: number;
   step: number;
+  /** Strike distances from the level: the shorts, and the wing's longs. */
+  short_offset?: number;
+  long_offset?: number;
   max_condors: number;
   direction: "down" | "up" | "both";
   anchor_mode: "floor" | "round" | "nearest" | "explicit" | null;

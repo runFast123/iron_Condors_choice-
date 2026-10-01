@@ -216,6 +216,17 @@ export const engine = {
       { token },
     ),
 
+  playgroundCampaigns: (token: string) => call<{ runs: unknown[] }>("/playground/campaigns", { token }),
+
+  playgroundReplay: (token: string, body: Record<string, unknown>) =>
+    call<Record<string, unknown>>("/playground/replay", { method: "POST", token, body }),
+
+  playgroundPlan: (token: string, body: Record<string, unknown>) =>
+    call<Record<string, unknown>>("/playground/plan", { method: "POST", token, body }),
+
+  playgroundJob: (token: string, id: string) =>
+    call<Record<string, unknown>>(`/playground/job?id=${encodeURIComponent(id)}`, { token }),
+
   forwardTicks: (token: string, run?: string) =>
     call<{ ticks: { ts: string; spot: number }[] }>(`/forward/ticks${runQuery(run)}`, { token }),
 };
