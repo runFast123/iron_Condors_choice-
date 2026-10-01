@@ -53,16 +53,25 @@ export interface PlanStats {
   p5: number; p25: number; p75: number; p95: number; worst: number; best: number; es5: number;
 }
 
+export interface Quantiles { p5: number; p25: number; p50: number; p75: number; p95: number }
+
 export interface PlanResult {
   settings: RunSettings;
   inputs: {
     spot: number; vix: number; expiry: string; sessions_left: number; paths: number; seed: number;
     realised_so_far: number; open_positions: number; fresh_campaign: boolean;
     entries_paused_by_vix: boolean; history_sessions: number; history_from: string; history_to: string;
+    daily_loss_limit: number | null; day_pnl: number; halted_today: boolean;
+    /** The history's own trend over the sessions left, removed from every path. */
+    drift_removed_pct: number;
   };
   pnl: PlanStats;
+  /** Each path's outcome, in path order: two plans share their paths. */
+  paths_pnl: number[];
   histogram: { lo: number; hi: number; count: number }[];
   rungs: { mean: number; max: number };
-  nifty_at_expiry: { p5: number; p25: number; p50: number; p75: number; p95: number };
+  loss_limit: { share_of_paths: number; rungs_held_back: number };
+  nifty_at_expiry: Quantiles;
+  vix_at_expiry: Quantiles;
   ends_at: { spot: number; pnl: number }[];
 }

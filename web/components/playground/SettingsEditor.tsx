@@ -41,6 +41,7 @@ export const FIELDS: Field[] = [
     ],
   },
   { key: "lots", label: "Lots", hint: "per position", kind: "number" },
+  { key: "daily_loss_limit", label: "Daily loss limit", hint: "₹ lost in a day stops new positions for it; blank = none", kind: "optional", step: 1000 },
   { key: "full_band_steps", label: "Core band", hint: "steps that open a full condor", kind: "number", hicOnly: true },
   { key: "max_put_spreads", label: "Put spreads", hint: "most below the band", kind: "number", hicOnly: true },
   { key: "max_call_spreads", label: "Call spreads", hint: "most above the band", kind: "number", hicOnly: true },

@@ -6,6 +6,32 @@ import { inr, inrCompact, istDay } from "@/lib/format";
 const W = 900;
 const PAD = { top: 14, right: 14, bottom: 28, left: 64 };
 
+export type Bin = { lo: number; hi: number; count: number; tail?: "low" | "high" };
+
+/**
+ * Histograms of several outcome sets on one set of edges, so their shapes can
+ * be compared bar for bar. The edges span the pooled 1st to 99th percentile;
+ * the outer 1% at each end is counted into the end bars, marked as tails,
+ * rather than stretching the axis until the body is a sliver.
+ */
+export function sharedBins(series: number[][], bins = 24): Bin[][] {
+  const pooled = series.flat().sort((a, b) => a - b);
+  if (!pooled.length) return series.map(() => []);
+  const q = (p: number) => pooled[Math.min(pooled.length - 1, Math.max(0, Math.round(p * (pooled.length - 1))))];
+  let lo = q(0.01), hi = q(0.99);
+  if (hi <= lo) { lo = pooled[0]; hi = pooled[pooled.length - 1] + 1; }
+  const width = (hi - lo) / bins;
+  const lowTail = pooled[0] < lo, highTail = pooled[pooled.length - 1] > hi;
+  return series.map((values) => {
+    const counts = new Array(bins).fill(0) as number[];
+    for (const v of values) counts[Math.min(bins - 1, Math.max(0, Math.floor((v - lo) / width)))] += 1;
+    return counts.map((count, i) => ({
+      lo: lo + i * width, hi: lo + (i + 1) * width, count,
+      tail: i === 0 && lowTail ? "low" : i === bins - 1 && highTail ? "high" : undefined,
+    }));
+  });
+}
+
 /**
  * The spread of simulated outcomes: how many paths ended in each P&L band.
  * Losses and profits take the two poles of one diverging pair; a second plan
@@ -16,8 +42,8 @@ export function OutcomeHistogram({
   secondary,
   height = 230,
 }: {
-  primary: { lo: number; hi: number; count: number }[];
-  secondary?: { lo: number; hi: number; count: number }[] | null;
+  primary: Bin[];
+  secondary?: Bin[] | null;
   height?: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -62,14 +88,18 @@ export function OutcomeHistogram({
       {zero != null && <line x1={zero} x2={zero} y1={PAD.top} y2={height - PAD.bottom} stroke="var(--ink-muted)" strokeDasharray="3 3" />}
       {[lo, (lo + hi) / 2, hi].map((v, i) => (
         <text key={i} x={x(v)} y={height - 8} fontSize={11} fill="var(--ink-muted)"
-              textAnchor={i === 0 ? "start" : i === 2 ? "end" : "middle"}>{inrCompact(v)}</text>
+              textAnchor={i === 0 ? "start" : i === 2 ? "end" : "middle"}>
+          {i === 0 && primary[0]?.tail ? "≤ " : i === 2 && primary[primary.length - 1]?.tail ? "≥ " : ""}{inrCompact(v)}
+        </text>
       ))}
       {hover != null && primary[hover] && (
         <g>
           <rect x={Math.min(W - 230, x(primary[hover].lo))} y={PAD.top} width={220} height={40} rx={6}
                 fill="var(--surface)" stroke="var(--border-strong)" />
           <text x={Math.min(W - 230, x(primary[hover].lo)) + 10} y={PAD.top + 17} fontSize={11.5} fill="var(--ink)">
-            {inr(primary[hover].lo)} to {inr(primary[hover].hi)}
+            {primary[hover].tail === "low" ? `${inr(primary[hover].hi)} or worse`
+              : primary[hover].tail === "high" ? `${inr(primary[hover].lo)} or better`
+              : `${inr(primary[hover].lo)} to ${inr(primary[hover].hi)}`}
           </text>
           <text x={Math.min(W - 230, x(primary[hover].lo)) + 10} y={PAD.top + 32} fontSize={11} fill="var(--ink-muted)">
             {(100 * share(primary[hover], total1)).toFixed(1)}% of paths

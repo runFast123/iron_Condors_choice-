@@ -8,7 +8,7 @@ import { useCountUp } from "@/lib/useCountUp";
 import { CampaignStrip } from "@/components/CampaignStrip";
 import { PayoffChart } from "@/components/charts/PayoffChart";
 import { SettingsEditor, type Edits } from "@/components/playground/SettingsEditor";
-import { CompareLines, OutcomeHistogram } from "@/components/playground/Charts";
+import { CompareLines, OutcomeHistogram, sharedBins } from "@/components/playground/Charts";
 
 /** Follow a playground job until it finishes. */
 function useJob<R>(id: string | null): PlaygroundJob<R> | null {
@@ -412,13 +412,20 @@ function PlanResults({ current, plan }: { current: PlaygroundJob<PlanResult> | n
   const a = current!.result!;
   const b = plan?.result ?? null;
   const chosen = b && show === "plan" ? b : a;
+  // One set of edges for both plans, so the bars compare like for like.
+  const paired = Boolean(a.paths_pnl?.length && (!b || b.paths_pnl?.length === a.paths_pnl.length));
+  const [binsA, binsB] = paired ? sharedBins(b ? [a.paths_pnl, b.paths_pnl] : [a.paths_pnl]) : [a.histogram, b?.histogram];
+  const limit = a.inputs.daily_loss_limit;
 
   return (
     <div className="card fade-up" style={{ padding: 16, display: "grid", gap: 16 }}>
       <SectionTitle n={3} title="Where the month can go"
-                    hint={`${num(a.inputs.paths)} simulated months from ${shortDate(a.inputs.expiry)} expiry back to today, drawn from ${num(a.inputs.history_sessions)} real NIFTY sessions (${shortDate(a.inputs.history_from)} – ${shortDate(a.inputs.history_to)}), scaled to India VIX ${a.inputs.vix}.`} />
+                    hint={`${num(a.inputs.paths)} simulated paths from now to the ${shortDate(a.inputs.expiry)} expiry (${a.inputs.sessions_left} session${a.inputs.sessions_left === 1 ? "" : "s"}), built from ${num(a.inputs.history_sessions)} real NIFTY sessions (${shortDate(a.inputs.history_from)} – ${shortDate(a.inputs.history_to)}), starting at India VIX ${a.inputs.vix}. P&L is the campaign's total at expiry, the positions already open included.`} />
       {a.inputs.entries_paused_by_vix && (
         <div className="auth-alert auth-alert-info">At VIX {a.inputs.vix} the run&rsquo;s VIX rule holds new positions back, so the simulation opens none.</div>
+      )}
+      {a.inputs.halted_today && (
+        <div className="auth-alert auth-alert-info">The daily loss limit has already stopped new positions for today; the simulation opens none before tomorrow.</div>
       )}
       <div className={`pg-plan-grid${b ? " has-two" : ""}`}>
         <PlanCard title={b ? "Current settings" : "With the current settings"} r={a} />
@@ -431,7 +438,7 @@ function PlanResults({ current, plan }: { current: PlaygroundJob<PlanResult> | n
           <span><i style={{ background: "var(--neg)" }} /> loss</span>
           {b && <span><i style={{ background: "transparent", borderTop: "2px dashed var(--ink)" }} /> current settings</span>}
         </div>
-        <OutcomeHistogram primary={(b ?? a).histogram} secondary={b ? a.histogram : null} />
+        <OutcomeHistogram primary={(b ? binsB : binsA) ?? a.histogram} secondary={b ? binsA : null} />
       </div>
 
       <div>
@@ -454,27 +461,60 @@ function PlanResults({ current, plan }: { current: PlaygroundJob<PlanResult> | n
       <details className="pg-method">
         <summary>How this is worked out</summary>
         <p>
-          Each simulated session is a real NIFTY session from the last two years, drawn at random: its 15-minute bars,
-          overnight gap included, rescaled from the India VIX it opened with to the VIX assumed here. This is filtered
-          historical simulation, which keeps NIFTY&rsquo;s own fat tails and gaps that a normal model leaves out. On each
-          path the run&rsquo;s own ladder decides bar by bar: the same anchor and opened levels, caps, gap-fills, entry
-          filters and VIX rule. New positions are priced with the engine&rsquo;s option model at that bar&rsquo;s spot and
-          time to expiry, filled half the bid-ask spread against you, and charged the STT and exchange charges in force;
-          everything settles at the path&rsquo;s close on expiry day, with STT on exercised longs.
+          <strong>Paths.</strong> Filtered historical simulation, the way risk desks project a path-dependent book. Each
+          simulated session is a real NIFTY session from the last two years, drawn at random &mdash; its 15-minute bars,
+          overnight gap included &mdash; together with that day&rsquo;s change in India VIX. The path&rsquo;s VIX moves by
+          the drawn change, so a sell-off lifts it as a real one did, and each session is rescaled from the VIX it
+          originally opened at to the path&rsquo;s VIX at that point. NIFTY&rsquo;s fat tails, gaps and volatility
+          clustering are kept, which a normal model leaves out. The history&rsquo;s own trend
+          ({a.inputs.drift_removed_pct >= 0 ? "+" : ""}{a.inputs.drift_removed_pct}% over the sessions left) is removed:
+          no drift is assumed. Realised moves run below implied ones, as they do in the market; that gap is the
+          premium seller&rsquo;s edge and is kept.
         </p>
         <p>
-          Not simulated: take-profit and stop-loss, and India VIX changing during the month (the VIX rule holds at the
-          level assumed). Expected P&amp;L is shown with its 95% sampling margin; both plans use the same paths, so their
-          difference is the settings&rsquo;, not luck&rsquo;s.
+          <strong>Trading.</strong> On each path the run&rsquo;s own ladder decides bar by bar: the same anchor and
+          opened levels, caps, gap-fills, entry filters, the VIX rule at the path&rsquo;s VIX, and the daily loss limit
+          {limit ? ` of ${inr(limit)}` : " (none set)"}, measured as the live run measures it, from the previous
+          session&rsquo;s close. Nothing opens on expiry day. New positions are priced with the engine&rsquo;s option
+          model at that bar&rsquo;s spot, time to expiry and the path&rsquo;s VIX, filled half the bid-ask spread against
+          you, and charged the STT and exchange charges in force. Everything settles against the average of expiry
+          day&rsquo;s final half hour &mdash; the exchange&rsquo;s method for NIFTY&rsquo;s closing price &mdash; with STT
+          on exercised longs.
+        </p>
+        <p>
+          <strong>Reading it.</strong> Expected P&amp;L carries its 95% sampling margin. &ldquo;Bad month&rdquo; is the 5th
+          percentile (95% value-at-risk); &ldquo;average of the worst 5%&rdquo; is the expected shortfall beyond it. Both
+          plans run on the same paths, so their difference is measured path by path and is the settings&rsquo;, not
+          luck&rsquo;s. Not simulated: take-profit and stop-loss. The loss limit is checked when a level is reached, so a
+          dip that recovered before the next level is not seen. The straight-line chart holds VIX where it is now.
         </p>
       </details>
     </div>
   );
 }
 
+/** Two plans on the same paths, compared path by path: the mean difference,
+ *  its 95% margin, and how often each plan came out ahead. */
+function pairedDiff(r: PlanResult, base: PlanResult) {
+  const a = base.paths_pnl, b = r.paths_pnl;
+  if (!a?.length || a.length !== b?.length) return null;
+  const d = b.map((v, i) => v - a[i]);
+  const n = d.length;
+  const mean = d.reduce((s, v) => s + v, 0) / n;
+  const sd = Math.sqrt(d.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, n - 1));
+  // The same comparison in the months that hurt most under the current settings.
+  const worst = a.map((v, i) => [v, i] as const).sort((x, y) => x[0] - y[0]).slice(0, Math.max(1, Math.floor(n / 20)));
+  const inTail = worst.reduce((s, [, i]) => s + d[i], 0) / worst.length;
+  return {
+    mean, margin: 1.96 * sd / Math.sqrt(n), inTail,
+    better: d.filter((v) => v > 0.5).length / n, worse: d.filter((v) => v < -0.5).length / n,
+  };
+}
+
 function PlanCard({ title, r, highlight, compareTo }: { title: string; r: PlanResult; highlight?: boolean; compareTo?: PlanResult }) {
   const mean = useCountUp(r.pnl.mean);
-  const diff = compareTo ? r.pnl.mean - compareTo.pnl.mean : null;
+  const paired = compareTo ? pairedDiff(r, compareTo) : null;
+  const diff = paired ? paired.mean : compareTo ? r.pnl.mean - compareTo.pnl.mean : null;
   return (
     <div className={`pg-plan${highlight ? " is-plan" : ""}`}>
       <div className="pg-plan-title">{title}</div>
@@ -484,9 +524,20 @@ function PlanCard({ title, r, highlight, compareTo }: { title: string; r: PlanRe
       <div className="pg-plan-sub">
         expected P&amp;L, ± {inr(Math.round(1.96 * r.pnl.se))}
         {diff != null && (
-          <> · <span style={{ color: diff >= 0 ? "var(--pos)" : "var(--neg)", fontWeight: 700 }}>{inr(Math.round(diff), { sign: true })}</span> vs current</>
+          <> · <span style={{ color: diff >= 0 ? "var(--pos)" : "var(--neg)", fontWeight: 700 }}>{inr(Math.round(diff), { sign: true })}</span>
+            {paired ? ` ± ${inr(Math.round(paired.margin))}` : ""} vs current</>
         )}
       </div>
+      {paired && (
+        <div className="pg-plan-sub">
+          Better in {pct(paired.better)} of the same months, worse in {pct(paired.worse)}
+          {Math.abs(paired.mean) <= paired.margin ? " — the expected difference is within the noise" : ""}.
+          {" "}In the current settings&rsquo; worst 5% of months it does{" "}
+          <span style={{ color: paired.inTail >= 0 ? "var(--pos)" : "var(--neg)", fontWeight: 700, whiteSpace: "nowrap" }}>
+            {inr(Math.round(Math.abs(paired.inTail)))} {paired.inTail >= 0 ? "better" : "worse"}
+          </span>{" "}on average.
+        </div>
+      )}
       <div className="pg-plan-stats">
         <Stat label="Chance of a loss" value={pct(r.pnl.p_loss)} tone={r.pnl.p_loss > 0.5 ? "neg" : undefined} />
         <Stat label="Typical month" value={inr(Math.round(r.pnl.median), { sign: true })} />
@@ -498,6 +549,10 @@ function PlanCard({ title, r, highlight, compareTo }: { title: string; r: PlanRe
       <div className="pg-plan-sub" style={{ marginTop: 8 }}>
         NIFTY at expiry: {num(Math.round(r.nifty_at_expiry.p5))} – {num(Math.round(r.nifty_at_expiry.p95))} in 9 of 10 paths
         (middle {num(Math.round(r.nifty_at_expiry.p50))}).
+        {r.vix_at_expiry && <> India VIX by then: {r.vix_at_expiry.p5.toFixed(1)} – {r.vix_at_expiry.p95.toFixed(1)}.</>}
+        {r.loss_limit && r.loss_limit.share_of_paths > 0 && (
+          <> The daily loss limit held back a level in {pct(r.loss_limit.share_of_paths)} of paths.</>
+        )}
       </div>
     </div>
   );
