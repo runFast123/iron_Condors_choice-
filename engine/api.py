@@ -1470,6 +1470,199 @@ def forward_campaign(
     return {"run_key": run_key, "campaign": campaign, "bars": bars}
 
 
+# ------------------------------------------------------------- playground
+
+from engine.playground import replay as pg_replay  # noqa: E402
+from engine.playground import simulate as pg_simulate  # noqa: E402
+from engine.playground.jobs import jobs as playground_jobs  # noqa: E402
+
+#: The as-traded replay of each campaign, run once and shared by every edit.
+_BASELINES: dict[tuple[str, str, str], str] = {}
+
+
+def _run_state(session: UserSession, run_key: str) -> tuple[ForwardRunner | None, dict[str, Any] | None]:
+    """A run's runner if the engine drives it, and its state either way --
+    settings included, read back from storage for a run that predates them."""
+    runner = session.runner_for(run_key)
+    if runner is not None:
+        return runner, runner.snapshot()
+    state = forward_state(session=session, run=run_key)["state"]
+    return None, state
+
+
+def _compact_positions(state: dict[str, Any], expiry: str | None = None) -> list[dict[str, Any]]:
+    return [
+        {
+            "level": c["level"], "side": c.get("side"), "expiry": c["expiry"], "entry_time": c["entry_time"],
+            "credit": c["credit"], "max_loss": c["max_loss"], "pnl": c["pnl"], "status": c["status"],
+            "exit_reason": c.get("exit_reason"), "is_open": c["is_open"],
+        }
+        for c in state.get("positions") or []
+        if expiry is None or c["expiry"] == expiry
+    ]
+
+
+@app.get("/playground/campaigns", dependencies=[Depends(check_engine_key)])
+def playground_campaigns(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    """Every run this user has, with its settings and its campaigns."""
+    out = []
+    for summary in _run_summaries(session):
+        _, state = _run_state(session, summary["run_key"])
+        if not state:
+            continue
+        out.append({
+            "run_key": summary["run_key"], "label": summary["label"], "strategy": summary["strategy"],
+            "running": summary["running"], "settings": state.get("settings"),
+            "campaigns": state.get("campaigns") or [],
+            "market": state.get("market"), "vix": state.get("vix"),
+        })
+    return {"runs": out}
+
+
+class ReplayRequest(BaseModel):
+    run: str
+    expiry: str
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/playground/replay", dependencies=[Depends(check_engine_key)])
+def playground_replay(
+    body: ReplayRequest,
+    session: UserSession = Depends(current_user),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """Replay a settled campaign with edited settings, beside the same
+    campaign replayed as traded and what the run actually did."""
+    run_key = slugify_run_key(body.run)
+    _, state = _run_state(session, run_key)
+    campaign = next((c for c in (state or {}).get("campaigns") or [] if c["expiry"] == body.expiry), None)
+    if campaign is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"No campaign expiring {body.expiry} on {run_key!r}.")
+    if campaign["status"] == "active":
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "This campaign is still trading; plan it instead, or replay one that has settled.")
+    settings = state.get("settings")
+    if not settings:
+        raise HTTPException(status.HTTP_409_CONFLICT, "This run's settings could not be read.")
+    edited = pg_replay.merged_settings(settings, body.settings)
+
+    def start(kind_settings: dict[str, Any], label: str):
+        def work(job):
+            def progress(value: float, message: str) -> None:
+                job.progress, job.message = value, message
+            return pg_replay.run_replay(market, session.user_id, kind_settings, campaign, progress)
+        return playground_jobs.start(session.user_id, "replay",
+                                     {"run": run_key, "expiry": body.expiry, "label": label,
+                                      "settings": kind_settings}, work)
+
+    key = (session.user_id, run_key, body.expiry)
+    baseline = playground_jobs.get(session.user_id, _BASELINES.get(key, ""))
+    if baseline is None or baseline.status == "error":
+        baseline = start(dict(settings), "as traded")
+        _BASELINES[key] = baseline.job_id
+    edited_job = start(edited, "your settings")
+    return {
+        "actual": {"campaign": campaign, "positions": _compact_positions(state, body.expiry)},
+        "baseline": baseline.public(with_result=False),
+        "edited": edited_job.public(with_result=False),
+    }
+
+
+class PlanRequest(BaseModel):
+    run: str
+    settings: dict[str, Any] = Field(default_factory=dict)
+    spot: float | None = Field(default=None, gt=0)
+    vix: float | None = Field(default=None, gt=0, le=100)
+    paths: int = Field(default=1000, ge=100, le=5000)
+    fresh: bool = False
+
+
+#: What a plan may change -- the replay's set, without take-profit and
+#: stop-loss: marking every position on every bar of every path is beyond a
+#: request's budget, so they are not simulated rather than simulated wrongly.
+_PLAN_FIELDS = {
+    "step": float, "short_offset": float, "long_offset": float, "lots": int, "max_condors": int,
+    "direction": str, "anchor_mode": str, "max_down": int, "max_up": int, "max_entry_vix": float,
+    "min_entry_dte": int, "min_credit_ratio": float, "full_band_steps": int, "half_mode": str,
+    "debit_shift": float, "max_put_spreads": int, "max_call_spreads": int,
+}
+
+
+@app.post("/playground/plan", dependencies=[Depends(check_engine_key)])
+def playground_plan(
+    body: PlanRequest,
+    session: UserSession = Depends(current_user),
+    market: ChoiceMarketData = Depends(user_market),
+) -> dict[str, Any]:
+    """Simulate the campaign trading now -- or a fresh one -- under settings."""
+    from dataclasses import replace as _replace
+
+    from engine.data.lot_sizes import nifty_lot_size
+
+    run_key = slugify_run_key(body.run)
+    runner = session.runner_for(run_key)
+    if runner is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Plan a running test; this one is not running.")
+    changes: dict[str, Any] = {}
+    for key, kind in _PLAN_FIELDS.items():
+        if key in body.settings:
+            value = body.settings[key]
+            changes[key] = None if value in (None, "") else kind(value)
+    if not hasattr(runner.strategy, "full_band_steps"):
+        for key in ("full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads"):
+            changes.pop(key, None)
+    try:
+        config = _replace(runner.strategy, **changes)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Those settings do not make a valid strategy: {exc}") from exc
+
+    with runner._lock:                                   # noqa: SLF001 - a consistent read
+        expiry = runner.expiry
+        fresh = body.fresh or expiry is None
+        if expiry is None:
+            expiry = nearest_listed_expiry(
+                market.master.expiries(NIFTY), dt.datetime.now(tz=IST).date(),
+                cadence=runner.expiry_cadence, min_days=1,
+            )
+        units = [u for u in runner.condors if u.expiry == expiry]
+        book = pg_simulate.Book(
+            expiry=expiry,
+            open_units=[] if fresh else [u for u in units if u.is_open],
+            realised=0.0 if fresh else sum(u.realised_pnl() for u in units if not u.is_open),
+            ladder_state=None if fresh else runner.ladder.dump_state(),
+        )
+        spot = body.spot or runner.last_spot
+        vix = body.vix or runner.last_vix
+    if expiry is None or not spot:
+        raise HTTPException(status.HTTP_409_CONFLICT, "No price yet to plan from; try once the run has ticked.")
+    if not vix:
+        try:
+            vix, _ = market.india_vix_now()
+        except ChoiceError as exc:
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"India VIX is unavailable: {exc}") from exc
+    config = _replace(config, lot_size=nifty_lot_size(expiry, current=runner.strategy.lot_size))
+
+    def work(job):
+        def progress(value: float, message: str) -> None:
+            job.progress, job.message = value, message
+        out = pg_simulate.plan(market=market, config=config, book=book, spot=float(spot),
+                               vix=float(vix) / 100.0, paths=body.paths, progress=progress)
+        out["settings"] = {**(runner.settings()), **{k: v for k, v in changes.items()}}
+        return out
+
+    job = playground_jobs.start(session.user_id, "plan",
+                                {"run": run_key, "fresh": fresh, "settings": body.settings}, work)
+    return {"job": job.public(with_result=False)}
+
+
+@app.get("/playground/job", dependencies=[Depends(check_engine_key)])
+def playground_job(id: str, session: UserSession = Depends(current_user)) -> dict[str, Any]:
+    job = playground_jobs.get(session.user_id, id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such playground job (they are kept for a while only).")
+    return {"job": job.public(with_result=job.status == "done")}
+
+
 @app.get("/forward/history", dependencies=[Depends(check_engine_key)])
 def forward_history(session: UserSession = Depends(current_user)) -> dict[str, Any]:
     return {"sessions": store.forward_history(session.user_id)}

@@ -1957,6 +1957,8 @@ def run_settings(
         "expiry_cadence": expiry_cadence,
         "lots": strategy.lots,
         "step": strategy.step,
+        "short_offset": strategy.short_offset,
+        "long_offset": strategy.long_offset,
         "max_condors": strategy.max_condors,
         "direction": strategy.direction,
         "anchor_mode": strategy.anchor_mode,

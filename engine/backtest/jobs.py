@@ -137,6 +137,10 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
     common = dict(
         direction=str(p.get("direction") or "down"),
         anchor_mode=p.get("anchor_mode"),
+        # Wing geometry, when a run asks for a different one (the playground's
+        # "wider wings" what-if); the strategy's own defaults otherwise.
+        **({"short_offset": float(p["short_offset"])} if p.get("short_offset") else {}),
+        **({"long_offset": float(p["long_offset"])} if p.get("long_offset") else {}),
         max_down=p.get("max_down"),
         max_up=p.get("max_up"),
         step=float(p["step"]),
@@ -553,6 +557,16 @@ class BacktestRunner:
         end = dt.datetime.now(tz=IST).date()
         start = end - dt.timedelta(days=int(p["days"]))
         resolution = p["resolution"]
+        # One campaign, exactly: from the moment it began to its expiry, on
+        # that expiry alone. What the playground replays.
+        window = p.get("window") or None
+        start_at: dt.datetime | None = None
+        pinned: dt.date | None = None
+        if window:
+            start_at = dt.datetime.fromisoformat(str(window["start_at"]))
+            pinned = dt.date.fromisoformat(str(window["expiry"])[:10])
+            start = start_at.date()
+            end = min(pinned, end)
 
         # Where this run's fetch reports begin; the list belongs to the session.
         report_mark = len(getattr(market, "reports", []) or [])
@@ -587,6 +601,10 @@ class BacktestRunner:
                 + ". Try a shorter range or a daily resolution."
             )
         spots = spots_from_frame(nifty)
+        if start_at is not None:
+            spots = [(when, spot) for when, spot in spots if when >= start_at]
+            if not spots:
+                raise ChoiceError(f"No NIFTY bars from {start_at:%d %b %H:%M} to {end:%d %b}.")
         session_days = sorted({when.date() for when, _ in spots})
 
         self._step("vix", 0.12, "Checking India VIX")
@@ -720,7 +738,10 @@ class BacktestRunner:
             # Every leg opened or closed early pays half the bid-ask spread,
             # exactly as the live run's fills do.
             fill_model=FillModel(),
+            single_campaign=pinned is not None,
         )
+        if pinned is not None:
+            expiries, derived_expiries = [pinned], set()
         expiry_for = weekly_expiry_resolver(expiries, min_dte=1)
 
         # India VIX as it stood at each bar, for the premium model and the

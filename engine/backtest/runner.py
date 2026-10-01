@@ -81,6 +81,9 @@ class BacktestParams:
     # isolating strategy behaviour. A backtest job always sets it, to the
     # same model the live run uses.
     fill_model: FillModel | None = None
+    # One campaign on one expiry, replayed: on its expiry day nothing more
+    # opens (as everywhere) and that is the end of it, not a missing expiry.
+    single_campaign: bool = False
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -373,7 +376,7 @@ class Backtest:
                 # Past the end of the expiry calendar. Opening is impossible,
                 # but the condors already on the book still have to be marked
                 # and settled, so this skips entries rather than aborting.
-                if not expiry_exhausted:
+                if not expiry_exhausted and not params.single_campaign:
                     result.warnings.append(
                         f"No expiry available from {when.date()} ({exc}). No further condors "
                         "were opened; those already open were still managed to settlement."
