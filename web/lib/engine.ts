@@ -138,6 +138,9 @@ export interface ForwardRunSummary {
   daily_loss_limit: number;
   pnl: { realised: number; unrealised: number; total: number; open_condors: number };
   open_condors: number;
+  /** Not stopped: waiting for a Choice session to be resumed, e.g. after a restart on a closed day. */
+  waiting?: boolean;
+  wait_reason?: string | null;
 }
 
 function runQuery(run?: string): string {

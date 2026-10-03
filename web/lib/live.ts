@@ -4,7 +4,8 @@ import type { UnitKind } from "./types";
 export interface LiveSession {
   /** Paper is the only mode. There is no order-placing path to switch into. */
   mode: "paper";
-  status: "running" | "stopped" | "disconnected";
+  /** waiting: still a live run, waiting for a Choice session to be resumed. */
+  status: "running" | "waiting" | "stopped" | "disconnected";
   stopped_reason: string | null;
   started_at: string | null;
   last_tick: string | null;
@@ -18,6 +19,8 @@ export interface LiveSession {
   /** A stopped run only: whether it can be started again now, and if not why. */
   resumable?: boolean;
   resume_blocked?: string | null;
+  /** A waiting run only: why, and what will bring it back. */
+  wait_reason?: string | null;
 }
 
 /** One expiry's campaign within a run. The run's total mixes every campaign;

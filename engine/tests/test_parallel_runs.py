@@ -462,6 +462,45 @@ def test_a_stopped_run_is_still_shown_with_its_last_state(registry, tmp_path, mo
     assert listed and listed[0]["running"] is False and "daily loss" in listed[0]["stopped_reason"]
 
 
+def test_a_run_waiting_to_resume_is_shown_as_waiting(registry, tmp_path, monkeypatch):
+    """After a restart on a closed day the engine will not log in (every login
+    texts an OTP), so runs wait for the next trading morning -- still marked
+    running, with no runner in memory. Neither list held them, and the
+    dashboard showed no runs at all for a whole weekend."""
+    import json
+    import engine.api as api
+
+    store = Store(tmp_path / "engine.db")
+    monkeypatch.setattr(api, "store", store)
+    monkeypatch.setenv("ENGINE_STATE_DIR", str(tmp_path))
+    session = _session(registry)
+    now = dt.datetime.now(tz=IST).isoformat()
+    store.save_forward(session_id="sess-ladder", user_id=session.user_id, status="running",
+                       started_at=now, stopped_reason=None, state={"version": 2}, run_key=LADDER,
+                       strategy_id=LADDER)
+    snap = {"session": {"status": "running", "last_tick": now, "expiry": "2026-10-27"},
+            "pnl": {"total": -3_153.0, "open_condors": 5}, "ladder": {"direction": "down"},
+            "positions": [{"index": 0, "status": "OPEN"}], "settings": {"strategy": "ladder"}}
+    (tmp_path / f"live-{session.user_id}-{LADDER}.json").write_text(json.dumps(snap), encoding="utf-8")
+    api._note_resume_wait(session.user_id, LADDER, "The market is shut today.")
+
+    for body in (api.forward_state(session=session, run=LADDER), api.forward_state(session=session)):
+        assert body["run_key"] == LADDER and body["running"] is False
+        info = body["state"]["session"]
+        assert info["status"] == "waiting" and info["resumable"] is False
+        assert info["wait_reason"] == "The market is shut today." and not info["stopped_reason"]
+        assert body["state"]["pnl"]["total"] == -3_153.0
+    listed = [r for r in api.forward_runs(session=session)["runs"] if r["run_key"] == LADDER]
+    assert listed and listed[0]["waiting"] is True and listed[0]["stopped_reason"] is None
+    assert listed[0]["open_condors"] == 5
+
+    # Once the run is stopped for real it is listed as stopped, not waiting.
+    store.mark_stopped("sess-ladder", "stopped by user")
+    body = api.forward_state(session=session, run=LADDER)
+    assert body["state"]["session"]["status"] == "stopped"
+    assert not any(r.get("waiting") for r in body["runs"])
+
+
 def test_a_reader_never_waits_on_a_slow_tick():
     """A tick holds the lock across its round trip to Choice. The state
     endpoint reads every run's snapshot, so one slow tick stalled every page."""

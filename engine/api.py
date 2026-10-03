@@ -553,11 +553,20 @@ def _resume_forward_locked(session: UserSession, *, only: str | None = None) -> 
 
 _RESUME_WAIT_NOTED: dict[tuple[str, str], float] = {}
 _RESUME_WAIT_EVERY = 1800.0
+#: Why each run that should be ticking is waiting instead, by (user, run).
+_RESUME_WAITING: dict[tuple[str, str], str] = {}
+#: Said for a waiting run before the watchdog has given its own reason.
+WAITING_REASON = (
+    "It is waiting for a Choice session to resume. The engine renews the session by itself on the next "
+    "trading morning and the run carries on, positions and all; signing in on the dashboard renews it now "
+    "(one OTP)."
+)
 
 
 def _note_resume_wait(user_id: str, run_key: str, reason: str) -> None:
     now = time.monotonic()
     key = (user_id, run_key)
+    _RESUME_WAITING[key] = reason
     if now - _RESUME_WAIT_NOTED.get(key, -_RESUME_WAIT_EVERY) >= _RESUME_WAIT_EVERY:
         _RESUME_WAIT_NOTED[key] = now
         log.info("Run %s for %s waits to resume: %s", run_key, user_id, reason)
@@ -1254,6 +1263,29 @@ def _stopped_rows(session: UserSession) -> dict[str, dict[str, Any]]:
     return keep
 
 
+def _waiting_rows(session: UserSession) -> dict[str, dict[str, Any]]:
+    """Runs that should be ticking but are not yet, by run name: still marked
+    running in the store, with no runner in memory -- after an engine restart,
+    until the watchdog can resume them (on a closed day, not before the next
+    trading morning's session). They were missing from every list, so the
+    dashboard showed no runs at all for a whole weekend."""
+    try:
+        rows = store.forward_history(session.user_id, limit=50)
+    except Exception:                               # noqa: BLE001
+        log.exception("Could not read waiting runs for %s", session.user_id)
+        return {}
+    live = session.runners()
+    newest: dict[str, dict[str, Any]] = {}
+    for row in rows:                                # newest first
+        newest.setdefault(row["run_key"], row)
+    return {key: row for key, row in newest.items() if row["status"] == "running" and key not in live}
+
+
+def _waiting_reason(session: UserSession, run_key: str) -> str:
+    reason = _RESUME_WAITING.get((session.user_id, run_key))
+    return reason or WAITING_REASON
+
+
 def _saved_snapshot(session: UserSession, run_key: str) -> dict[str, Any] | None:
     """The last snapshot a run wrote before the engine stopped driving it.
 
@@ -1329,9 +1361,15 @@ def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
         summary = _stopped_summary(session, run_key, row)
         if summary is not None:
             out.append(summary)
-    # Live runs first, each group newest first.
+    # Runs waiting to be resumed: not stopped, so not listed as stopped.
+    for run_key, row in _waiting_rows(session).items():
+        summary = _stopped_summary(session, run_key, row)
+        if summary is not None:
+            summary.update(stopped_reason=None, waiting=True, wait_reason=_waiting_reason(session, run_key))
+            out.append(summary)
+    # Live runs first, then waiting, then stopped; each group newest first.
     out.sort(key=lambda r: r["started_at"], reverse=True)
-    out.sort(key=lambda r: not r["running"])
+    out.sort(key=lambda r: 0 if r["running"] else 1 if r.get("waiting") else 2)
     return out
 
 
@@ -1365,20 +1403,32 @@ def forward_state(
     response names the run it served, so the caller never has to guess.
     """
     runners = session.runners()
+    waiting = _waiting_rows(session) if not runners or (run and slugify_run_key(run) not in runners) else {}
     if run:
         run_key = slugify_run_key(run)
     elif DEFAULT_RUN_KEY in runners:
         run_key = DEFAULT_RUN_KEY
+    elif runners:
+        run_key = next(iter(runners))
     else:
-        run_key = next(iter(runners), DEFAULT_RUN_KEY)
+        run_key = DEFAULT_RUN_KEY if DEFAULT_RUN_KEY in waiting else next(iter(waiting), DEFAULT_RUN_KEY)
 
     runner = runners.get(run_key)
     state = runner.snapshot() if runner is not None else None
     if state is None:
-        # Not driven any more: serve what it last looked like, marked stopped.
+        # Not driven: serve what it last looked like, marked stopped -- or
+        # waiting, when it is only waiting to be resumed.
         row = _stopped_rows(session).get(run_key)
-        state = _saved_snapshot(session, run_key) if row is not None else None
-        if state is not None:
+        waiting_row = waiting.get(run_key) if row is None else None
+        state = _saved_snapshot(session, run_key) if (row or waiting_row) is not None else None
+        if state is not None and waiting_row is not None:
+            # Not stopped: it carries on by itself once a session is back.
+            info = dict(state.get("session") or {})
+            info.update(status="waiting", stopped_reason=None, resumable=False, resume_blocked=None,
+                        wait_reason=_waiting_reason(session, run_key))
+            state = {**state, "session": info}
+            row = waiting_row
+        elif state is not None:
             info = dict(state.get("session") or {})
             info["status"] = "stopped"
             info["stopped_reason"] = info.get("stopped_reason") or row.get("stopped_reason")
@@ -1386,14 +1436,14 @@ def forward_state(
             info["resumable"] = blocked is None
             info["resume_blocked"] = blocked
             state = {**state, "session": info}
-            if not state.get("settings"):
-                # Saved before snapshots carried their settings.
-                record = store.forward_session(row["session_id"])
-                if record is not None:
-                    state["settings"] = settings_from_state(
-                        record["state"], strategy_id=record["strategy_id"],
-                        name=record["run_label"] or run_key,
-                    )
+        if state is not None and not state.get("settings"):
+            # Saved before snapshots carried their settings.
+            record = store.forward_session(row["session_id"])
+            if record is not None:
+                state["settings"] = settings_from_state(
+                    record["state"], strategy_id=record["strategy_id"],
+                    name=record["run_label"] or run_key,
+                )
     return {
         "run_key": run_key,
         "running": runner is not None and runner.stopped_reason is None,

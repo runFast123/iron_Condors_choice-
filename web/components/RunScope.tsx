@@ -63,8 +63,8 @@ export function RunScope({
               >
                 {r.label}
                 {!r.running && (
-                  <span style={{ fontWeight: 400, color: "var(--ink-muted)", marginLeft: 5, fontSize: 11 }}>
-                    stopped
+                  <span style={{ fontWeight: 400, color: r.waiting ? "var(--warn)" : "var(--ink-muted)", marginLeft: 5, fontSize: 11 }}>
+                    {r.waiting ? "waiting" : "stopped"}
                   </span>
                 )}
               </Link>

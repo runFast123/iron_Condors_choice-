@@ -154,6 +154,7 @@ export function ForwardControl({
 
   const session = state?.session;
   const running = session?.status === "running";
+  const waiting = session?.status === "waiting";
   const openPositions = (state?.positions ?? []).filter((p) => p.status === "OPEN");
 
   // Campaigns: one per expiry the run has traded. The run's total mixes all
@@ -560,7 +561,8 @@ export function ForwardControl({
     });
   }
 
-  const liveRuns = runs.filter((r) => r.running);
+  // A waiting run is still live: it resumes by itself and keeps its name and its place.
+  const liveRuns = runs.filter((r) => r.running || r.waiting);
   const atCap = liveRuns.length >= maxRuns;
   // The name the form would start under, and whether a live run holds it. A
   // start under a taken name starts nothing, so it is said here, before.
@@ -591,7 +593,9 @@ export function ForwardControl({
             {session?.market_open ? "MARKET OPEN" : "MARKET CLOSED"}
           </Badge>
           {running && <Badge tone="brand">PAPER</Badge>}
-          <Badge tone={running ? "pos" : "neutral"}>{running ? "RUNNING" : "STOPPED"}</Badge>
+          <Badge tone={running ? "pos" : waiting ? "warn" : "neutral"}>
+            {running ? "RUNNING" : waiting ? "WAITING" : "STOPPED"}
+          </Badge>
         </div>
       </div>
 
@@ -618,7 +622,7 @@ export function ForwardControl({
                 title={
                   r.running
                     ? `${r.strategy}, ${r.lots} lot(s)${r.direction ? `, ${r.direction}` : ""}`
-                    : (r.stopped_reason ?? "stopped")
+                    : r.waiting ? (r.wait_reason ?? "waiting to resume") : (r.stopped_reason ?? "stopped")
                 }
                 style={{
                   textAlign: "left", cursor: "pointer", borderRadius: "var(--radius)",
@@ -630,7 +634,9 @@ export function ForwardControl({
               >
                 <span style={{ display: "flex", gap: 7, alignItems: "center" }}>
                   <span style={{ fontWeight: 700 }}>{r.label}</span>
-                  {!r.running ? (
+                  {r.waiting ? (
+                    <span style={{ fontSize: 10.5, color: "var(--warn)" }}>waiting</span>
+                  ) : !r.running ? (
                     <span style={{ fontSize: 10.5, color: "var(--ink-muted)" }}>stopped</span>
                   ) : !r.ticking ? (
                     // Marked running but no worker behind it. The watchdog
@@ -1027,7 +1033,15 @@ export function ForwardControl({
           </>
         ) : (
           <>
-            {!running && (
+            {waiting && (
+              <div className="auth-alert auth-alert-info" style={{ marginBottom: 14 }}>
+                <strong>Waiting to resume, not stopped.</strong> {session?.wait_reason} Nothing is lost:
+                its chart, positions and P&amp;L are shown as they stood at its last tick
+                {session?.last_tick ? ` (${dateTime(session.last_tick)})` : ""}, and nothing trades while the
+                market is shut.
+              </div>
+            )}
+            {!running && !waiting && (
               <div
                 className="auth-alert auth-alert-info"
                 style={{ marginBottom: 14, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}
