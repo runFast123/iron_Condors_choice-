@@ -409,3 +409,15 @@ def test_backtest_history_and_dataset_by_run_id(client):
     assert res_ds.status_code == 200
     ds = res_ds.json()
     assert ds["metrics"]["net_pnl"] == 9999.0
+
+
+def test_request_models_support_trailing_sl():
+    from engine.api import RunBacktestRequest, StartForwardRequest
+    req_bt = RunBacktestRequest(trailing_sl=0.5, trailing_sl_trigger=0.3)
+    assert req_bt.trailing_sl == 0.5
+    assert req_bt.trailing_sl_trigger == 0.3
+
+    req_fw = StartForwardRequest(trailing_sl=0.75, trailing_sl_trigger=0.5)
+    assert req_fw.trailing_sl == 0.75
+    assert req_fw.trailing_sl_trigger == 0.5
+

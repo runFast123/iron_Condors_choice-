@@ -48,6 +48,7 @@ class CondorStatus(str, Enum):
     OPEN = "OPEN"
     CLOSED_TARGET = "CLOSED_TARGET"
     CLOSED_STOP = "CLOSED_STOP"
+    CLOSED_TRAILING_STOP = "CLOSED_TRAILING_STOP"
     EXPIRED = "EXPIRED"
     # Closed at market for a reason that is neither -- a correction, say.
     CLOSED = "CLOSED"
@@ -108,6 +109,8 @@ class StrategyConfig:
     # Exits. Hold-to-expiry is the default; either overlay may be disabled.
     take_profit_pct: float | None = None   # e.g. 0.50 -> close at 50% of credit
     stop_loss_mult: float | None = None    # e.g. 2.0  -> close at 2x credit lost
+    trailing_sl_mult: float | None = None  # e.g. 0.5  -> trail by 0.5x credit/debit pullback from peak
+    trailing_sl_trigger_pct: float | None = None  # e.g. 0.3 -> profit fraction to activate trailing
 
     # Entry filters, the ladder's only. Both off by default, so every existing
     # run and result is unchanged. A refused rung still counts as fired: the
@@ -154,6 +157,10 @@ class StrategyConfig:
             raise ValueError("min_credit_ratio must be between 0 and 1")
         if self.max_entry_vix is not None and not 0 < self.max_entry_vix <= 100:
             raise ValueError("max_entry_vix must be above 0 and at most 100")
+        if self.trailing_sl_mult is not None and self.trailing_sl_mult <= 0:
+            raise ValueError("trailing_sl_mult must be positive")
+        if self.trailing_sl_trigger_pct is not None and self.trailing_sl_trigger_pct < 0:
+            raise ValueError("trailing_sl_trigger_pct cannot be negative")
 
     @property
     def effective_anchor_mode(self) -> AnchorMode:
@@ -309,6 +316,8 @@ class PositionUnit:
     #: costs; what it is worth if the range ends with it still open. None
     #: until it has been marked with every leg priced.
     open_pnl: float | None = None
+    #: Peak mark-to-market P&L seen while open, used to trail the stop-loss.
+    peak_pnl: float = 0.0
 
     # ------------------------------------------------------------- economics
 
@@ -381,11 +390,13 @@ class PositionUnit:
     # --------------------------------------------------------------- exits
 
     def exit_signal(self, prices: dict[Leg, float]) -> str | None:
-        """Whether a configured take-profit or stop-loss has triggered."""
+        """Whether a configured take-profit, stop-loss, or trailing stop has triggered."""
         if not self.is_open:
             return None
-        tp, sl = self.config.take_profit_pct, self.config.stop_loss_mult
-        if tp is None and sl is None:
+        tp = self.config.take_profit_pct
+        sl = self.config.stop_loss_mult
+        tsl = self.config.trailing_sl_mult
+        if tp is None and sl is None and tsl is None:
             return None
         # Against `risk_reference`, not `credit`. They are the same number for
         # a condor, but `credit` is *negative* on a bought spread, which flips
@@ -396,11 +407,35 @@ class PositionUnit:
         if len(prices) < len(self.legs) or ref <= 0:
             return None
         pnl = self.mtm(prices)
+        if pnl > self.peak_pnl:
+            self.peak_pnl = pnl
         noun = self.risk_reference_noun
+
+        # 1. Take-profit check
         if tp is not None and pnl >= tp * ref:
             return f"take-profit: captured {pnl / ref:.0%} of {noun}"
+
+        # 2. Fixed Stop-loss check
         if sl is not None and pnl <= -sl * ref:
             return f"stop-loss: lost {abs(pnl) / ref:.1f}x {noun}"
+
+        # 3. Trailing stop-loss check
+        if tsl is not None:
+            if self.config.trailing_sl_trigger_pct is not None:
+                trigger_pct = self.config.trailing_sl_trigger_pct
+            elif tp is not None and tp <= tsl:
+                trigger_pct = tp * 0.5
+            else:
+                trigger_pct = tsl
+            trigger_level = trigger_pct * ref
+            if self.peak_pnl >= trigger_level:
+                trail_stop = self.peak_pnl - tsl * ref
+                if pnl <= trail_stop:
+                    pulled_back = abs(self.peak_pnl - pnl) / ref
+                    return (
+                        f"trailing-stop: pulled back {pulled_back:.1f}x {noun} "
+                        f"from peak of ₹{round(self.peak_pnl):,} to ₹{round(pnl):,}"
+                    )
         return None
 
     def close(self, when: dt.datetime, reason: str, status: CondorStatus, costs: float = 0.0) -> None:

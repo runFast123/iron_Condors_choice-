@@ -22,6 +22,7 @@ const OUTCOME: Record<Condor["status"], { label: string; tone: "pos" | "neg" | "
   EXPIRED: { label: "Held to expiry", tone: "neutral" },
   CLOSED_TARGET: { label: "Take-profit", tone: "pos" },
   CLOSED_STOP: { label: "Stop-loss", tone: "neg" },
+  CLOSED_TRAILING_STOP: { label: "Trailing stop", tone: "brand" },
   CLOSED: { label: "Closed", tone: "neutral" },
 };
 
@@ -124,7 +125,9 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
               const expanded = open.has(condor.index);
               const gross = grossOf(condor);
               const costs = condor.entry_costs + condor.exit_costs;
-              const outcome = OUTCOME[condor.status] ?? OUTCOME.OPEN;
+              const outcome = condor.status === "CLOSED_TRAILING_STOP"
+                ? { label: "Trailing stop", tone: (condor.pnl ?? 0) >= 0 ? ("pos" as const) : ("neg" as const) }
+                : (OUTCOME[condor.status] ?? OUTCOME.OPEN);
 
               return (
                 // Keyed on the Fragment, not the rows: a shorthand <> cannot

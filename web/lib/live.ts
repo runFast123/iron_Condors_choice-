@@ -71,6 +71,8 @@ export interface RunSettings {
   min_credit_ratio: number | null;
   take_profit: number | null;
   stop_loss: number | null;
+  trailing_sl?: number | null;
+  trailing_sl_trigger?: number | null;
   daily_loss_limit: number | null;
   full_band_steps?: number;
   half_mode?: string;

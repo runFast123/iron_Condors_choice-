@@ -88,6 +88,9 @@ function describeSettings(s: RunSettings): string {
   parts.push(s.max_entry_vix != null ? `no entries above VIX ${s.max_entry_vix}` : "no VIX rule");
   if (s.min_entry_dte != null) parts.push(`none within ${s.min_entry_dte} days of expiry`);
   if (s.min_credit_ratio != null) parts.push(`credit at least ${Math.round(s.min_credit_ratio * 100)}% of the wing`);
+  if (s.take_profit != null) parts.push(`TP ${Math.round(s.take_profit * 100)}%`);
+  if (s.stop_loss != null) parts.push(`SL ${s.stop_loss}x`);
+  if (s.trailing_sl != null) parts.push(`trail SL ${s.trailing_sl}x${s.trailing_sl_trigger != null ? ` (trig ${Math.round(s.trailing_sl_trigger * 100)}%)` : ""}`);
   parts.push(`${s.lots} lot${s.lots === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
@@ -138,6 +141,10 @@ export function ForwardControl({
   // The VIX rule, both strategies: no new positions while India VIX is above
   // this. On at 15 for a new run; cleared ("") switches it off.
   const [maxVix, setMaxVix] = useState<number | "">(15);
+  const [takeProfit, setTakeProfit] = useState<number | "">("");
+  const [stopLoss, setStopLoss] = useState<number | "">("");
+  const [trailingSl, setTrailingSl] = useState<number | "">("");
+  const [trailingTrigger, setTrailingTrigger] = useState<number | "">("");
   // The time frame the ladder acts on: a level fires on the close of a bar
   // this many minutes long, as in a backtest at that bar size. 1 acts on every
   // minute's price, which is what every run did before this existed.
@@ -360,6 +367,10 @@ export function ForwardControl({
         // Null, not omitted, when cleared: an omitted field takes the
         // engine's default of 15, which is the opposite of "off".
         max_entry_vix: maxVix === "" ? null : Number(maxVix),
+        take_profit: takeProfit !== "" ? Number(takeProfit) : undefined,
+        stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
+        trailing_sl: trailingSl !== "" ? Number(trailingSl) : undefined,
+        trailing_sl_trigger: trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
         ...(strategy === "hic"
           ? {
               full_band_steps: bandSteps,
@@ -407,6 +418,10 @@ export function ForwardControl({
       setCadence(s.expiry_cadence);
       setBarMinutes(s.bar_minutes ?? 1);
       setMaxVix(s.max_entry_vix ?? "");
+      setTakeProfit(s.take_profit ?? "");
+      setStopLoss(s.stop_loss ?? "");
+      setTrailingSl(s.trailing_sl ?? "");
+      setTrailingTrigger(s.trailing_sl_trigger ?? "");
       if (s.strategy === "hic") {
         setBandSteps(s.full_band_steps ?? 1);
         setPutSpreads(s.max_put_spreads ?? 10);
@@ -931,6 +946,81 @@ export function ForwardControl({
                 />
                 <span style={{ ...HINT, maxWidth: 170 }}>
                   No new positions while India VIX is above this. Clear to switch off.
+                </span>
+              </label>
+
+              <label style={FIELD}>
+                Trailing SL (×)
+                <input
+                  type="number"
+                  min={0.1}
+                  max={10}
+                  step={0.1}
+                  value={trailingSl}
+                  placeholder="Off"
+                  onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ width: 85 }}
+                />
+                <span style={{ ...HINT, maxWidth: 170 }}>
+                  Pullback from peak profit to exit (e.g. 0.5x credit).
+                </span>
+              </label>
+
+              <label style={FIELD}>
+                Trail trigger
+                <select
+                  value={trailingTrigger}
+                  onChange={(e) => setTrailingTrigger(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ minWidth: 120 }}
+                >
+                  <option value="">Auto (breakeven)</option>
+                  <option value={0.1}>At 10% profit</option>
+                  <option value={0.2}>At 20% profit</option>
+                  <option value={0.3}>At 30% profit</option>
+                  <option value={0.5}>At 50% profit</option>
+                </select>
+                <span style={{ ...HINT, maxWidth: 160 }}>
+                  Profit hurdle before trailing begins.
+                </span>
+              </label>
+
+              <label style={FIELD}>
+                Take profit
+                <select
+                  value={takeProfit}
+                  onChange={(e) => setTakeProfit(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ minWidth: 110 }}
+                >
+                  <option value="">Hold</option>
+                  <option value={0.4}>40% of credit</option>
+                  <option value={0.5}>50% of credit</option>
+                  <option value={0.6}>60% of credit</option>
+                  <option value={0.75}>75% of credit</option>
+                </select>
+                <span style={{ ...HINT, maxWidth: 150 }}>
+                  Close at target % of credit.
+                </span>
+              </label>
+
+              <label style={FIELD}>
+                Stop loss
+                <select
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ minWidth: 100 }}
+                >
+                  <option value="">Hold</option>
+                  <option value={1.0}>1.0× credit</option>
+                  <option value={1.5}>1.5× credit</option>
+                  <option value={2.0}>2.0× credit</option>
+                  <option value={3.0}>3.0× credit</option>
+                </select>
+                <span style={{ ...HINT, maxWidth: 150 }}>
+                  Close at max credit lost.
                 </span>
               </label>
 

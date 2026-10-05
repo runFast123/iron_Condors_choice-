@@ -155,6 +155,20 @@ def test_stop_loss_closes_on_an_adverse_move():
     assert "stop-loss" in (condor.exit_reason or "")
 
 
+def test_trailing_stop_closes_on_pullback_from_peak():
+    # Decay gathers profit during flat hours, then adverse move triggers trailing stop
+    params = BacktestParams(
+        strategy=cfg(trailing_sl_mult=0.2, trailing_sl_trigger_pct=0.25),
+        costs=ZERO_COST,
+    )
+    spots = [24_000] * 35 + [23_600] * 10
+    result = run(spots, params=params, minutes=60)
+    condor = result.condors[0]
+    assert condor.status is CondorStatus.CLOSED_TRAILING_STOP
+    assert "trailing-stop" in (condor.exit_reason or "")
+
+
+
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,
     which flatters exactly the configurations that trade most."""

@@ -44,6 +44,8 @@ export const FIELDS: Field[] = [
   { key: "min_credit_ratio", label: "Min credit", hint: "% of the wing; blank = off", kind: "optional", percent: true, ladderOnly: true },
   { key: "take_profit", label: "Take profit", hint: "% of credit; blank = hold", kind: "optional", percent: true, replayOnly: true },
   { key: "stop_loss", label: "Stop loss", hint: "× credit lost; blank = hold", kind: "optional", replayOnly: true },
+  { key: "trailing_sl", label: "Trailing SL", hint: "× credit pullback from peak; blank = off", kind: "optional", step: 0.1, replayOnly: true },
+  { key: "trailing_sl_trigger", label: "Trail trigger", hint: "% profit to activate trailing; blank = auto", kind: "optional", percent: true, replayOnly: true },
   {
     key: "bar_minutes", label: "Time frame", hint: "what a level fires on", kind: "select", replayOnly: true,
     options: [
@@ -91,6 +93,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     hint: "Lock in gains when condor reaches 50% max profit",
     replayOnly: true,
     edits: { take_profit: 0.5 },
+  },
+  {
+    id: "trail_05",
+    label: "0.5× Trailing SL",
+    icon: <IconShield size={13} />,
+    hint: "Lock in profits: exit if trade pulls back 0.5× from its peak",
+    replayOnly: true,
+    edits: { trailing_sl: 0.5 },
   },
   {
     id: "vix_14",

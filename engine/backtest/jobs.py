@@ -150,6 +150,8 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         strike_step=market.master.strike_step(NIFTY, listed[0]) if listed else 50.0,
         take_profit_pct=p.get("take_profit"),
         stop_loss_mult=p.get("stop_loss"),
+        trailing_sl_mult=p.get("trailing_sl"),
+        trailing_sl_trigger_pct=p.get("trailing_sl_trigger"),
         # The VIX rule applies to both strategies, unlike the entry filters.
         max_entry_vix=p.get("max_entry_vix"),
     )

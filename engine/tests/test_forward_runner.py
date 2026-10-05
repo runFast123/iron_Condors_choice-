@@ -490,3 +490,51 @@ def test_forward_runner_snapshot_includes_ladder_v2_attribution():
     assert snap["positions"][0]["side"] == "down"
     assert snap["positions"][1]["side"] == "up"
 
+
+def test_forward_runner_trailing_stop_status_and_peak():
+    import datetime as dt
+    from engine.pricing.costs import ZERO_COST
+    from engine.forward.runner import ForwardRunner, CondorStatus, IST
+    from engine.strategy.condor import StrategyConfig, Condor, FilledLeg, Leg, Side, PriceSource
+    runner = ForwardRunner.__new__(ForwardRunner)
+    runner.strategy = StrategyConfig(trailing_sl_mult=0.5, lots=1, lot_size=65)
+    legs = [
+        FilledLeg(Leg("PE", Side.BUY, 23_600, 65), 10.0, PriceSource.CHOICE),
+        FilledLeg(Leg("PE", Side.SELL, 23_800, 65), 50.0, PriceSource.CHOICE),
+        FilledLeg(Leg("CE", Side.SELL, 24_200, 65), 50.0, PriceSource.CHOICE),
+        FilledLeg(Leg("CE", Side.BUY, 24_400, 65), 10.0, PriceSource.CHOICE),
+    ]
+    condor = Condor(
+        level=24_000, entry_time=dt.datetime.now(tz=IST), expiry=dt.date(2026, 3, 26),
+        legs=legs, config=runner.strategy, index=0,
+    )
+    condor.peak_pnl = 2000.0
+    runner.condors = [condor]
+    runner.fills = []
+    runner.events = []
+    runner.realised = 0.0
+    runner.mode = "paper"
+    runner.costs = ZERO_COST
+    runner.last_spot_ts = None
+    runner.legs_on_real_depth = 0
+    runner.legs_on_modelled_spread = 0
+    runner.total_slippage = 0.0
+    runner.emit = lambda *a, **k: None
+
+    class MockFillModel:
+        def exit_fill(self, quote, side):
+            from engine.forward.runner import FillPrice
+            return FillPrice(price=20.0, reference=20.0, slippage=0.0, spread_modelled=False)
+
+    class MockQuote:
+        mid = 20.0
+        as_of = None
+
+    runner.fill_model = MockFillModel()
+    quotes = {fl.leg: MockQuote() for fl in condor.legs}
+
+    runner._close(condor, quotes, "trailing-stop: pulled back 0.5x credit from peak of ₹2,000 to ₹0")
+    assert condor.status is CondorStatus.CLOSED_TRAILING_STOP
+    assert condor.peak_pnl == 2000.0
+
+

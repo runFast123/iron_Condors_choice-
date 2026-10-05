@@ -769,7 +769,11 @@ class ForwardRunner:
                 )
             )
         if status is None:
-            status = CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
+            status = (
+                CondorStatus.CLOSED_TARGET if "take-profit" in reason
+                else CondorStatus.CLOSED_TRAILING_STOP if "trailing-stop" in reason
+                else CondorStatus.CLOSED_STOP
+            )
         condor.close(now, reason, status, exit_costs)
         self.realised += condor.realised_pnl()
         self.emit(
@@ -1553,6 +1557,7 @@ class ForwardRunner:
                         else round(c.realised_pnl(), 2) if not c.is_open
                         else None
                     ),
+                    "peak_pnl": round(c.peak_pnl, 2),
                     "is_open": c.is_open,
                     "exit_reason": c.exit_reason,
                     "legs": [
@@ -1752,6 +1757,7 @@ class ForwardRunner:
             "exit_reason": condor.exit_reason,
             "entry_costs": condor.entry_costs,
             "exit_costs": condor.exit_costs,
+            "peak_pnl": condor.peak_pnl,
             "legs": [
                 {
                     "right": fl.leg.right,
@@ -1969,6 +1975,8 @@ def run_settings(
         "min_credit_ratio": strategy.min_credit_ratio,
         "take_profit": strategy.take_profit_pct,
         "stop_loss": strategy.stop_loss_mult,
+        "trailing_sl": strategy.trailing_sl_mult,
+        "trailing_sl_trigger": strategy.trailing_sl_trigger_pct,
         "daily_loss_limit": daily_loss_limit,
     }
     if isinstance(strategy, HicConfig):
@@ -2079,4 +2087,5 @@ def _restore_condor(raw: dict[str, Any], strategy: StrategyConfig) -> PositionUn
         side=raw.get("side", "down"),
         kind=kind,
         k=int(k) if k is not None else None,
+        peak_pnl=float(raw.get("peak_pnl") or 0.0),
     )

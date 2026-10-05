@@ -336,3 +336,70 @@ def test_portfolio_payoff_sums_across_rungs():
     curve = portfolio_payoff(ladder, [23_000, 24_000, 25_000])
     assert curve[1] > curve[0] and curve[1] > curve[2]
     assert curve[1] == pytest.approx(sum(c.payoff_at_expiry(24_000) for c in ladder))
+
+
+def test_trailing_stop_triggers_after_profit_pullback():
+    """A condor gains profit, then pulls back by the trailing multiple from its peak."""
+    config = cfg(trailing_sl_mult=0.3, stop_loss_mult=2.0)
+    condor = _condor(24_000, PRICES, config)
+
+    # 1. Gain profit: all legs drop in value (decay), capturing ~50% of credit
+    halved = {fl.leg: fl.entry_price * 0.5 for fl in condor.legs}
+    pnl_profit = condor.mtm(halved)
+    assert pnl_profit > 0.3 * condor.credit
+    assert condor.exit_signal(halved) is None  # trailing active, no pullback yet
+    assert condor.peak_pnl == pytest.approx(pnl_profit)
+
+    # 2. Market pulls back: short options expand, cutting profit
+    pullback = {
+        ("SELL", PUT): 50.0,
+        ("BUY", PUT): 22.0,
+        ("SELL", CALL): 50.0,
+        ("BUY", CALL): 18.0,
+    }
+    pulled_prices = {fl.leg: pullback[(fl.leg.side.value, fl.leg.right)] for fl in condor.legs}
+    pnl_pulled = condor.mtm(pulled_prices)
+    assert pnl_pulled <= condor.peak_pnl - 0.3 * condor.credit
+
+    sig = condor.exit_signal(pulled_prices)
+    assert sig is not None
+    assert "trailing-stop" in sig
+    assert "pulled back" in sig
+
+
+def test_trailing_stop_does_not_fire_at_entry_noise():
+    """At entry before trigger threshold, normal stop loss protects the trade."""
+    config = cfg(trailing_sl_mult=0.5, stop_loss_mult=2.0)
+    condor = _condor(24_000, PRICES, config)
+
+    # Small wiggle down from entry
+    wiggle = {
+        ("SELL", PUT): 65.0,  # slightly higher
+        ("BUY", PUT): 25.0,
+        ("SELL", CALL): 55.0,
+        ("BUY", CALL): 20.0,
+    }
+    marks = {fl.leg: wiggle[(fl.leg.side.value, fl.leg.right)] for fl in condor.legs}
+    assert condor.mtm(marks) < 0
+    # Trailing stop should NOT have triggered because peak_pnl has not reached trigger threshold
+    assert condor.exit_signal(marks) is None
+
+
+def test_trailing_stop_with_explicit_trigger():
+    """User specifies trailing_sl_trigger_pct lower than trailing_sl_mult."""
+    config = cfg(trailing_sl_mult=0.4, trailing_sl_trigger_pct=0.2)
+    condor = _condor(24_000, PRICES, config)
+
+    # Move to +25% profit
+    # Credit is 70 * 75 = 5250. 25% is ~1312.
+    marks_gain = {fl.leg: fl.entry_price * 0.75 for fl in condor.legs}
+    assert condor.mtm(marks_gain) >= 0.2 * condor.credit
+    assert condor.exit_signal(marks_gain) is None
+    peak = condor.peak_pnl
+
+    # Now drop by 0.4x credit: pnl <= peak - 0.4 * credit
+    marks_drop = {fl.leg: fl.entry_price * 1.2 for fl in condor.legs}
+    assert condor.mtm(marks_drop) <= peak - 0.4 * condor.credit
+    sig = condor.exit_signal(marks_drop)
+    assert sig is not None and "trailing-stop" in sig
+

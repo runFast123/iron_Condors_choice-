@@ -25,6 +25,7 @@ const OUTCOME: Record<string, { label: string; tone: "pos" | "neg" | "brand" | "
   EXPIRED: { label: "Held to expiry", tone: "neutral" },
   CLOSED_TARGET: { label: "Take-profit", tone: "pos" },
   CLOSED_STOP: { label: "Stop-loss", tone: "neg" },
+  CLOSED_TRAILING_STOP: { label: "Trailing stop", tone: "brand" },
   CLOSED: { label: "Closed", tone: "neutral" },
 };
 
@@ -232,7 +233,9 @@ export function LiveCondorBlotter({
             {groups.map(({ condor, legs, openedAt }) => {
               const expanded = open.has(condor.index);
               const isOpen = condor.status === "OPEN";
-              const outcome = OUTCOME[condor.status] ?? OUTCOME.OPEN;
+              const outcome = condor.status === "CLOSED_TRAILING_STOP"
+                ? { label: "Trailing stop", tone: (condor.pnl ?? 0) >= 0 ? ("pos" as const) : ("neg" as const) }
+                : (OUTCOME[condor.status] ?? OUTCOME.OPEN);
               const closes = legs.filter((f) => f.action === "CLOSE").length;
 
               return (

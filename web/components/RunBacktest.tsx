@@ -57,6 +57,10 @@ export function RunBacktest({
   // The VIX rule, both strategies: no new positions while India VIX is above
   // this. On at 15; cleared ("") switches it off.
   const [maxVix, setMaxVix] = useState<number | "">(15);
+  const [takeProfit, setTakeProfit] = useState<number | "">("");
+  const [stopLoss, setStopLoss] = useState<number | "">("");
+  const [trailingSl, setTrailingSl] = useState<number | "">("");
+  const [trailingTrigger, setTrailingTrigger] = useState<number | "">("");
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -130,6 +134,10 @@ export function RunBacktest({
           // Null, not omitted, when cleared: an omitted field takes the
           // engine's default of 15, which is the opposite of "off".
           max_entry_vix: maxVix === "" ? null : Number(maxVix),
+          take_profit: takeProfit !== "" ? Number(takeProfit) : undefined,
+          stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
+          trailing_sl: trailingSl !== "" ? Number(trailingSl) : undefined,
+          trailing_sl_trigger: trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
           // HIC derives direction and both caps from its band and spreads, and
           // is symmetric by construction. The ladder's own settings used to be
           // sent to it anyway -- including an untouched Max up of 10 behind a
@@ -387,6 +395,73 @@ export function RunBacktest({
                   style={{ marginTop: 5, width: 90 }}
                   title="No new positions while India VIX is above this; they resume once it is back below. Open positions are not touched. Clear it to switch the rule off."
                 />
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Trailing SL (×)
+                <input
+                  type="number"
+                  min={0.1}
+                  max={10}
+                  step={0.1}
+                  value={trailingSl}
+                  placeholder="Off"
+                  onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, width: 85 }}
+                  title="Trailing stop-loss distance as a multiple of collected credit (e.g. 0.5x). Exits if trade pulls back by this multiple from its peak profit."
+                />
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Trail trigger
+                <select
+                  value={trailingTrigger}
+                  onChange={(e) => setTrailingTrigger(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 120 }}
+                  title="Profit required to activate trailing stop-loss. Auto activates once profit covers trailing distance (locking in breakeven)."
+                >
+                  <option value="">Auto (breakeven)</option>
+                  <option value={0.1}>At 10% profit</option>
+                  <option value={0.2}>At 20% profit</option>
+                  <option value={0.3}>At 30% profit</option>
+                  <option value={0.5}>At 50% profit</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Take profit
+                <select
+                  value={takeProfit}
+                  onChange={(e) => setTakeProfit(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 110 }}
+                  title="Fixed take-profit target as % of credit. Off = hold to expiry."
+                >
+                  <option value="">Hold</option>
+                  <option value={0.4}>40% of credit</option>
+                  <option value={0.5}>50% of credit</option>
+                  <option value={0.6}>60% of credit</option>
+                  <option value={0.75}>75% of credit</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                Stop loss
+                <select
+                  value={stopLoss}
+                  onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 100 }}
+                  title="Fixed initial stop-loss multiple of credit (e.g. 2x). Off = hold to expiry."
+                >
+                  <option value="">Hold</option>
+                  <option value={1.0}>1.0× credit</option>
+                  <option value={1.5}>1.5× credit</option>
+                  <option value={2.0}>2.0× credit</option>
+                  <option value={3.0}>3.0× credit</option>
+                </select>
               </label>
 
               {strategy !== "hic" && (

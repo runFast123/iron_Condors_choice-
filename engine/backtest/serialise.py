@@ -72,6 +72,7 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             # a stale number is worse than showing none.
             "lots": 1, "lot_size": 0, "qty": 0, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
+            "trailing_sl_mult": None, "trailing_sl_trigger_pct": None,
             "direction": "down", "max_down": None, "max_up": None,
             "min_entry_dte": None, "min_credit_ratio": None, "max_entry_vix": None,
             "anchor_mode": "floor", "roll_to_next_expiry": True,
@@ -172,6 +173,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "breakevens": [round(b, 2) for b in c.breakevens],
             # An open position's P&L is its latest mark, and says so.
             "pnl": round(c.realised_pnl() if not c.is_open else (c.open_pnl or 0.0), 2),
+            "peak_pnl": round(c.peak_pnl, 2),
             "open_at_end": c.is_open,
             "modeled": c.uses_modeled_prices,
             "legs": [
@@ -243,6 +245,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "fill_gaps": strategy.fill_gaps,
             "take_profit_pct": strategy.take_profit_pct,
             "stop_loss_mult": strategy.stop_loss_mult,
+            "trailing_sl_mult": strategy.trailing_sl_mult,
+            "trailing_sl_trigger_pct": strategy.trailing_sl_trigger_pct,
             "direction": strategy.direction,
             "max_down": strategy.max_down,
             "max_up": strategy.max_up,

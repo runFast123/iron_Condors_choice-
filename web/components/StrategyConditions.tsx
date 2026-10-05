@@ -25,6 +25,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
   const isCreditActive = params.min_credit_ratio != null && params.min_credit_ratio > 0;
   const isTakeProfitActive = params.take_profit_pct != null && params.take_profit_pct > 0;
   const isStopLossActive = params.stop_loss_mult != null && params.stop_loss_mult > 0;
+  const isTrailingSlActive = params.trailing_sl_mult != null && params.trailing_sl_mult > 0;
 
   return (
     <section
@@ -141,11 +142,11 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
         <div style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
           <span style={{ color: "var(--ink-muted)" }}>Exit Rule:</span>
           <span style={{ color: "var(--ink)" }}>
-            {isTakeProfitActive || isStopLossActive
-              ? `${isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% TP` : ""}${
-                  isTakeProfitActive && isStopLossActive ? " / " : ""
-                }${isStopLossActive ? `${params.stop_loss_mult}x SL` : ""}`
-              : "Hold to expiry"}
+            {[
+              isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% TP` : null,
+              isStopLossActive ? `${params.stop_loss_mult}x SL` : null,
+              isTrailingSlActive ? `${params.trailing_sl_mult}x Trail SL` : null,
+            ].filter(Boolean).join(" / ") || "Hold to expiry"}
           </span>
         </div>
 
@@ -267,11 +268,23 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--ink-muted)" }}>Exit policy</span>
                 <span style={{ fontWeight: 600 }}>
-                  {isTakeProfitActive || isStopLossActive
-                    ? `${isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% Take Profit` : ""}${
-                        isTakeProfitActive && isStopLossActive ? " · " : ""
-                      }${isStopLossActive ? `${params.stop_loss_mult}x Stop Loss` : ""}`
-                    : "Held to settlement / expiry"}
+                  {[
+                    isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% Take Profit` : null,
+                    isStopLossActive ? `${params.stop_loss_mult}x Stop Loss` : null,
+                    isTrailingSlActive ? `${params.trailing_sl_mult}x Trailing SL` : null,
+                  ].filter(Boolean).join(" · ") || "Held to settlement / expiry"}
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)" }}>Trailing Stop-Loss</span>
+                <span style={{ fontWeight: 600, color: isTrailingSlActive ? "#38bdf8" : "var(--ink-muted)" }}>
+                  {isTrailingSlActive
+                    ? `${params.trailing_sl_mult}x pullback${
+                        params.trailing_sl_trigger_pct != null
+                          ? ` (trig ≥ ${Math.round(params.trailing_sl_trigger_pct * 100)}%)`
+                          : " (auto trig)"
+                      }`
+                    : "Off"}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>

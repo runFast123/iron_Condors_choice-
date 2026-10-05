@@ -317,3 +317,34 @@ def test_a_vertical_nets_against_a_condor_on_a_shared_strike():
     book = {(p.right, p.strike): p for p in net_positions([core, spread])}
     assert book[(PUT, 23_000.0)].net_qty == 2 * QTY, "the longs should stack, not cancel"
     assert book[(PUT, 22_800.0)].net_qty == -QTY
+
+
+def test_trailing_stop_on_put_debit_spread():
+    v = put_debit(config=cfg(trailing_sl_mult=0.2, trailing_sl_trigger_pct=0.3))
+    # 1. Gain profit: long leg up 35, short unchanged -> gain 35 * 65 = 2,275 (> 0.3 * 4225)
+    win_marks = {v.legs[0].leg: 150.0 + 35.0, v.legs[1].leg: 85.0}
+    assert v.exit_signal(win_marks) is None
+    assert v.peak_pnl == pytest.approx(35.0 * 65)
+
+    # 2. Pulls back by 0.2x debit (845 Rs): long drops by 20 points
+    pull_marks = {v.legs[0].leg: 150.0 + 15.0, v.legs[1].leg: 85.0}
+    sig = v.exit_signal(pull_marks)
+    assert sig is not None
+    assert "trailing-stop" in sig
+    assert "the debit paid" in sig
+
+
+def test_trailing_stop_on_put_credit_spread():
+    v = put_credit(config=cfg(trailing_sl_mult=0.3))
+    # 1. Gain profit: sold leg drops by 35 points (> 0.5 * 65 credit)
+    win_marks = {v.legs[0].leg: 85.0, v.legs[1].leg: 150.0 - 35.0}
+    assert v.exit_signal(win_marks) is None
+    assert v.peak_pnl == pytest.approx(35.0 * 65)
+
+    # 2. Pulls back by 0.3x credit: sold leg recovers to 150.0 - 10.0
+    pull_marks = {v.legs[0].leg: 85.0, v.legs[1].leg: 150.0 - 10.0}
+    sig = v.exit_signal(pull_marks)
+    assert sig is not None
+    assert "trailing-stop" in sig
+    assert "credit" in sig
+

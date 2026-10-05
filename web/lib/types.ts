@@ -191,6 +191,8 @@ export interface Params {
   fill_gaps: boolean;
   take_profit_pct: number | null;
   stop_loss_mult: number | null;
+  trailing_sl_mult?: number | null;
+  trailing_sl_trigger_pct?: number | null;
   direction?: "down" | "up" | "both";
   /** Ladder entry filters. Null when off. */
   min_entry_dte?: number | null;
@@ -273,7 +275,8 @@ export interface Condor {
   side?: "anchor" | "down" | "up";
   entry_time: string;
   expiry: string;
-  status: "OPEN" | "CLOSED_TARGET" | "CLOSED_STOP" | "EXPIRED" | "CLOSED";
+  status: "OPEN" | "CLOSED_TARGET" | "CLOSED_STOP" | "CLOSED_TRAILING_STOP" | "EXPIRED" | "CLOSED";
+  peak_pnl?: number;
   exit_time: string | null;
   exit_reason: string | null;
   credit: number;

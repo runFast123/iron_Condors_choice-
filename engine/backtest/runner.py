@@ -538,7 +538,9 @@ class Backtest:
                     for fl in condor.legs:
                         fl.exit_price = exits[fl.leg]
                     status = (
-                        CondorStatus.CLOSED_TARGET if "take-profit" in reason else CondorStatus.CLOSED_STOP
+                        CondorStatus.CLOSED_TARGET if "take-profit" in reason
+                        else CondorStatus.CLOSED_TRAILING_STOP if "trailing-stop" in reason
+                        else CondorStatus.CLOSED_STOP
                     )
                     condor.close(when, reason, status, exit_costs)
                     realised.append(condor.realised_pnl())

@@ -188,6 +188,8 @@ class RunBacktestRequest(BaseModel):
     max_condors: int = Field(default=20, ge=1, le=100)
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
+    trailing_sl: float | None = Field(default=None, gt=0, le=20)
+    trailing_sl_trigger: float | None = Field(default=None, ge=0, le=20)
     # Ladder entry filters. Ignored for HIC. Off unless set.
     min_entry_dte: int | None = Field(default=None, ge=0, le=45)
     min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
@@ -318,6 +320,8 @@ class StartForwardRequest(BaseModel):
     # strategy -- exactly the divergence this engine exists to prevent.
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=20)
+    trailing_sl: float | None = Field(default=None, gt=0, le=20)
+    trailing_sl_trigger: float | None = Field(default=None, ge=0, le=20)
     # Ladder entry filters. Ignored for HIC. Off unless set.
     min_entry_dte: int | None = Field(default=None, ge=0, le=45)
     min_credit_ratio: float | None = Field(default=None, gt=0, lt=1)
@@ -965,6 +969,8 @@ def _strategy_config(
         strike_step=strike_step,
         take_profit_pct=body.take_profit,
         stop_loss_mult=body.stop_loss,
+        trailing_sl_mult=body.trailing_sl,
+        trailing_sl_trigger_pct=body.trailing_sl_trigger,
         max_entry_vix=body.max_entry_vix,
     )
     if body.strategy == LADDER:

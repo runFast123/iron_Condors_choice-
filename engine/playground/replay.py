@@ -19,7 +19,8 @@ from engine.backtest.jobs import BacktestJob, BacktestRunner
 EDITABLE = (
     "step", "short_offset", "long_offset", "lots", "max_condors", "direction",
     "anchor_mode", "max_down", "max_up", "max_entry_vix", "min_entry_dte",
-    "min_credit_ratio", "take_profit", "stop_loss", "bar_minutes", "daily_loss_limit",
+    "min_credit_ratio", "take_profit", "stop_loss", "trailing_sl", "trailing_sl_trigger",
+    "bar_minutes", "daily_loss_limit",
     "full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads",
 )
 
@@ -52,6 +53,8 @@ def backtest_params(settings: dict[str, Any], campaign: dict[str, Any]) -> dict[
         "min_credit_ratio": settings.get("min_credit_ratio"),
         "take_profit": settings.get("take_profit"),
         "stop_loss": settings.get("stop_loss"),
+        "trailing_sl": settings.get("trailing_sl"),
+        "trailing_sl_trigger": settings.get("trailing_sl_trigger"),
         "short_offset": settings.get("short_offset"),
         "long_offset": settings.get("long_offset"),
         "expiry_cadence": settings.get("expiry_cadence") or "monthly",
