@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { Params, Provenance } from "@/lib/types";
 import { num } from "@/lib/format";
+import { InfoTooltip } from "./InfoTooltip";
 
 interface StrategyConditionsProps {
   params: Params;
@@ -94,6 +95,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           <span className="mono" style={{ fontWeight: 600, color: "var(--ink)" }}>
             {num(params.step)} pts
           </span>
+          <InfoTooltip field="step" />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -108,6 +110,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           >
             {params.direction === "both" ? "Two-way" : params.direction === "up" ? "Up-only" : "Down-only"}
           </span>
+          <InfoTooltip field="direction" />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -117,6 +120,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           <span className="mono" style={{ color: "var(--ink)" }}>
             &plusmn;{num(params.short_offset)} / &plusmn;{num(params.long_offset)} ({num(wingWidth)} pt wing)
           </span>
+          <InfoTooltip field="wings" />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -124,6 +128,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
         <div style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
           <span style={{ color: "var(--ink-muted)" }}>Anchor:</span>
           <span style={{ color: "var(--ink)" }}>{params.anchor_mode}</span>
+          <InfoTooltip field="anchor_mode" />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -135,6 +140,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           ) : (
             <span style={{ color: "var(--ink-muted)" }}>Off</span>
           )}
+          <InfoTooltip field="max_vix" />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -148,6 +154,10 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
               isTrailingSlActive ? `${params.trailing_sl_mult}x Trail SL` : null,
             ].filter(Boolean).join(" / ") || "Hold to expiry"}
           </span>
+          <InfoTooltip
+            title="Exit Rules & Guardrails"
+            content="Automated exit triggers active on every bar. Take Profit locks in designated gains; Stop Loss limits max drawdown; Trailing SL locks in peak profit upon pullbacks."
+          />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -157,6 +167,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           <span style={{ color: "var(--ink)" }}>
             {provenance.resolution === "D" ? "Daily bars" : `${provenance.resolution}-min bars`} · Roll on expiry
           </span>
+          <InfoTooltip field="cadence" />
         </div>
       </div>
 
@@ -184,24 +195,34 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
               1. Grid &amp; Condor Geometry
             </div>
             <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Step interval</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Step interval <InfoTooltip field="step" />
+                </span>
                 <span className="mono" style={{ fontWeight: 600 }}>{num(params.step)} points</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Short leg strike</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Short leg strike <InfoTooltip title="Short Leg Strike" content="Strike of the sold call and put legs at Level ± Short Offset." />
+                </span>
                 <span className="mono">Level &plusmn; {num(params.short_offset)}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Long protection leg</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Long protection leg <InfoTooltip title="Long Protection Leg" content="Strike of the bought protection call and put legs at Level ± Long Offset." />
+                </span>
                 <span className="mono">Level &plusmn; {num(params.long_offset)}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Wing width</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Wing width <InfoTooltip field="wings" />
+                </span>
                 <span className="mono" style={{ color: "#38bdf8", fontWeight: 600 }}>{num(wingWidth)} points</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Anchor mode</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Anchor mode <InfoTooltip field="anchor_mode" />
+                </span>
                 <span>{params.anchor_mode}</span>
               </div>
               <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--ink-muted)", lineHeight: 1.4 }}>
@@ -224,29 +245,39 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
             </div>
             <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Max India VIX Gate</span>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Max India VIX Gate <InfoTooltip field="max_vix" />
+                </span>
                 <span style={{ fontWeight: 600, color: isVixActive ? "#34d399" : "var(--ink-muted)" }}>
                   {isVixActive ? `≤ ${params.max_entry_vix} (Active)` : "Unrestricted (Off)"}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Min Days to Expiry (DTE)</span>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Min Days to Expiry (DTE) <InfoTooltip field="min_dte" />
+                </span>
                 <span style={{ fontWeight: 600, color: isDteActive ? "#34d399" : "var(--ink-muted)" }}>
                   {isDteActive ? `≥ ${params.min_entry_dte} days` : "Any DTE (Off)"}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Min Credit Ratio</span>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Min Credit Ratio <InfoTooltip field="min_credit" />
+                </span>
                 <span style={{ fontWeight: 600, color: isCreditActive ? "#34d399" : "var(--ink-muted)" }}>
                   {isCreditActive ? `≥ ${Math.round(params.min_credit_ratio! * 100)}% of wing` : "Any credit (Off)"}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Max open condors</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Max open condors <InfoTooltip field="max_condors" />
+                </span>
                 <span className="mono">Max {params.max_condors} total</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Per-side caps</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Per-side caps <InfoTooltip title="Per-Side Caps" content="Maximum rungs allowed down (below anchor) and up (above anchor) to cap directional capital deployment." />
+                </span>
                 <span className="mono">Down {params.max_down ?? "none"} / Up {params.max_up ?? "none"}</span>
               </div>
             </div>
@@ -265,8 +296,10 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
               3. Execution, Expiry &amp; Sizing
             </div>
             <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Exit policy</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Exit policy <InfoTooltip title="Exit Policy" content="Automatic profit-taking and loss-cutting rules evaluated on every bar." />
+                </span>
                 <span style={{ fontWeight: 600 }}>
                   {[
                     isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% Take Profit` : null,
@@ -276,7 +309,9 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Trailing Stop-Loss</span>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Trailing Stop-Loss <InfoTooltip field="trailing_sl" />
+                </span>
                 <span style={{ fontWeight: 600, color: isTrailingSlActive ? "#38bdf8" : "var(--ink-muted)" }}>
                   {isTrailingSlActive
                     ? `${params.trailing_sl_mult}x pullback${
@@ -287,24 +322,32 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                     : "Off"}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Expiry roll</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Expiry roll <InfoTooltip title="Expiry Roll" content="Whether the strategy automatically closes and transitions to the subsequent expiry cycle." />
+                </span>
                 <span>{params.roll_to_next_expiry !== false ? "Rolls to next expiry" : "Single campaign"}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Bar resolution</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Bar resolution <InfoTooltip field="resolution" />
+                </span>
                 <span className="mono">{provenance.resolution === "D" ? "Daily closes (15:30)" : `${provenance.resolution} minute bars`}</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Lots &amp; quantity</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Lots &amp; quantity <InfoTooltip field="lots" />
+                </span>
                 <span className="mono">
                   {(provenance.lot_sizes?.length ?? 0) > 1
                     ? `${params.lots} lot (${provenance.lot_sizes!.join(" → ")} qty)`
                     : `${params.lots} lot · ${params.qty > 0 ? num(params.qty) : num(params.lot_size)} qty`}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--ink-muted)" }}>Data coverage</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
+                  Data coverage <InfoTooltip title="Data Coverage & Provenance" content="Displays whether pricing was fetched from real executed exchange ticks / database records, or calculated via Black-76 IV model." />
+                </span>
                 <span style={{ color: "#34d399", fontWeight: 600 }}>
                   {provenance.verified ? "100% Real Choice/DB trades" : "Exchange-anchored"}
                 </span>

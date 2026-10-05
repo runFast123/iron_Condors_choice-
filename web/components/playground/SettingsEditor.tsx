@@ -12,6 +12,18 @@ import {
   IconCheck,
   IconSparkles,
 } from "./Icons";
+import { InfoTooltip } from "@/components/ui";
+
+const FIELD_MAP: Record<string, string> = {
+  short_offset: "wings",
+  long_offset: "wings",
+  max_entry_vix: "max_vix",
+  min_entry_dte: "min_dte",
+  min_credit_ratio: "min_credit",
+  trailing_sl_trigger: "trailing_trigger",
+  bar_minutes: "resolution",
+  full_band_steps: "hic_band",
+};
 
 /** The settings a replay or a plan may change, and how each is shown. */
 type Field = {
@@ -228,7 +240,10 @@ export function SettingsEditor({
           return (
             <label key={f.key} className={`pg-field${changed(f) ? " is-changed" : ""}`}>
               <span className="pg-field-label">
-                {f.label}
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  {f.label}
+                  <InfoTooltip field={FIELD_MAP[f.key] ?? f.key} title={f.label} content={f.hint} />
+                </span>
                 {changed(f) && <span className="pg-field-was">was {formatBase(f, base)}</span>}
               </span>
               {f.kind === "select" ? (

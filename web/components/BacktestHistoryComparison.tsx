@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { BacktestHistoryRun } from "@/lib/types";
 import { inr, num, pct, ratio } from "@/lib/format";
+import { InfoTooltip } from "./InfoTooltip";
 
 interface BacktestHistoryComparisonProps {
   runs: BacktestHistoryRun[];
@@ -175,11 +176,51 @@ export function BacktestHistoryComparison({
               <th style={{ padding: "8px 12px", width: 36, textAlign: "center" }}>Comp</th>
               <th style={{ padding: "8px 12px" }}>Run Date</th>
               <th style={{ padding: "8px 12px" }}>Strategy &amp; Cadence</th>
-              <th style={{ padding: "8px 12px" }}>Conditions</th>
-              <th style={{ padding: "8px 12px", textAlign: "right" }}>Net P&amp;L</th>
-              <th style={{ padding: "8px 12px", textAlign: "right" }}>Win Rate</th>
-              <th style={{ padding: "8px 12px", textAlign: "right" }}>Profit Factor</th>
-              <th style={{ padding: "8px 12px", textAlign: "right" }}>Max Drawdown</th>
+              <th style={{ padding: "8px 12px" }}>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Conditions
+                  <InfoTooltip
+                    title="Strategy Conditions"
+                    content="The exact set of parameters and guardrails configured for this test run."
+                  />
+                </span>
+              </th>
+              <th style={{ padding: "8px 12px", textAlign: "right" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end" }}>
+                  Net P&amp;L
+                  <InfoTooltip
+                    title="Net Realized P&L"
+                    content="Cumulative net rupee (₹) profit or loss generated across all closed condors in the test."
+                  />
+                </span>
+              </th>
+              <th style={{ padding: "8px 12px", textAlign: "right" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end" }}>
+                  Win Rate
+                  <InfoTooltip
+                    title="Win Rate"
+                    content="Percentage of closed condors that produced a positive net profit."
+                  />
+                </span>
+              </th>
+              <th style={{ padding: "8px 12px", textAlign: "right" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end" }}>
+                  Profit Factor
+                  <InfoTooltip
+                    title="Profit Factor"
+                    content="Gross profits divided by gross losses. A ratio above 1.5 indicates a solid statistical edge."
+                  />
+                </span>
+              </th>
+              <th style={{ padding: "8px 12px", textAlign: "right" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "flex-end" }}>
+                  Max Drawdown
+                  <InfoTooltip
+                    title="Maximum Drawdown"
+                    content="Worst peak-to-trough decline in portfolio equity experienced during the test."
+                  />
+                </span>
+              </th>
               <th style={{ padding: "8px 12px", textAlign: "center" }}>Condors</th>
               <th style={{ padding: "8px 12px", textAlign: "right" }}>Actions</th>
             </tr>

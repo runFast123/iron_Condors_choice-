@@ -455,3 +455,5 @@ export function Legend({ items }: { items: { color: string; label: string; dashe
     </div>
   );
 }
+
+export { InfoTooltip, FIELD_EXPLANATIONS } from "./InfoTooltip";

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import type { LiveState, RunSettings } from "@/lib/live";
 import type { ForwardRunSummary } from "@/lib/engine";
 import { inr, num, pct, dateTime, istClock, istDay, shortDate } from "@/lib/format";
-import { Badge } from "@/components/ui";
+import { Badge, InfoTooltip } from "@/components/ui";
 import { CampaignStrip } from "@/components/CampaignStrip";
 import { PastCampaign } from "@/components/PastCampaign";
 import { useCountUp } from "@/lib/useCountUp";
@@ -746,7 +746,10 @@ export function ForwardControl({
                 between two number boxes is no place for the primary button. */}
             <div style={{ display: "flex", gap: "14px 16px", flexWrap: "wrap", alignItems: "flex-start" }}>
               <label style={FIELD}>
-                Strategy
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Strategy
+                  <InfoTooltip field="strategy" />
+                </span>
                 <select
                   value={strategy}
                   onChange={(e) => setStrategy(e.target.value as "ladder" | "hic")}
@@ -766,7 +769,13 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Name
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Name
+                  <InfoTooltip
+                    title="Forward Test Name"
+                    content="A unique descriptive label for this live paper run. Run multiple tests simultaneously to compare strategies side-by-side on the exact same live ticks."
+                  />
+                </span>
                 <input
                   className="auth-input"
                   value={runName}
@@ -789,7 +798,10 @@ export function ForwardControl({
                 )}
               </label>
               <label style={FIELD}>
-                Expiry
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Expiry
+                  <InfoTooltip field="cadence" />
+                </span>
                 <select
                   value={cadence}
                   onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
@@ -802,7 +814,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Time frame
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Time frame
+                  <InfoTooltip field="resolution" />
+                </span>
                 <select
                   value={barMinutes}
                   onChange={(e) => setBarMinutes(Number(e.target.value))}
@@ -823,7 +838,10 @@ export function ForwardControl({
               {strategy === "hic" ? (
                 <>
                   <label style={FIELD}>
-                    Core band
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Core band
+                      <InfoTooltip field="hic_band" />
+                    </span>
                     <select
                       value={bandSteps}
                       onChange={(e) => setBandSteps(Number(e.target.value))}
@@ -843,7 +861,10 @@ export function ForwardControl({
                   </label>
 
                   <label style={FIELD}>
-                    Spread strikes
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Spread strikes
+                      <InfoTooltip field="hic_debit_shift" />
+                    </span>
                     <select
                       value={debitShift}
                       onChange={(e) => setDebitShift(Number(e.target.value) as 0 | 200)}
@@ -861,7 +882,13 @@ export function ForwardControl({
                   </label>
 
                   <label style={FIELD}>
-                    Put spreads
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Put spreads
+                      <InfoTooltip
+                        title="Put Debit Spreads Cap"
+                        content="Maximum number of put debit spreads to buy as the market plunges below the core band."
+                      />
+                    </span>
                     <input
                       type="number" min={0} max={40} value={putSpreads}
                       onChange={(e) => setPutSpreads(Number(e.target.value))}
@@ -870,7 +897,13 @@ export function ForwardControl({
                   </label>
 
                   <label style={FIELD}>
-                    Call spreads
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Call spreads
+                      <InfoTooltip
+                        title="Call Debit Spreads Cap"
+                        content="Maximum number of call debit spreads to buy as the market surges above the core band."
+                      />
+                    </span>
                     <input
                       type="number" min={0} max={40} value={callSpreads}
                       onChange={(e) => setCallSpreads(Number(e.target.value))}
@@ -880,7 +913,10 @@ export function ForwardControl({
                 </>
               ) : (
               <label style={FIELD}>
-                Direction (v2)
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Direction (v2)
+                  <InfoTooltip field="direction" />
+                </span>
                 <select
                   value={direction}
                   onChange={(e) => {
@@ -904,7 +940,10 @@ export function ForwardControl({
 
               {strategy === "hic" ? null : (
               <label style={FIELD}>
-                Anchor mode
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Anchor mode
+                  <InfoTooltip field="anchor_mode" />
+                </span>
                 <select
                   value={anchorMode}
                   onChange={(e) => setAnchorMode(e.target.value as "floor" | "nearest" | "round")}
@@ -919,7 +958,10 @@ export function ForwardControl({
               )}
 
               <label style={FIELD}>
-                Lots
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Lots
+                  <InfoTooltip field="lots" />
+                </span>
                 <input
                   type="number"
                   min={1}
@@ -932,7 +974,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Pause above VIX
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Pause above VIX
+                  <InfoTooltip field="max_vix" />
+                </span>
                 <input
                   type="number"
                   min={1}
@@ -950,7 +995,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Trailing SL (×)
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Trailing SL (×)
+                  <InfoTooltip field="trailing_sl" />
+                </span>
                 <input
                   type="number"
                   min={0.1}
@@ -968,7 +1016,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Trail trigger
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Trail trigger
+                  <InfoTooltip field="trailing_trigger" />
+                </span>
                 <select
                   value={trailingTrigger}
                   onChange={(e) => setTrailingTrigger(e.target.value === "" ? "" : Number(e.target.value))}
@@ -987,7 +1038,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Take profit
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Take profit
+                  <InfoTooltip field="take_profit" />
+                </span>
                 <select
                   value={takeProfit}
                   onChange={(e) => setTakeProfit(e.target.value === "" ? "" : Number(e.target.value))}
@@ -1006,7 +1060,10 @@ export function ForwardControl({
               </label>
 
               <label style={FIELD}>
-                Stop loss
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Stop loss
+                  <InfoTooltip field="stop_loss" />
+                </span>
                 <select
                   value={stopLoss}
                   onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
@@ -1027,7 +1084,10 @@ export function ForwardControl({
               {strategy !== "hic" && (
                 <>
                   <label style={FIELD}>
-                    Skip late entries
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Skip late entries
+                      <InfoTooltip field="min_dte" />
+                    </span>
                     <select
                       value={minDte}
                       onChange={(e) => setMinDte(e.target.value === "" ? "" : Number(e.target.value))}
@@ -1045,7 +1105,10 @@ export function ForwardControl({
                     </span>
                   </label>
                   <label style={FIELD}>
-                    Minimum credit
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Minimum credit
+                      <InfoTooltip field="min_credit" />
+                    </span>
                     <select
                       value={minCredit}
                       onChange={(e) => setMinCredit(e.target.value === "" ? "" : Number(e.target.value))}
@@ -1066,7 +1129,10 @@ export function ForwardControl({
 
               {strategy !== "hic" && direction !== "up" && (
                 <label style={FIELD}>
-                  Max down
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Max down
+                    <InfoTooltip field="max_down" />
+                  </span>
                   <input
                     type="number"
                     min={1}
@@ -1081,7 +1147,10 @@ export function ForwardControl({
 
               {strategy !== "hic" && direction !== "down" && (
                 <label style={FIELD}>
-                  Max up
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Max up
+                    <InfoTooltip field="max_up" />
+                  </span>
                   <input
                     type="number"
                     min={1}

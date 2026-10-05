@@ -859,5 +859,36 @@ input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .pg-bar, .pg-draw { animation: none; stroke-dashoffset: 0; }
   .pg-tabs button, .pg-chip, .pg-progress span, .pg-preset-chip { transition: none; }
+  .info-tooltip-popover { animation: none !important; }
+}
+
+/* ---------------------------------------------------------------------------
+   Interactive Info Tooltip & Helpers
+--------------------------------------------------------------------------- */
+.info-tooltip-btn {
+  color: var(--ink-muted);
+  border-radius: 50%;
+  transition: all 0.15s ease-in-out;
+}
+.info-tooltip-btn:hover,
+.info-tooltip-btn:focus-visible {
+  color: var(--brand);
+  background: var(--brand-soft);
+  transform: scale(1.1);
+  outline: none;
+}
+.info-tooltip-popover {
+  animation: infoTooltipFade 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.18));
+}
+@keyframes infoTooltipFade {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 

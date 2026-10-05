@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BacktestJob } from "@/lib/engine";
+import { InfoTooltip } from "./InfoTooltip";
 
 /** The first day Choice serves intraday NIFTY and India VIX bars. Option
  *  prices before that exist in the recorded history, but a replay needs the
@@ -230,7 +231,10 @@ export function RunBacktest({
           <>
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Range
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Range
+                  <InfoTooltip field="range" />
+                </span>
                 <select
                   value={days}
                   onChange={(e) => setDays(Number(e.target.value))}
@@ -244,7 +248,10 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Bar size
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Bar size
+                  <InfoTooltip field="resolution" />
+                </span>
                 <select
                   value={resolution}
                   onChange={(e) => setResolution(e.target.value)}
@@ -259,7 +266,10 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Expiry
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Expiry
+                  <InfoTooltip field="cadence" />
+                </span>
                 <select
                   value={cadence}
                   onChange={(e) => setCadence(e.target.value as "weekly" | "monthly")}
@@ -272,7 +282,10 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Strategy
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Strategy
+                  <InfoTooltip field="strategy" />
+                </span>
                 <select
                   value={strategy}
                   onChange={(e) => setStrategy(e.target.value as "ladder" | "hic")}
@@ -287,7 +300,10 @@ export function RunBacktest({
               {strategy === "hic" && (
                 <>
                   <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                    Core band
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Core band
+                      <InfoTooltip field="hic_band" />
+                    </span>
                     <select
                       value={bandSteps}
                       onChange={(e) => setBandSteps(Number(e.target.value))}
@@ -301,7 +317,10 @@ export function RunBacktest({
                   </label>
 
                   <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                    Beyond the band
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Beyond the band
+                      <InfoTooltip field="hic_half_mode" />
+                    </span>
                     <select
                       value={halfMode}
                       onChange={(e) => setHalfMode(e.target.value as "buy" | "sell")}
@@ -315,7 +334,10 @@ export function RunBacktest({
 
                   {halfMode === "buy" && (
                     <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                      Spread strikes
+                      <span style={{ display: "inline-flex", alignItems: "center" }}>
+                        Spread strikes
+                        <InfoTooltip field="hic_debit_shift" />
+                      </span>
                       <select
                         value={debitShift}
                         onChange={(e) => setDebitShift(Number(e.target.value) as 0 | 200)}
@@ -332,7 +354,10 @@ export function RunBacktest({
 
               {strategy === "hic" ? null : (
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Direction (v2)
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Direction (v2)
+                  <InfoTooltip field="direction" />
+                </span>
                 <select
                   value={direction}
                   onChange={(e) => {
@@ -355,7 +380,10 @@ export function RunBacktest({
               )}
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Anchor Mode
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Anchor Mode
+                  <InfoTooltip field="anchor_mode" />
+                </span>
                 <select
                   value={anchorMode}
                   onChange={(e) => setAnchorMode(e.target.value as "floor" | "nearest" | "round")}
@@ -369,7 +397,10 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Lots
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Lots
+                  <InfoTooltip field="lots" />
+                </span>
                 <input
                   type="number"
                   min={1}
@@ -382,7 +413,10 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Pause above VIX
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Pause above VIX
+                  <InfoTooltip field="max_vix" />
+                </span>
                 <input
                   type="number"
                   min={1}
@@ -393,12 +427,14 @@ export function RunBacktest({
                   onChange={(e) => setMaxVix(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
                   style={{ marginTop: 5, width: 90 }}
-                  title="No new positions while India VIX is above this; they resume once it is back below. Open positions are not touched. Clear it to switch the rule off."
                 />
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Trailing SL (×)
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Trailing SL (×)
+                  <InfoTooltip field="trailing_sl" />
+                </span>
                 <input
                   type="number"
                   min={0.1}
@@ -409,18 +445,19 @@ export function RunBacktest({
                   onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
                   style={{ marginTop: 5, width: 85 }}
-                  title="Trailing stop-loss distance as a multiple of collected credit (e.g. 0.5x). Exits if trade pulls back by this multiple from its peak profit."
                 />
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Trail trigger
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Trail trigger
+                  <InfoTooltip field="trailing_trigger" />
+                </span>
                 <select
                   value={trailingTrigger}
                   onChange={(e) => setTrailingTrigger(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
                   style={{ marginTop: 5, minWidth: 120 }}
-                  title="Profit required to activate trailing stop-loss. Auto activates once profit covers trailing distance (locking in breakeven)."
                 >
                   <option value="">Auto (breakeven)</option>
                   <option value={0.1}>At 10% profit</option>
@@ -431,13 +468,15 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Take profit
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Take profit
+                  <InfoTooltip field="take_profit" />
+                </span>
                 <select
                   value={takeProfit}
                   onChange={(e) => setTakeProfit(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
                   style={{ marginTop: 5, minWidth: 110 }}
-                  title="Fixed take-profit target as % of credit. Off = hold to expiry."
                 >
                   <option value="">Hold</option>
                   <option value={0.4}>40% of credit</option>
@@ -448,13 +487,15 @@ export function RunBacktest({
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                Stop loss
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Stop loss
+                  <InfoTooltip field="stop_loss" />
+                </span>
                 <select
                   value={stopLoss}
                   onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
                   style={{ marginTop: 5, minWidth: 100 }}
-                  title="Fixed initial stop-loss multiple of credit (e.g. 2x). Off = hold to expiry."
                 >
                   <option value="">Hold</option>
                   <option value={1.0}>1.0× credit</option>
@@ -467,13 +508,15 @@ export function RunBacktest({
               {strategy !== "hic" && (
                 <>
                   <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                    Skip late entries
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Skip late entries
+                      <InfoTooltip field="min_dte" />
+                    </span>
                     <select
                       value={minDte}
                       onChange={(e) => setMinDte(e.target.value === "" ? "" : Number(e.target.value))}
                       className="auth-input"
                       style={{ marginTop: 5, minWidth: 150 }}
-                      title="Do not open a condor with fewer than this many days to expiry."
                     >
                       <option value="">Off</option>
                       <option value={3}>Under 3 days left</option>
@@ -483,13 +526,15 @@ export function RunBacktest({
                     </select>
                   </label>
                   <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                    Minimum credit
+                    <span style={{ display: "inline-flex", alignItems: "center" }}>
+                      Minimum credit
+                      <InfoTooltip field="min_credit" />
+                    </span>
                     <select
                       value={minCredit}
                       onChange={(e) => setMinCredit(e.target.value === "" ? "" : Number(e.target.value))}
                       className="auth-input"
                       style={{ marginTop: 5, minWidth: 150 }}
-                      title="Do not open a condor collecting less than this share of its wing. 50% is 'max loss must not exceed the credit'."
                     >
                       <option value="">Off</option>
                       <option value={0.45}>45% of the wing</option>
@@ -502,7 +547,10 @@ export function RunBacktest({
 
               {strategy !== "hic" && direction !== "up" && (
                 <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max down
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Max down
+                    <InfoTooltip field="max_down" />
+                  </span>
                   <input
                     type="number"
                     min={1}
@@ -517,7 +565,10 @@ export function RunBacktest({
 
               {strategy !== "hic" && direction !== "down" && (
                 <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                  Max up
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Max up
+                    <InfoTooltip field="max_up" />
+                  </span>
                   <input
                     type="number"
                     min={1}
