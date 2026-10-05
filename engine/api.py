@@ -911,9 +911,7 @@ def backtest_delete_single(
     session: UserSession = Depends(current_user),
 ) -> dict[str, Any]:
     deleted = backtest_store.delete(session.user_id, run_id)
-    if not deleted:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run {run_id} not found.")
-    return {"ok": True, "run_id": run_id}
+    return {"ok": True, "run_id": run_id, "deleted": deleted}
 
 
 # ------------------------------------------------------------ forward testing

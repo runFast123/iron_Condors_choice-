@@ -26,10 +26,6 @@ export async function POST(request: Request) {
   }
 
   try {
-    if (unique.length === 1 && body.run_id && !body.run_ids) {
-      const res = await engine.backtestDelete(token, unique[0]);
-      return NextResponse.json(res);
-    }
     const res = await engine.backtestDeleteMany(token, unique);
     return NextResponse.json(res);
   } catch (err) {
