@@ -19,6 +19,7 @@ where a premium came from — but every quote it returns carries its
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Protocol
@@ -40,6 +41,8 @@ from engine.pricing.iv_surface import IVSurface
 from engine.strategy.condor import PriceSource
 
 CALL, PUT = "CE", "PE"
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,14 @@ class CandlePriceProvider:
         if frame is None or frame.empty:
             return
         ordered = frame.sort_values("ts").reset_index(drop=True)
+        if "close" in ordered:
+            closes = ordered["close"]
+            if (closes <= 0).any() or (closes > 2500).any() or (right == "PE" and (closes >= strike).any()):
+                log.warning(
+                    "CandlePriceProvider rejected candle frame for %s %g %s: unphysical prices (min=%.2f, max=%.2f)",
+                    expiry, strike, right, float(closes.min()), float(closes.max()),
+                )
+                return
         self.candles[(expiry, float(strike), right)] = ordered
 
     def quote(self, request: PriceRequest) -> Quote | None:
@@ -138,7 +149,7 @@ class CandlePriceProvider:
             return None
 
         price = float(row["close"])
-        if price <= 0:
+        if price <= 0 or price > 2500 or (request.right == "PE" and price >= request.strike):
             self.misses += 1
             return None
         self.hits += 1

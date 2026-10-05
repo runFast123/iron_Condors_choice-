@@ -411,6 +411,27 @@ class ChoiceMarketData:
         """
         resolver = instruments if instruments is not None else self.master
         contract = resolver.option(underlying, expiry, strike, right)
+
+        # Choice hands a settled contract's token to a new instrument upon
+        # expiry, and ChartData is keyed solely by (segment, token). If today's
+        # active scrip master maps this token to a different instrument (e.g. a
+        # stock future or equity), querying Choice will return the active
+        # instrument's bars rather than the expired option's.
+        active = getattr(getattr(self, "master", None), "by_token", {}).get(contract.token)
+        if active is not None:
+            active_und = (active.underlying or active.symbol or "").upper()
+            active_expiry = active.expiry
+            active_strike = active.strike
+            active_right = active.option_type
+            if (active_und != underlying.upper() or active_expiry != expiry or
+                    active_strike != strike or active_right != right):
+                log.warning(
+                    "Refusing Choice candles for %s %s %g %s (token %s): token currently belongs to %s (%s)",
+                    underlying, expiry, strike, right, contract.token,
+                    active.symbol, active.expiry,
+                )
+                return pd.DataFrame()
+
         frame = self.candles(contract, start, end, resolution)
 
         # Nothing after the contract's own expiry. Choice hands a settled
@@ -429,6 +450,20 @@ class ChoiceMarketData:
                     int(late.sum()), expiry, underlying, strike, right, contract.token,
                 )
                 frame = frame[~late].reset_index(drop=True)
+
+        # Reject unphysical prices for NIFTY options (e.g. recycled stock futures
+        # or corrupt prints). Options cannot have non-positive prices, cannot exceed
+        # 2500 points for ATM/OTM structures, and a Put cannot trade at or above its strike.
+        if not frame.empty and "close" in frame:
+            bad = (frame["close"] <= 0) | (frame["close"] > 2500) | ((right == "PE") & (frame["close"] >= strike))
+            if bad.any():
+                log.warning(
+                    "Discarded Choice candles for %s %s %g %s (token %s): %d unphysical price bars (e.g. close=%.2f)",
+                    underlying, expiry, strike, right, contract.token,
+                    int(bad.sum()), float(frame.loc[bad, "close"].iloc[0]),
+                )
+                return pd.DataFrame()
+
         return frame
 
     # ------------------------------------------------------------------ live

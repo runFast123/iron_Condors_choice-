@@ -13,6 +13,7 @@ from engine.backtest.providers import (
     FallbackPriceProvider,
     ModelPriceProvider,
     PriceRequest,
+    Quote,
 )
 from engine.backtest.runner import (
     Backtest,
@@ -452,3 +453,48 @@ def test_each_contract_trades_at_the_lot_size_of_its_expiry():
     result = run([24_000] * 5, params=params)
     assert {fl.leg.qty for fl in result.condors[0].legs} == {25}
     assert result.condors[0].config.lot_size == 25
+
+
+def test_unphysical_condor_credit_exceeding_wing_width_is_rejected():
+    """An iron condor with net credit exceeding wing_width * qty (e.g. from
+    corrupt recycled token prices) violates no-arbitrage bounds and must be rejected."""
+    # Custom provider that prices legs with an impossible spread:
+    # Sell legs at 7486.0 (like recycled Apollo Hospitals stock future),
+    # Buy legs at 10.0.
+    # Wing width is 200, qty is 65 -> max allowed credit is 13,000.
+    # Credit would be (7486*2 - 10*2) * 65 = ~971,880!
+    class CorruptProvider:
+        def quote(self, request):
+            if request.strike in (23800.0, 24200.0):
+                # Short legs
+                return Quote(price=1000.0, source=PriceSource.CHOICE)
+            # Long legs
+            return Quote(price=10.0, source=PriceSource.CHOICE)
+
+    result = run([24_000] * 5, provider=CorruptProvider())
+    assert len(result.condors) == 0, "Corrupt condor exceeding wing width must not be opened"
+    assert any("invalid condor credit" in reason for _, _, reason in result.skipped)
+
+
+def test_candle_price_provider_rejects_unphysical_frames_and_quotes():
+    """CandlePriceProvider drops frames with price > 2500 or PE >= strike."""
+    provider = CandlePriceProvider()
+    expiry = dt.date(2025, 10, 28)
+    frame = pd.DataFrame({
+        "ts": [dt.datetime(2025, 10, 3, 10, 0, tzinfo=IST)],
+        "close": [7486.35],
+    })
+    provider.add(expiry, 24700.0, "PE", frame)
+    assert (expiry, 24700.0, "PE") not in provider.candles
+
+    # Valid price is accepted
+    valid_frame = pd.DataFrame({
+        "ts": [dt.datetime(2025, 10, 3, 10, 0, tzinfo=IST)],
+        "close": [125.45],
+    })
+    provider.add(expiry, 24700.0, "PE", valid_frame)
+    assert (expiry, 24700.0, "PE") in provider.candles
+    q = provider.quote(PriceRequest(expiry=expiry, strike=24700.0, right="PE",
+                                    when=dt.datetime(2025, 10, 3, 10, 0, tzinfo=IST), spot=25000.0))
+    assert q is not None and q.price == 125.45
+

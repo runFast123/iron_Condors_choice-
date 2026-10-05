@@ -296,6 +296,9 @@ class Backtest:
             )
             if quote is None:
                 return None
+            if quote.price <= 0 or quote.price > 2500 or (leg.right == "PE" and quote.price >= leg.strike):
+                log.warning("Leg %s price %.2f rejected as unphysical", leg, quote.price)
+                return None
             out[leg] = (quote.price, quote.source)
         return out
 
@@ -484,6 +487,17 @@ class Backtest:
                     kind=kind,
                     k=k,
                 )
+                if condor.kind is UnitKind.CONDOR:
+                    max_allowed_credit = condor.wing_width * condor.config.qty
+                    if condor.credit > max_allowed_credit:
+                        log.warning(
+                            "Condor at %g on %s rejected: credit %.2f exceeds max wing width limit %.2f",
+                            trigger.level, when, condor.credit, max_allowed_credit,
+                        )
+                        result.skipped.append(
+                            (when, trigger.level, f"invalid condor credit {condor.credit:.2f} (max allowed {max_allowed_credit:.2f})")
+                        )
+                        continue
                 refusal = entry_refusal(condor, when.date(), params.strategy)
                 if refusal is not None:
                     # Recorded, not silent: a filter that quietly thins the

@@ -80,14 +80,14 @@ log = logging.getLogger(__name__)
 #        as expiry scenarios; daily bars valued at their 15:30 close; no VIX
 #        or chain shape from after a bar; anchor condors reported apart;
 #        simple annual return in place of a compounded "CAGR".
-RESULT_VERSION = 8
+RESULT_VERSION = 9
 
 #: Why results older than RESULT_VERSION are no longer shown -- the newest fix
 #: first, since it is the one every older result is missing.
 RETIRED_BECAUSE = (
-    "modelled option prices are now anchored to the exchange's own closing prices for the "
-    "same contracts on the previous day; measured against those prices, the India VIX model "
-    "used before priced out-of-the-money legs about 13% too high on average"
+    "expired option contracts are now sourced directly from the recorded one-minute history "
+    "(nifty.db) instead of Choice's recycled contract tokens, and option prices and iron condor "
+    "credits are validated against mathematical wing-width bounds"
 )
 
 # A fitted surface describes the market on the day it was measured. Older than
@@ -857,8 +857,8 @@ class BacktestRunner:
                 served_nothing.append(f"{req.expiry} {req.strike:g}{req.right}")
         if not_asked:
             log.info(
-                "[%s] %d legs not asked of Choice: it had no bars for the first %d of their expiry, "
-                "and the recorded history holds it", job.job_id, len(not_asked), CHOICE_EMPTY_PROBES,
+                "[%s] %d legs not asked of Choice: expired and present in recorded history (or Choice had no bars)",
+                job.job_id, len(not_asked),
             )
 
         if served_nothing:

@@ -223,3 +223,89 @@ def test_a_long_backtest_keeps_only_a_few_dated_masters(monkeypatch):
     dated = [m for _, m in resolver._loaded if m is not base]
     assert len(dated) == mod.LOADED_MASTERS
     assert any(m is base for _, m in resolver._loaded)            # today's always stays
+
+
+def test_recycled_token_mapped_to_different_instrument_is_refused():
+    """When a contract's token has been reassigned to a different active instrument
+    (e.g. a stock future or equity), market.option_candles refuses Choice data to
+    prevent corrupt foreign prices from leaking into the backtest."""
+    from engine.config import IST
+    from engine.data.market import ChoiceMarketData
+    import pandas as pd
+
+    expiry = dt.date(2025, 10, 28)
+    token = 58894
+
+    class FakeResolver:
+        def option(self, underlying, exp, strike, right):
+            return type("C", (), {
+                "token": token,
+                "expiry": exp,
+                "strike": strike,
+                "option_type": right,
+                "underlying": underlying,
+            })()
+
+    # Active master maps this token to Apollo Hospitals December future instead of NIFTY PE
+    class ActiveMaster:
+        by_token = {
+            token: type("Active", (), {
+                "token": token,
+                "symbol": "APOLLOHOSP",
+                "underlying": None,
+                "expiry": dt.date(2026, 12, 29),
+                "strike": None,
+                "option_type": None,
+            })()
+        }
+
+    market = ChoiceMarketData.__new__(ChoiceMarketData)
+    market.master = ActiveMaster()
+    # If called, it would have returned Apollo Hospitals bars
+    market.candles = lambda contract, start, end, resolution="5", **kw: pd.DataFrame({
+        "ts": [dt.datetime(2025, 10, 3, 10, 0, tzinfo=IST)],
+        "close": [7486.35],
+    })
+
+    out = market.option_candles(
+        "NIFTY", expiry, 24_700.0, "PE",
+        dt.date(2025, 10, 1), dt.date(2025, 10, 5),
+        instruments=FakeResolver(),
+    )
+    assert out.empty, "Recycled token must be rejected and return empty DataFrame"
+
+
+def test_unphysical_option_prices_are_discarded():
+    """Option candles exceeding 2500 pts or with PE close >= strike are discarded."""
+    from engine.config import IST
+    from engine.data.market import ChoiceMarketData
+    import pandas as pd
+
+    expiry = dt.date(2025, 10, 28)
+
+    class FakeResolver:
+        def option(self, underlying, exp, strike, right):
+            return type("C", (), {
+                "token": 12345,
+                "expiry": exp,
+                "strike": strike,
+                "option_type": right,
+                "underlying": underlying,
+            })()
+
+    market = ChoiceMarketData.__new__(ChoiceMarketData)
+    market.master = type("M", (), {"by_token": {}})()
+
+    # Bars with price 7486 for a 24700 PE
+    market.candles = lambda *a, **k: pd.DataFrame({
+        "ts": [dt.datetime(2025, 10, 3, 10, 0, tzinfo=IST)],
+        "close": [7486.35],
+    })
+
+    out = market.option_candles(
+        "NIFTY", expiry, 24_700.0, "PE",
+        dt.date(2025, 10, 1), dt.date(2025, 10, 5),
+        instruments=FakeResolver(),
+    )
+    assert out.empty, "Unphysical candle price (>2500) must be discarded"
+
