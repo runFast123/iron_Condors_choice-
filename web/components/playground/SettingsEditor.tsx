@@ -54,6 +54,67 @@ export function applyEdits(base: RunSettings, edits: Edits): Record<string, unkn
   return { ...base, ...edits };
 }
 
+export interface StrategyPreset {
+  id: string;
+  label: string;
+  icon: string;
+  hint: string;
+  replayOnly?: boolean;
+  ladderOnly?: boolean;
+  edits: Edits;
+}
+
+export const STRATEGY_PRESETS: StrategyPreset[] = [
+  {
+    id: "sl_2x",
+    label: "2.0× Stop Loss",
+    icon: "🛡️",
+    hint: "Cut losses if condor loses 2× collected credit",
+    replayOnly: true,
+    edits: { stop_loss: 2.0 },
+  },
+  {
+    id: "tp_50",
+    label: "50% Take Profit",
+    icon: "🎯",
+    hint: "Lock in gains when condor reaches 50% max profit",
+    replayOnly: true,
+    edits: { take_profit: 0.5 },
+  },
+  {
+    id: "vix_14",
+    label: "VIX ≤ 14 Guard",
+    icon: "⚡",
+    hint: "Pause new entries when India VIX rises above 14.0",
+    edits: { max_entry_vix: 14.0 },
+  },
+  {
+    id: "two_way",
+    label: "Two-Way Ladder",
+    icon: "↔️",
+    hint: "Trade both up and down moves instead of one-way",
+    ladderOnly: true,
+    edits: { direction: "both" },
+  },
+  {
+    id: "step_150",
+    label: "Wider 150 Step",
+    icon: "🪜",
+    hint: "Place condors every 150 points for wider spacing",
+    ladderOnly: true,
+    edits: { step: 150 },
+  },
+  {
+    id: "tf_5m",
+    label: "5-Min Bar Filter",
+    icon: "⏱️",
+    hint: "Trigger levels on 5-min bar closes instead of 1-min ticks",
+    replayOnly: true,
+    ladderOnly: true,
+    edits: { bar_minutes: 5 },
+  },
+];
+
 export function SettingsEditor({
   base,
   edits,
@@ -67,12 +128,38 @@ export function SettingsEditor({
 }) {
   const hic = base.strategy === "hic";
   const fields = FIELDS.filter((f) => (hic ? !f.ladderOnly : !f.hicOnly) && (mode === "replay" || !f.replayOnly));
+  const presets = STRATEGY_PRESETS.filter((p) => (!p.replayOnly || mode === "replay") && (!p.ladderOnly || !hic));
 
   const value = (f: Field): number | string | null => {
     const v = f.key in edits ? edits[f.key] : (base[f.key] as number | string | null | undefined);
     return v ?? null;
   };
   const changed = (f: Field) => f.key in edits && (edits[f.key] ?? null) !== ((base[f.key] as unknown) ?? null);
+
+  const isPresetActive = (p: StrategyPreset) => {
+    return Object.entries(p.edits).every(([k, expected]) => {
+      const key = k as keyof RunSettings;
+      const current = key in edits ? edits[key] : base[key];
+      return current === expected;
+    });
+  };
+
+  const togglePreset = (p: StrategyPreset) => {
+    const active = isPresetActive(p);
+    const next = { ...edits };
+    if (active) {
+      // Toggle off: revert preset keys back to base or remove
+      for (const k of Object.keys(p.edits) as (keyof RunSettings)[]) {
+        delete next[k];
+      }
+    } else {
+      // Toggle on: apply preset keys
+      for (const [k, v] of Object.entries(p.edits)) {
+        (next as Record<string, unknown>)[k] = v;
+      }
+    }
+    onChange(next);
+  };
 
   const set = (f: Field, raw: string) => {
     let next: number | string | null;
@@ -85,35 +172,61 @@ export function SettingsEditor({
   };
 
   return (
-    <div className="pg-fields">
-      {fields.map((f) => {
-        const v = value(f);
-        const shown = v == null ? "" : f.percent && typeof v === "number" ? String(Math.round(v * 1000) / 10) : String(v);
-        return (
-          <label key={f.key} className={`pg-field${changed(f) ? " is-changed" : ""}`}>
-            <span className="pg-field-label">
-              {f.label}
-              {changed(f) && <span className="pg-field-was">was {formatBase(f, base)}</span>}
-            </span>
-            {f.kind === "select" ? (
-              <select className="auth-input" value={shown} onChange={(e) => set(f, e.target.value)}>
-                {f.options!.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            ) : (
-              <input
-                className="auth-input"
-                type="number"
-                inputMode="decimal"
-                step={f.step ?? "any"}
-                value={shown}
-                placeholder={f.kind === "optional" ? "off" : undefined}
-                onChange={(e) => set(f, e.target.value)}
-              />
-            )}
-            <span className="pg-field-hint">{f.hint}</span>
-          </label>
-        );
-      })}
+    <div>
+      {presets.length > 0 && (
+        <div className="pg-presets-bar">
+          <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginRight: 4 }}>
+            ⚡ Quick What-If Ideas:
+          </span>
+          {presets.map((p) => {
+            const active = isPresetActive(p);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className={`pg-preset-chip${active ? " is-active" : ""}`}
+                onClick={() => togglePreset(p)}
+                title={p.hint}
+              >
+                <span>{p.icon}</span>
+                <span>{p.label}</span>
+                {active && <span style={{ fontSize: 10, marginLeft: 2 }}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="pg-fields">
+        {fields.map((f) => {
+          const v = value(f);
+          const shown = v == null ? "" : f.percent && typeof v === "number" ? String(Math.round(v * 1000) / 10) : String(v);
+          return (
+            <label key={f.key} className={`pg-field${changed(f) ? " is-changed" : ""}`}>
+              <span className="pg-field-label">
+                {f.label}
+                {changed(f) && <span className="pg-field-was">was {formatBase(f, base)}</span>}
+              </span>
+              {f.kind === "select" ? (
+                <select className="auth-input" value={shown} onChange={(e) => set(f, e.target.value)}>
+                  {f.options!.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              ) : (
+                <input
+                  className="auth-input"
+                  type="number"
+                  inputMode="decimal"
+                  step={f.step ?? "any"}
+                  value={shown}
+                  placeholder={f.kind === "optional" ? "off" : undefined}
+                  onChange={(e) => set(f, e.target.value)}
+                />
+              )}
+              <span className="pg-field-hint">{f.hint}</span>
+            </label>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -115,13 +115,15 @@ export function CompareLines({
   a,
   b,
   height = 240,
+  hasChanges = true,
 }: {
   a: { ts: string; equity: number }[];
   b: { ts: string; equity: number }[];
   height?: number;
+  hasChanges?: boolean;
 }) {
   const model = useMemo(() => {
-    const pts = [...a, ...b];
+    const pts = hasChanges ? [...a, ...b] : [...a];
     if (pts.length < 2) return null;
     const ts = pts.map((p) => Date.parse(p.ts));
     const t0 = Math.min(...ts), t1 = Math.max(...ts);
@@ -134,7 +136,7 @@ export function CompareLines({
     const path = (s: { ts: string; equity: number }[]) =>
       s.map((p, i) => `${i ? "L" : "M"}${x(Date.parse(p.ts)).toFixed(1)},${y(p.equity).toFixed(1)}`).join(" ");
     return { x, y, lo, hi, t0, t1, path };
-  }, [a, b, height]);
+  }, [a, b, height, hasChanges]);
   if (!model) return null;
   const { y, lo, hi, t0, t1, path } = model;
   return (
@@ -146,8 +148,14 @@ export function CompareLines({
           <text x={PAD.left - 8} y={y(v) + 4} fontSize={11} fill="var(--ink-muted)" textAnchor="end">{inrCompact(v)}</text>
         </g>
       ))}
-      <path d={path(a)} fill="none" stroke="var(--ink-muted)" strokeWidth={2} className="pg-draw" />
-      <path d={path(b)} fill="none" stroke="var(--brand)" strokeWidth={2.4} className="pg-draw" />
+      {hasChanges ? (
+        <>
+          <path d={path(a)} fill="none" stroke="var(--ink-muted)" strokeWidth={1.8} strokeDasharray="5 4" className="pg-draw" />
+          <path d={path(b)} fill="none" stroke="var(--brand)" strokeWidth={2.4} className="pg-draw" />
+        </>
+      ) : (
+        <path d={path(a)} fill="none" stroke="var(--brand)" strokeWidth={2.2} className="pg-draw" />
+      )}
       <text x={PAD.left} y={height - 8} fontSize={11} fill="var(--ink-muted)">{istDay(t0 / 1000)}</text>
       <text x={W - PAD.right} y={height - 8} fontSize={11} fill="var(--ink-muted)" textAnchor="end">{istDay(t1 / 1000)}</text>
     </svg>
