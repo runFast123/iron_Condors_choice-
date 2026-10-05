@@ -9,6 +9,19 @@ import { CampaignStrip } from "@/components/CampaignStrip";
 import { PayoffChart } from "@/components/charts/PayoffChart";
 import { SettingsEditor, type Edits } from "@/components/playground/SettingsEditor";
 import { CompareLines, OutcomeHistogram, sharedBins } from "@/components/playground/Charts";
+import {
+  IconInfo,
+  IconChevronUp,
+  IconChevronDown,
+  IconSparkles,
+  IconTrendingUp,
+  IconTrendingDown,
+  IconHourglass,
+  IconTarget,
+  IconShield,
+  IconZap,
+  IconBarChart,
+} from "@/components/playground/Icons";
 
 /** Follow a playground job until it finishes. */
 function useJob<R>(id: string | null): PlaygroundJob<R> | null {
@@ -173,11 +186,17 @@ function LookBack({ run }: { run: PlaygroundRun }) {
             disabled={busy || !campaign}
             onClick={() => void replay()}
           >
-            {busy
-              ? "Running Simulation…"
-              : Object.keys(edits).length > 0
-              ? "⚡ Run What-If Simulation"
-              : "📊 Benchmark Model Baseline"}
+            {busy ? (
+              "Running Simulation…"
+            ) : Object.keys(edits).length > 0 ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <IconSparkles size={14} /> Run What-If Simulation
+              </span>
+            ) : (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <IconBarChart size={14} /> Benchmark Model Baseline
+              </span>
+            )}
           </button>
           {Object.keys(edits).length > 0 && (
             <button className="btn-quiet" onClick={() => setEdits({})}>
@@ -200,13 +219,37 @@ function LookBack({ run }: { run: PlaygroundRun }) {
   );
 }
 
-function formatExitReason(reason: string | null | undefined): string | null {
+function formatExitReason(reason: string | null | undefined): ReactNode {
   if (!reason) return null;
   const lower = reason.toLowerCase();
-  if (lower.includes("take-profit") || lower.includes("take profit")) return "🎯 Take profit";
-  if (lower.includes("stop-loss") || lower.includes("stop loss")) return "🛡️ Stop loss";
-  if (lower.includes("expiry") || lower.includes("official nifty close")) return "⌛ Expiry settlement";
-  if (lower.includes("vix")) return "⚡ VIX ceiling";
+  if (lower.includes("take-profit") || lower.includes("take profit")) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <IconTarget size={11} /> Take profit
+      </span>
+    );
+  }
+  if (lower.includes("stop-loss") || lower.includes("stop loss")) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <IconShield size={11} /> Stop loss
+      </span>
+    );
+  }
+  if (lower.includes("expiry") || lower.includes("official nifty close")) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <IconHourglass size={11} /> Expiry settlement
+      </span>
+    );
+  }
+  if (lower.includes("vix")) {
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <IconZap size={11} /> VIX ceiling
+      </span>
+    );
+  }
   return reason;
 }
 
@@ -281,13 +324,17 @@ function ReplayResults({
           onClick={() => setShowExplainer((v) => !v)}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 16 }}>💡</span>
+            <IconInfo size={16} style={{ color: "var(--brand)", flexShrink: 0 }} />
             <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
               Understanding the numbers — which number should you believe?
             </span>
           </div>
-          <span style={{ fontSize: 11.5, color: "var(--brand-strong)", fontWeight: 600 }}>
-            {showExplainer ? "Hide guide ▲" : "Show guide ▼"}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "var(--brand-strong)", fontWeight: 600 }}>
+            {showExplainer ? (
+              <>Hide guide <IconChevronUp size={13} /></>
+            ) : (
+              <>Show guide <IconChevronDown size={13} /></>
+            )}
           </span>
         </div>
         {showExplainer && (
@@ -360,8 +407,12 @@ function ReplayResults({
           <div className="pg-kpi-card is-whatif">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span className="pg-kpi-badge is-whatif">What-If Scenario</span>
-              <span style={{ fontSize: 11, fontWeight: 700, color: strategicImpact >= 0 ? "var(--pos)" : "var(--neg)" }}>
-                {strategicImpact >= 0 ? "▲ Better" : "▼ Worse"}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 700, color: strategicImpact >= 0 ? "var(--pos)" : "var(--neg)" }}>
+                {strategicImpact >= 0 ? (
+                  <><IconTrendingUp size={12} /> Outperforming</>
+                ) : (
+                  <><IconTrendingDown size={12} /> Underperforming</>
+                )}
               </span>
             </div>
             <div className="pg-kpi-value tnum" style={{ color: b.metrics.total_pnl >= 0 ? "var(--pos)" : "var(--neg)" }}>
@@ -376,7 +427,9 @@ function ReplayResults({
           </div>
         ) : (
           <div className="pg-kpi-card is-prompt">
-            <div style={{ fontSize: 20, marginBottom: 2 }}>⚡</div>
+            <div style={{ display: "inline-grid", placeItems: "center", width: 34, height: 34, borderRadius: "50%", background: "color-mix(in srgb, var(--brand) 14%, var(--surface))", color: "var(--brand-strong)", marginBottom: 4 }}>
+              <IconSparkles size={17} />
+            </div>
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Simulate a What-If Scenario</div>
             <div style={{ fontSize: 11.5, color: "var(--ink-muted)", marginTop: 2 }}>
               Click any quick preset in Step 2 above to test alternative stop-loss, take-profit, or grid rules.
@@ -633,7 +686,17 @@ function LookAhead({ run }: { run: PlaygroundRun }) {
         <SettingsEditor base={run.settings} edits={edits} onChange={setEdits} mode="plan" />
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 14, flexWrap: "wrap" }}>
           <button className="auth-submit" style={{ marginTop: 0, minWidth: 200 }} disabled={busy} onClick={() => void start()}>
-            {busy ? "Running 1,000 Paths…" : Object.keys(edits).length ? "⚡ Simulate Both Plans" : "📊 Simulate Current Settings"}
+            {busy ? (
+              "Running 1,000 Paths…"
+            ) : Object.keys(edits).length ? (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <IconSparkles size={14} /> Simulate Both Plans
+              </span>
+            ) : (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <IconBarChart size={14} /> Simulate Current Settings
+              </span>
+            )}
           </button>
           {Object.keys(edits).length > 0 && <button className="btn-quiet" onClick={() => setEdits({})}>Reset to current settings</button>}
           <span style={{ fontSize: 12, color: "var(--ink-muted)" }}>

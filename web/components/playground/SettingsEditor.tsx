@@ -1,6 +1,17 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { RunSettings } from "@/lib/live";
+import {
+  IconShield,
+  IconTarget,
+  IconZap,
+  IconTwoWay,
+  IconLadder,
+  IconClock,
+  IconCheck,
+  IconSparkles,
+} from "./Icons";
 
 /** The settings a replay or a plan may change, and how each is shown. */
 type Field = {
@@ -57,7 +68,7 @@ export function applyEdits(base: RunSettings, edits: Edits): Record<string, unkn
 export interface StrategyPreset {
   id: string;
   label: string;
-  icon: string;
+  icon: ReactNode;
   hint: string;
   replayOnly?: boolean;
   ladderOnly?: boolean;
@@ -68,7 +79,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: "sl_2x",
     label: "2.0× Stop Loss",
-    icon: "🛡️",
+    icon: <IconShield size={13} />,
     hint: "Cut losses if condor loses 2× collected credit",
     replayOnly: true,
     edits: { stop_loss: 2.0 },
@@ -76,7 +87,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: "tp_50",
     label: "50% Take Profit",
-    icon: "🎯",
+    icon: <IconTarget size={13} />,
     hint: "Lock in gains when condor reaches 50% max profit",
     replayOnly: true,
     edits: { take_profit: 0.5 },
@@ -84,14 +95,14 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: "vix_14",
     label: "VIX ≤ 14 Guard",
-    icon: "⚡",
+    icon: <IconZap size={13} />,
     hint: "Pause new entries when India VIX rises above 14.0",
     edits: { max_entry_vix: 14.0 },
   },
   {
     id: "two_way",
     label: "Two-Way Ladder",
-    icon: "↔️",
+    icon: <IconTwoWay size={13} />,
     hint: "Trade both up and down moves instead of one-way",
     ladderOnly: true,
     edits: { direction: "both" },
@@ -99,7 +110,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: "step_150",
     label: "Wider 150 Step",
-    icon: "🪜",
+    icon: <IconLadder size={13} />,
     hint: "Place condors every 150 points for wider spacing",
     ladderOnly: true,
     edits: { step: 150 },
@@ -107,7 +118,7 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
     id: "tf_5m",
     label: "5-Min Bar Filter",
-    icon: "⏱️",
+    icon: <IconClock size={13} />,
     hint: "Trigger levels on 5-min bar closes instead of 1-min ticks",
     replayOnly: true,
     ladderOnly: true,
@@ -148,12 +159,10 @@ export function SettingsEditor({
     const active = isPresetActive(p);
     const next = { ...edits };
     if (active) {
-      // Toggle off: revert preset keys back to base or remove
       for (const k of Object.keys(p.edits) as (keyof RunSettings)[]) {
         delete next[k];
       }
     } else {
-      // Toggle on: apply preset keys
       for (const [k, v] of Object.entries(p.edits)) {
         (next as Record<string, unknown>)[k] = v;
       }
@@ -175,8 +184,9 @@ export function SettingsEditor({
     <div>
       {presets.length > 0 && (
         <div className="pg-presets-bar">
-          <span style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginRight: 4 }}>
-            ⚡ Quick What-If Ideas:
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 700, color: "var(--ink-muted)", textTransform: "uppercase", letterSpacing: "0.04em", marginRight: 4 }}>
+            <IconSparkles size={13} style={{ color: "var(--brand)" }} />
+            Quick What-If Ideas:
           </span>
           {presets.map((p) => {
             const active = isPresetActive(p);
@@ -188,9 +198,13 @@ export function SettingsEditor({
                 onClick={() => togglePreset(p)}
                 title={p.hint}
               >
-                <span>{p.icon}</span>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>{p.icon}</span>
                 <span>{p.label}</span>
-                {active && <span style={{ fontSize: 10, marginLeft: 2 }}>✓</span>}
+                {active && (
+                  <span style={{ display: "inline-flex", alignItems: "center", color: "var(--brand-strong)", marginLeft: 2 }}>
+                    <IconCheck size={11} />
+                  </span>
+                )}
               </button>
             );
           })}
