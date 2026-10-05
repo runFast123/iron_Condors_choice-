@@ -296,7 +296,7 @@ export default async function AboutPage() {
                   ["Minimum credit", params.min_credit_ratio == null ? "Off" : `${pct(params.min_credit_ratio)} of the wing`],
                   ["Pause new positions above India VIX", params.max_entry_vix == null ? "Off" : String(params.max_entry_vix)],
                   ["Take profit", params.take_profit_pct == null ? "Off - held to expiry" : pct(params.take_profit_pct) + " of credit"],
-                  ["Stop loss", params.stop_loss_mult == null ? "Off - held to expiry" : `${params.stop_loss_mult}x credit`],
+                  ["Monthly Campaign Stop Loss", params.stop_loss_mult == null ? "Off - held to expiry" : (params.stop_loss_mult > 20 ? `₹${params.stop_loss_mult.toLocaleString()}` : `${params.stop_loss_mult}x credit`)],
                 ].map(([k, v]) => (
                   <tr key={k}>
                     <td style={{ color: "var(--ink-muted)", width: 260 }}>{k}</td>

@@ -150,8 +150,16 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
           <span style={{ color: "var(--ink)" }}>
             {[
               isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% TP` : null,
-              isStopLossActive ? `${params.stop_loss_mult}x SL` : null,
-              isTrailingSlActive ? `${params.trailing_sl_mult}x Trail SL` : null,
+              isStopLossActive
+                ? params.stop_loss_mult! > 20
+                  ? `₹${params.stop_loss_mult!.toLocaleString()} Campaign SL`
+                  : `${params.stop_loss_mult}x Campaign SL`
+                : null,
+              isTrailingSlActive
+                ? params.trailing_sl_mult! > 20
+                  ? `₹${params.trailing_sl_mult!.toLocaleString()} Trail SL`
+                  : `${params.trailing_sl_mult}x Trail SL`
+                : null,
             ].filter(Boolean).join(" / ") || "Hold to expiry"}
           </span>
           <InfoTooltip
@@ -303,8 +311,16 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                 <span style={{ fontWeight: 600 }}>
                   {[
                     isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% Take Profit` : null,
-                    isStopLossActive ? `${params.stop_loss_mult}x Stop Loss` : null,
-                    isTrailingSlActive ? `${params.trailing_sl_mult}x Trailing SL` : null,
+                    isStopLossActive
+                      ? params.stop_loss_mult! > 20
+                        ? `₹${params.stop_loss_mult!.toLocaleString()} Campaign SL`
+                        : `${params.stop_loss_mult}x Campaign SL`
+                      : null,
+                    isTrailingSlActive
+                      ? params.trailing_sl_mult! > 20
+                        ? `₹${params.trailing_sl_mult!.toLocaleString()} Campaign Trail`
+                        : `${params.trailing_sl_mult}x Campaign Trail`
+                      : null,
                   ].filter(Boolean).join(" · ") || "Held to settlement / expiry"}
                 </span>
               </div>

@@ -89,8 +89,8 @@ function describeSettings(s: RunSettings): string {
   if (s.min_entry_dte != null) parts.push(`none within ${s.min_entry_dte} days of expiry`);
   if (s.min_credit_ratio != null) parts.push(`credit at least ${Math.round(s.min_credit_ratio * 100)}% of the wing`);
   if (s.take_profit != null) parts.push(`TP ${Math.round(s.take_profit * 100)}%`);
-  if (s.stop_loss != null) parts.push(`SL ${s.stop_loss}x`);
-  if (s.trailing_sl != null) parts.push(`trail SL ${s.trailing_sl}x${s.trailing_sl_trigger != null ? ` (trig ${Math.round(s.trailing_sl_trigger * 100)}%)` : ""}`);
+  if (s.stop_loss != null) parts.push(s.stop_loss > 20 ? `Campaign SL ₹${s.stop_loss.toLocaleString()}` : `Campaign SL ${s.stop_loss}x`);
+  if (s.trailing_sl != null) parts.push(s.trailing_sl > 20 ? `Campaign Trail ₹${s.trailing_sl.toLocaleString()}` : `Campaign Trail ${s.trailing_sl}x`);
   parts.push(`${s.lots} lot${s.lots === 1 ? "" : "s"}`);
   return parts.join(" · ");
 }
@@ -1061,26 +1061,27 @@ export function ForwardControl({
 
               <label style={FIELD}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>
-                  Stop loss
+                  Campaign Stop Loss (Monthly)
                   <InfoTooltip field="stop_loss" />
                 </span>
                 <select
                   value={stopLoss}
                   onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
-                  style={{ minWidth: 100 }}
+                  style={{ minWidth: 160 }}
                 >
-                  <option value="">Hold</option>
-                  <option value={0.3}>0.3× credit</option>
-                  <option value={0.5}>0.5× credit (tight wing limit)</option>
-                  <option value={0.75}>0.75× credit</option>
-                  <option value={1.0}>1.0× credit</option>
-                  <option value={1.5}>1.5× credit</option>
-                  <option value={2.0}>2.0× credit</option>
-                  <option value={3.0}>3.0× credit</option>
+                  <option value="">Off (Hold to Expiry)</option>
+                  <option value={15000}>₹15,000 (Conservative)</option>
+                  <option value={20000}>₹20,000</option>
+                  <option value={25000}>₹25,000 (Recommended - protects Sep 2026)</option>
+                  <option value={30000}>₹30,000</option>
+                  <option value={40000}>₹40,000</option>
+                  <option value={50000}>₹50,000</option>
+                  <option value={2.0}>2.0× Anchor Credit (~₹17k)</option>
+                  <option value={3.0}>3.0× Anchor Credit (~₹25k)</option>
                 </select>
-                <span style={{ ...HINT, maxWidth: 150 }}>
-                  Close at max credit lost.
+                <span style={{ ...HINT, maxWidth: 170 }}>
+                  Caps cumulative monthly loss. Squares off open condors if hit.
                 </span>
               </label>
 

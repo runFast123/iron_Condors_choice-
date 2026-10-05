@@ -55,8 +55,8 @@ export const FIELDS: Field[] = [
   { key: "min_entry_dte", label: "Skip last days", hint: "no entry with fewer days left; blank = off", kind: "optional", ladderOnly: true },
   { key: "min_credit_ratio", label: "Min credit", hint: "% of the wing; blank = off", kind: "optional", percent: true, ladderOnly: true },
   { key: "take_profit", label: "Take profit", hint: "% of credit; blank = hold", kind: "optional", percent: true, replayOnly: true },
-  { key: "stop_loss", label: "Stop loss", hint: "× credit lost; blank = hold", kind: "optional", replayOnly: true },
-  { key: "trailing_sl", label: "Trailing SL", hint: "× credit pullback from peak; blank = off", kind: "optional", step: 0.1, replayOnly: true },
+  { key: "stop_loss", label: "Campaign Stop loss", hint: "₹ max monthly loss (e.g. 25000) or × credit; blank = hold", kind: "optional", replayOnly: true },
+  { key: "trailing_sl", label: "Campaign Trailing SL", hint: "₹ pullback (e.g. 15000) or × credit from peak; blank = off", kind: "optional", step: 0.1, replayOnly: true },
   { key: "trailing_sl_trigger", label: "Trail trigger", hint: "% profit to activate trailing; blank = auto", kind: "optional", percent: true, replayOnly: true },
   {
     key: "bar_minutes", label: "Time frame", hint: "what a level fires on", kind: "select", replayOnly: true,
@@ -91,12 +91,12 @@ export interface StrategyPreset {
 
 export const STRATEGY_PRESETS: StrategyPreset[] = [
   {
-    id: "sl_2x",
-    label: "2.0× Stop Loss",
+    id: "sl_25k",
+    label: "₹25k Monthly SL",
     icon: <IconShield size={13} />,
-    hint: "Cut losses if condor loses 2× collected credit",
+    hint: "Cap monthly campaign loss at ₹25,000 (protects Sep 2026)",
     replayOnly: true,
-    edits: { stop_loss: 2.0 },
+    edits: { stop_loss: 25000 },
   },
   {
     id: "tp_50",

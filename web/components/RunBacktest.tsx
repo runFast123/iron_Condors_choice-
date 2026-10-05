@@ -488,23 +488,45 @@ export function RunBacktest({
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>
-                  Stop loss
+                  Campaign Stop Loss (Monthly)
                   <InfoTooltip field="stop_loss" />
                 </span>
                 <select
                   value={stopLoss}
                   onChange={(e) => setStopLoss(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 100 }}
+                  style={{ marginTop: 5, minWidth: 160 }}
                 >
-                  <option value="">Hold</option>
-                  <option value={0.3}>0.3× credit</option>
-                  <option value={0.5}>0.5× credit (tight wing limit)</option>
-                  <option value={0.75}>0.75× credit</option>
-                  <option value={1.0}>1.0× credit</option>
-                  <option value={1.5}>1.5× credit</option>
-                  <option value={2.0}>2.0× credit</option>
-                  <option value={3.0}>3.0× credit</option>
+                  <option value="">Off (Hold to Expiry)</option>
+                  <option value={15000}>₹15,000 (Conservative)</option>
+                  <option value={20000}>₹20,000</option>
+                  <option value={25000}>₹25,000 (Recommended - protects Sep 2026)</option>
+                  <option value={30000}>₹30,000</option>
+                  <option value={40000}>₹40,000</option>
+                  <option value={50000}>₹50,000</option>
+                  <option value={2.0}>2.0× Anchor Credit (~₹17k)</option>
+                  <option value={3.0}>3.0× Anchor Credit (~₹25k)</option>
+                </select>
+              </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Campaign Trailing SL
+                  <InfoTooltip field="trailing_sl" />
+                </span>
+                <select
+                  value={trailingSl}
+                  onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 140 }}
+                >
+                  <option value="">Off</option>
+                  <option value={10000}>₹10,000 Pullback</option>
+                  <option value={15000}>₹15,000 Pullback</option>
+                  <option value={20000}>₹20,000 Pullback</option>
+                  <option value={0.5}>0.5× Credit (~₹4.2k)</option>
+                  <option value={1.0}>1.0× Credit (~₹8.5k)</option>
+                  <option value={1.5}>1.5× Credit (~₹12.7k)</option>
                 </select>
               </label>
 

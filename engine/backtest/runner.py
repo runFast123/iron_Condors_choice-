@@ -85,10 +85,14 @@ class BacktestParams:
     # opens (as everywhere) and that is the end of it, not a missing expiry.
     single_campaign: bool = False
     # The live run's daily loss limit: once a day's P&L -- the book against
-    # where it stood at the previous session's last bar, so a gap counts as
-    # the new day's -- reaches minus this, nothing more opens that day. Open
-    # positions are held. None: no limit, as a plain backtest has always run.
     daily_loss_limit: float | None = None
+    # Monthly Campaign stop loss: once an expiry campaign's cumulative P&L
+    # (realised + unrealised MTM) drops to minus this limit, all open positions
+    # for the campaign are squared off immediately and no further condors are
+    # opened for the remainder of this monthly expiry.
+    campaign_stop_loss: float | None = None
+    campaign_trailing_sl: float | None = None
+    campaign_trailing_sl_trigger: float | None = None
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -384,6 +388,28 @@ class Backtest:
         last_equity: float | None = None
         halted_on: dt.date | None = None
 
+        # Monthly Campaign stop loss & trailing SL state
+        campaign_sl = (
+            params.campaign_stop_loss
+            or getattr(params.strategy, "campaign_stop_loss", None)
+            or getattr(params.strategy, "stop_loss_mult", None)
+        )
+        campaign_tsl = (
+            params.campaign_trailing_sl
+            or getattr(params.strategy, "campaign_trailing_sl", None)
+            or getattr(params.strategy, "trailing_sl_mult", None)
+        )
+        campaign_tsl_trigger = (
+            params.campaign_trailing_sl_trigger
+            or getattr(params.strategy, "campaign_trailing_sl_trigger", None)
+            or getattr(params.strategy, "trailing_sl_trigger_pct", None)
+        )
+
+        campaign_stopped = False
+        campaign_stop_reason: str | None = None
+        campaign_peak_pnl: float = 0.0
+        campaign_anchor_credit: float | None = None
+
         for i, (when, spot) in enumerate(spots):
             try:
                 expiry = self.expiry_for(when.date())
@@ -421,6 +447,11 @@ class Backtest:
                         ladder.reset()
                         result.rolls.append((when, campaign_expiry, expiry))
                     campaign_expiry = expiry
+                    # Reset campaign stop-loss state for the fresh monthly campaign
+                    campaign_stopped = False
+                    campaign_stop_reason = None
+                    campaign_peak_pnl = 0.0
+                    campaign_anchor_credit = None
 
             # 1. Open new rungs -- unless the VIX rule is holding entries back.
             fresh: list[LadderTrigger] = []
@@ -451,6 +482,9 @@ class Backtest:
                 if size != strategy.lot_size:
                     strategy = replace(strategy, lot_size=size)
             for trigger in fresh:
+                if campaign_stopped:
+                    result.skipped.append((when, trigger.level, f"campaign stop-loss active ({campaign_stop_reason}); not opened"))
+                    continue
                 if halted_on == when.date():
                     result.skipped.append((when, trigger.level, "daily loss limit hit today; not opened"))
                     continue
@@ -506,8 +540,10 @@ class Backtest:
                     continue
                 next_index += 1
                 condors.append(condor)
+                if campaign_anchor_credit is None and condor.credit > 0:
+                    campaign_anchor_credit = condor.credit
 
-            # 2. Manage open rungs: expiry settlement first, then TP/SL.
+            # 2. Manage open rungs: expiry settlement first, then TP, then Campaign SL.
             for condor in condors:
                 if not condor.is_open:
                     continue
@@ -520,16 +556,9 @@ class Backtest:
 
                 marks = self._mark(condor, when, spot)
                 reason = condor.exit_signal(marks)
-                if reason is not None:
-                    # Slippage on the way out as well as in. Charging it only
-                    # on entry understated the round trip by about half, which
-                    # flatters exactly the configurations that trade most.
-                    # Dormant while `slippage_points` is 0, which is its
-                    # default and what every API path sends today -- but it is
-                    # a setting, and a setting that half-works is worse than
-                    # one that does not exist.
-                    # Closed crossing the spread the other way, as live.
-                    exits = {fl.leg: self._fill(marks[fl.leg], _flip(fl.leg.side)) for fl in condor.legs}
+                # Take-profit check on individual condor
+                if reason is not None and "take-profit" in reason:
+                    exits = {fl.leg: self._fill(marks[fl.leg], _flip(fl.leg.side)) for fl in condor.legs if fl.leg in marks}
                     exit_costs = sum(
                         params.costs.leg_cost(_flip(fl.leg.side), exits[fl.leg], fl.leg.qty, when.date())
                         + params.costs.slippage(fl.leg.qty)
@@ -537,15 +566,76 @@ class Backtest:
                     )
                     for fl in condor.legs:
                         fl.exit_price = exits[fl.leg]
-                    status = (
-                        CondorStatus.CLOSED_TARGET if "take-profit" in reason
-                        else CondorStatus.CLOSED_TRAILING_STOP if "trailing-stop" in reason
-                        else CondorStatus.CLOSED_STOP
-                    )
-                    condor.close(when, reason, status, exit_costs)
+                    condor.close(when, reason, CondorStatus.CLOSED_TARGET, exit_costs)
                     realised.append(condor.realised_pnl())
                     cumulative_realised += condor.realised_pnl()
                     holding_days.append((when - condor.entry_time).total_seconds() / 86_400)
+
+            # Campaign-level Stop Loss & Trailing SL across active monthly campaign
+            if (campaign_sl is not None or campaign_tsl is not None) and campaign_expiry is not None and not campaign_stopped:
+                active_campaign_condors = [c for c in condors if c.expiry == campaign_expiry]
+                open_campaign_condors = [c for c in active_campaign_condors if c.is_open]
+                if open_campaign_condors:
+                    ref_crd = campaign_anchor_credit or (active_campaign_condors[0].credit if active_campaign_condors else 8000.0)
+                    camp_realised = sum(c.realised_pnl() for c in active_campaign_condors if not c.is_open)
+                    camp_unrealised = 0.0
+                    for c in open_campaign_condors:
+                        c_marks = self._mark(c, when, spot)
+                        if len(c_marks) == len(c.legs):
+                            c.open_pnl = c.mtm(c_marks)
+                        camp_unrealised += c.open_pnl or 0.0
+                    camp_total = camp_realised + camp_unrealised
+
+                    if camp_total > campaign_peak_pnl:
+                        campaign_peak_pnl = camp_total
+
+                    triggered_reason: str | None = None
+                    triggered_status: CondorStatus = CondorStatus.CLOSED_STOP
+
+                    # Fixed Campaign Stop Loss
+                    if campaign_sl is not None:
+                        sl_threshold = campaign_sl if campaign_sl > 20 else campaign_sl * ref_crd
+                        if camp_total <= -sl_threshold:
+                            triggered_reason = f"campaign stop-loss: monthly loss -₹{abs(camp_total):,.0f} hit limit -₹{sl_threshold:,.0f}"
+                            triggered_status = CondorStatus.CLOSED_STOP
+
+                    # Campaign Trailing Stop Loss
+                    if triggered_reason is None and campaign_tsl is not None:
+                        tsl_dist = campaign_tsl if campaign_tsl > 20 else campaign_tsl * ref_crd
+                        tsl_trig = (
+                            (campaign_tsl_trigger if campaign_tsl_trigger > 20 else campaign_tsl_trigger * ref_crd)
+                            if campaign_tsl_trigger is not None
+                            else tsl_dist
+                        )
+                        if campaign_peak_pnl >= tsl_trig and camp_total <= campaign_peak_pnl - tsl_dist:
+                            triggered_reason = (
+                                f"campaign trailing-stop: pulled back -₹{abs(campaign_peak_pnl - camp_total):,.0f} "
+                                f"from peak +₹{campaign_peak_pnl:,.0f} to +₹{camp_total:,.0f}"
+                            )
+                            triggered_status = CondorStatus.CLOSED_TRAILING_STOP
+
+                    if triggered_reason is not None:
+                        campaign_stopped = True
+                        campaign_stop_reason = triggered_reason
+                        for c in open_campaign_condors:
+                            c_marks = self._mark(c, when, spot)
+                            c_exits = {fl.leg: self._fill(c_marks[fl.leg], _flip(fl.leg.side)) for fl in c.legs if fl.leg in c_marks}
+                            exit_costs = sum(
+                                params.costs.leg_cost(_flip(fl.leg.side), c_exits.get(fl.leg, fl.entry_price), fl.leg.qty, when.date())
+                                + params.costs.slippage(fl.leg.qty)
+                                for fl in c.legs
+                            )
+                            for fl in c.legs:
+                                fl.exit_price = c_exits.get(fl.leg, fl.entry_price)
+                            c.close(when, triggered_reason, triggered_status, exit_costs)
+                            realised.append(c.realised_pnl())
+                            cumulative_realised += c.realised_pnl()
+                            holding_days.append((when - c.entry_time).total_seconds() / 86_400)
+
+                        result.warnings.append(
+                            f"Campaign {campaign_expiry}: {triggered_reason} on {when.strftime('%d-%b-%Y')}. "
+                            f"Squared off {len(open_campaign_condors)} open condor(s) and halted new entries for this expiry."
+                        )
 
             # 3. Mark the book.
             open_condors = [c for c in condors if c.is_open]

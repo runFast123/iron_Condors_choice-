@@ -168,6 +168,14 @@ def test_trailing_stop_closes_on_pullback_from_peak():
     assert "trailing-stop" in (condor.exit_reason or "")
 
 
+def test_campaign_stop_loss_halts_entries_and_squares_off_campaign():
+    params = BacktestParams(strategy=cfg(step=100.0), campaign_stop_loss=10_000.0, costs=ZERO_COST)
+    spots = [24_000, 23_900, 23_800, 23_500, 23_400, 23_300]
+    result = run(spots, params=params)
+    closed_stops = [c for c in result.condors if c.status is CondorStatus.CLOSED_STOP]
+    assert len(closed_stops) > 0
+    assert any("campaign stop-loss" in (c.exit_reason or "") for c in closed_stops)
+
 
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,

@@ -84,21 +84,22 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
     example: "Collected ₹100 credit. A 50% Take Profit will exit when trade profit reaches ₹50.",
   },
   stop_loss: {
-    title: "Stop Loss Multiple",
+    title: "Monthly Campaign Stop Loss",
     description:
-      "Initial fixed risk limit expressed as a multiple of collected credit (e.g. 0.5×, 1.5×, 2.0×). If a position incurs a mark-to-market loss equal to this multiple of credit, it is stopped out immediately.",
+      "Caps cumulative loss across the entire monthly campaign (all condors opened for that monthly expiry). When cumulative monthly loss (realised + unrealised) hits this threshold, all open positions are immediately squared off and no further condors open for that month.",
     howToUse:
-      "Important for defined-risk condors: If your collected credit is high relative to wing width (e.g. ₹8,400 credit on a 200 pt wing), your maximum theoretical loss is capped by the protective wings at ~₹4,700 (0.55× credit). In that case, a 1.0× or 2.0× SL will never trigger because the wing stops the loss first! Choose 0.3× or 0.5× credit to cut losses early.",
-    example: "Collected ₹100 credit. A 0.5× Stop Loss exits if loss reaches -₹50. A 2.0× Stop Loss exits if loss reaches -₹200.",
+      "Essential for protecting against adverse trending months like September 2026. Without campaign SL, an adverse month can open 15+ condors and bleed over -₹60,000. Setting ₹20,000 or ₹25,000 (or 2.5× to 3.0× anchor credit) caps monthly drawdown cleanly and safeguards total account equity.",
+    example:
+      "In Sep 2026, setting ₹25,000 Campaign SL squares off open condors when loss reaches -₹25k, saving +₹41,000 compared to holding without stop loss (-₹66k).",
   },
   trailing_sl: {
-    title: "Trailing Stop-Loss (Trailing SL)",
+    title: "Monthly Campaign Trailing SL",
     description:
-      "Dynamic profit-protection stop. Tracks the peak mark-to-market profit of each position. If profit retreats from that peak by the specified multiple of credit, the trade exits with remaining profit locked in.",
+      "Dynamic profit protection for the monthly campaign. Tracks the peak profit accumulated during the month. If campaign P&L pulls back from its peak by this amount (₹ or credit multiple), all open positions are closed to secure the month's gains.",
     howToUse:
-      "Set to 0.3× to 0.8× to safeguard accrued gains against late-campaign trend reversals. Safeguarded so it only activates once profits are secured.",
+      "Use ₹10,000 to ₹15,000 or 1.0× to 1.5× anchor credit to prevent a winning month from turning into a losing month during late-cycle market turns.",
     example:
-      "Collected ₹100 credit. Trade reaches ₹70 peak profit. With 0.5× (₹50) trailing SL, if profit drops back to ₹20 (₹70 - ₹50), it exits with ₹20 profit instead of running into a loss.",
+      "Campaign reaches +₹35,000 peak profit. With a ₹15,000 trailing SL, if profit drops to +₹20,000, all positions exit, locking in +₹20,000 monthly gain.",
   },
   trailing_trigger: {
     title: "Trailing Stop Activation Trigger",
