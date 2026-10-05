@@ -410,6 +410,36 @@ def test_backtest_history_and_dataset_by_run_id(client):
     ds = res_ds.json()
     assert ds["metrics"]["net_pnl"] == 9999.0
 
+    # 3. Test DELETE /backtest/run/bt-custom-run
+    del_res = client.delete("/backtest/run/bt-custom-run", headers=bearer(token))
+    assert del_res.status_code == 200
+    assert del_res.json()["ok"] is True
+
+    # Verify history no longer contains it
+    res_after = client.get("/backtest/history", headers=bearer(token))
+    assert not any(r["run_id"] == "bt-custom-run" for r in res_after.json()["runs"])
+
+    # 4. Test POST /backtest/delete with bulk run_ids
+    backtest_store._db.save_backtest(
+        run_id="bt-del-1",
+        user_id=user_id,
+        status="done",
+        params={},
+        dataset={"metrics": {}, "provenance": {}},
+        error=None,
+    )
+    backtest_store._db.save_backtest(
+        run_id="bt-del-2",
+        user_id=user_id,
+        status="done",
+        params={},
+        dataset={"metrics": {}, "provenance": {}},
+        error=None,
+    )
+    bulk_res = client.post("/backtest/delete", json={"run_ids": ["bt-del-1", "bt-del-2"]}, headers=bearer(token))
+    assert bulk_res.status_code == 200
+    assert bulk_res.json()["deleted"] == 2
+
 
 def test_request_models_support_trailing_sl():
     from engine.api import RunBacktestRequest, StartForwardRequest

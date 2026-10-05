@@ -1299,6 +1299,24 @@ class JobStore:
         if self._db is not None:
             self._db.clear_backtests(user_id)
 
+    def delete(self, user_id: str, run_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(user_id)
+            if job and job.job_id == run_id:
+                self._jobs.pop(user_id, None)
+        if self._db is not None:
+            return self._db.delete_backtest(user_id, run_id)
+        return False
+
+    def delete_many(self, user_id: str, run_ids: list[str]) -> int:
+        with self._lock:
+            job = self._jobs.get(user_id)
+            if job and job.job_id in run_ids:
+                self._jobs.pop(user_id, None)
+        if self._db is not None:
+            return self._db.delete_backtests(user_id, run_ids)
+        return 0
+
     def history(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
         return self._db.backtest_history(user_id, limit=limit) if self._db else []
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import type { BacktestHistoryRun } from "@/lib/types";
 import { inr, num, pct, ratio } from "@/lib/format";
 import { InfoTooltip } from "./InfoTooltip";
@@ -18,15 +19,25 @@ export function BacktestHistoryComparison({
   onSelectRun,
   onPopulateParams,
 }: BacktestHistoryComparisonProps) {
+  const router = useRouter();
+  const [runList, setRunList] = useState<BacktestHistoryRun[]>(runs);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
   const [filterStrategy, setFilterStrategy] = useState<string>("all");
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmDeleteRun, setConfirmDeleteRun] = useState<BacktestHistoryRun | null>(null);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
 
-  if (!runs || runs.length === 0) {
+  useEffect(() => {
+    setRunList(runs);
+  }, [runs]);
+
+  if (!runList || runList.length === 0) {
     return null;
   }
 
-  const filteredRuns = runs.filter((r) => {
+  const filteredRuns = runList.filter((r) => {
     if (filterStrategy === "all") return true;
     return (r.strategy_id || "ladder").toLowerCase() === filterStrategy.toLowerCase();
   });
@@ -41,7 +52,7 @@ export function BacktestHistoryComparison({
     );
   };
 
-  const selectedRuns = runs.filter((r) => selectedIds.includes(r.run_id));
+  const selectedRuns = runList.filter((r) => selectedIds.includes(r.run_id));
 
   // Determine winners for comparison
   const highestPnlRunId = selectedRuns.reduce((best, curr) => {
@@ -61,6 +72,39 @@ export function BacktestHistoryComparison({
     const bestWr = best?.summary?.win_rate ?? -1;
     return wr > bestWr ? curr : best;
   }, selectedRuns[0])?.run_id;
+
+  const handleDeleteRuns = async (runIds: string[]) => {
+    if (!runIds || runIds.length === 0) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch("/api/backtest/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_ids: runIds }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Failed to delete backtest run(s).");
+      }
+
+      setRunList((prev) => prev.filter((r) => !runIds.includes(r.run_id)));
+      setSelectedIds((prev) => prev.filter((id) => !runIds.includes(id)));
+      setConfirmDeleteRun(null);
+      setConfirmBulkDelete(false);
+
+      if (currentRunId && runIds.includes(currentRunId)) {
+        router.push("/");
+      } else {
+        router.refresh();
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete backtest.";
+      setDeleteError(msg);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <section
@@ -98,7 +142,7 @@ export function BacktestHistoryComparison({
                 fontWeight: 600,
               }}
             >
-              {runs.length} {runs.length === 1 ? "run" : "runs"} saved
+              {runList.length} {runList.length === 1 ? "run" : "runs"} saved
             </span>
           </div>
           <p style={{ margin: "3px 0 0", fontSize: 11.5, color: "var(--ink-muted)" }}>
@@ -122,7 +166,7 @@ export function BacktestHistoryComparison({
                 fontSize: 12,
               }}
             >
-              <option value="all">All ({runs.length})</option>
+              <option value="all">All ({runList.length})</option>
               <option value="ladder">Ladder</option>
               <option value="hic">HIC</option>
             </select>
@@ -152,6 +196,43 @@ export function BacktestHistoryComparison({
 
           {selectedIds.length > 0 && (
             <button
+              type="button"
+              onClick={() => setConfirmBulkDelete(true)}
+              disabled={isDeleting}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "5px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--neg, #ef4444)",
+                background: "rgba(239, 68, 68, 0.08)",
+                border: "1px solid rgba(239, 68, 68, 0.25)",
+                borderRadius: 5,
+                cursor: isDeleting ? "not-allowed" : "pointer",
+                transition: "all 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(239, 68, 68, 0.16)";
+                e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(239, 68, 68, 0.08)";
+                e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.25)";
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 6h18"/>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+              Delete Selected ({selectedIds.length})
+            </button>
+          )}
+
+          {selectedIds.length > 0 && (
+            <button
               onClick={() => setSelectedIds([])}
               style={{
                 background: "none",
@@ -167,6 +248,37 @@ export function BacktestHistoryComparison({
           )}
         </div>
       </div>
+
+      {deleteError && (
+        <div
+          style={{
+            margin: "12px 16px 0",
+            padding: "8px 12px",
+            borderRadius: 6,
+            background: "rgba(239, 68, 68, 0.1)",
+            border: "1px solid rgba(239, 68, 68, 0.25)",
+            color: "var(--neg, #ef4444)",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}
+        >
+          <span>{deleteError}</span>
+          <button
+            onClick={() => setDeleteError(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "inherit",
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* History Runs Table */}
       <div className="scroll-x" style={{ maxHeight: 380, overflowY: "auto" }}>
@@ -419,7 +531,7 @@ export function BacktestHistoryComparison({
 
                   {/* Actions */}
                   <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
-                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
+                    <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 6 }}>
                       {!isActive && (
                         <a
                           href={`/?run=${encodeURIComponent(r.run_id)}`}
@@ -452,6 +564,48 @@ export function BacktestHistoryComparison({
                           Active
                         </span>
                       )}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteRun(r);
+                        }}
+                        disabled={isDeleting}
+                        title="Delete backtest"
+                        aria-label="Delete backtest"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 26,
+                          height: 24,
+                          padding: 0,
+                          borderRadius: 4,
+                          background: "var(--surface-2)",
+                          border: "1px solid var(--border)",
+                          color: "var(--ink-muted)",
+                          cursor: isDeleting ? "not-allowed" : "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.color = "var(--neg, #ef4444)";
+                          e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
+                          e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.color = "var(--ink-muted)";
+                          e.currentTarget.style.borderColor = "var(--border)";
+                          e.currentTarget.style.background = "var(--surface-2)";
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M3 6h18"/>
+                          <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                          <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                          <line x1="10" y1="11" x2="10" y2="17"/>
+                          <line x1="14" y1="11" x2="14" y2="17"/>
+                        </svg>
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -460,6 +614,325 @@ export function BacktestHistoryComparison({
           </tbody>
         </table>
       </div>
+
+      {/* Delete Single Run Confirmation Modal */}
+      {confirmDeleteRun && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => !isDeleting && setConfirmDeleteRun(null)}
+        >
+          <div
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              width: "100%",
+              maxWidth: 460,
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.6)",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: "50%",
+                    background: "rgba(239, 68, 68, 0.15)",
+                    color: "var(--neg, #ef4444)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                    <line x1="10" y1="11" x2="10" y2="17"/>
+                    <line x1="14" y1="11" x2="14" y2="17"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>Delete Backtest Run</h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-muted)" }}>
+                    This will permanently delete this test and its stored metrics.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: "16px 20px" }}>
+              <div
+                style={{
+                  background: "var(--surface-2)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: "10px 14px",
+                  fontSize: 12,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                  <span style={{ color: "var(--ink-muted)" }}>Date &amp; Time:</span>
+                  <span style={{ fontWeight: 600 }}>
+                    {new Date(confirmDeleteRun.created_at).toLocaleDateString("en-IN", {
+                      day: "2-digit",
+                      month: "short",
+                      year: "numeric",
+                    })}{" "}
+                    {new Date(confirmDeleteRun.created_at).toLocaleTimeString("en-IN", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                  <span style={{ color: "var(--ink-muted)" }}>Strategy:</span>
+                  <span style={{ fontWeight: 600, textTransform: "capitalize" }}>
+                    {confirmDeleteRun.strategy_id || "Ladder"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "var(--ink-muted)" }}>Net P&amp;L:</span>
+                  <span
+                    className="mono"
+                    style={{
+                      fontWeight: 700,
+                      color:
+                        (confirmDeleteRun.summary?.net_pnl ?? 0) >= 0
+                          ? "var(--pos, #22c55e)"
+                          : "var(--neg, #ef4444)",
+                    }}
+                  >
+                    {inr(confirmDeleteRun.summary?.net_pnl ?? 0, { sign: true })}
+                  </span>
+                </div>
+              </div>
+
+              {(currentRunId === confirmDeleteRun.run_id || (!currentRunId && runList[0]?.run_id === confirmDeleteRun.run_id)) && (
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 6,
+                    background: "rgba(234, 179, 8, 0.12)",
+                    border: "1px solid rgba(234, 179, 8, 0.3)",
+                    color: "var(--warn, #ca8a04)",
+                    fontSize: 11.5,
+                    lineHeight: 1.4,
+                    marginBottom: 14,
+                  }}
+                >
+                  ⚠️ <strong>Active Run:</strong> This backtest is currently displayed on your dashboard. Deleting it will reload the dashboard with your next available backtest.
+                </div>
+              )}
+
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink-muted)" }}>
+                Are you sure you want to delete this test?
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                padding: "12px 20px",
+                borderTop: "1px solid var(--border)",
+                background: "var(--surface-2)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteRun(null)}
+                disabled={isDeleting}
+                style={{
+                  padding: "6px 14px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  color: "var(--ink)",
+                  cursor: isDeleting ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteRuns([confirmDeleteRun.run_id])}
+                disabled={isDeleting}
+                style={{
+                  padding: "6px 14px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  background: "var(--neg, #ef4444)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: isDeleting ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {isDeleting ? "Deleting..." : "Delete Test"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Modal */}
+      {confirmBulkDelete && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(0, 0, 0, 0.75)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={() => !isDeleting && setConfirmBulkDelete(false)}
+        >
+          <div
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+              width: "100%",
+              maxWidth: 440,
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.6)",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: "50%",
+                    background: "rgba(239, 68, 68, 0.15)",
+                    color: "var(--neg, #ef4444)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18"/>
+                    <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                    <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+                    <line x1="10" y1="11" x2="10" y2="17"/>
+                    <line x1="14" y1="11" x2="14" y2="17"/>
+                  </svg>
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700 }}>
+                    Delete {selectedIds.length} Backtest {selectedIds.length === 1 ? "Run" : "Runs"}
+                  </h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 11.5, color: "var(--ink-muted)" }}>
+                    This will permanently remove the selected tests from your history.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: "16px 20px" }}>
+              {currentRunId && selectedIds.includes(currentRunId) && (
+                <div
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 6,
+                    background: "rgba(234, 179, 8, 0.12)",
+                    border: "1px solid rgba(234, 179, 8, 0.3)",
+                    color: "var(--warn, #ca8a04)",
+                    fontSize: 11.5,
+                    lineHeight: 1.4,
+                    marginBottom: 14,
+                  }}
+                >
+                  ⚠️ <strong>Active Run Selected:</strong> One of the selected backtests is currently loaded on your dashboard. Deleting it will reset the dashboard to the latest remaining backtest.
+                </div>
+              )}
+
+              <p style={{ margin: 0, fontSize: 12, color: "var(--ink)" }}>
+                Are you sure you want to permanently delete these <strong>{selectedIds.length}</strong> backtest {selectedIds.length === 1 ? "run" : "runs"}? This action cannot be undone.
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                padding: "12px 20px",
+                borderTop: "1px solid var(--border)",
+                background: "var(--surface-2)",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setConfirmBulkDelete(false)}
+                disabled={isDeleting}
+                style={{
+                  padding: "6px 14px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  color: "var(--ink)",
+                  cursor: isDeleting ? "not-allowed" : "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteRuns(selectedIds)}
+                disabled={isDeleting}
+                style={{
+                  padding: "6px 14px",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  borderRadius: 6,
+                  background: "var(--neg, #ef4444)",
+                  border: "none",
+                  color: "#fff",
+                  cursor: isDeleting ? "not-allowed" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {isDeleting ? "Deleting..." : `Delete ${selectedIds.length} ${selectedIds.length === 1 ? "Run" : "Runs"}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Comparison Modal Drawer */}
       {compareModalOpen && selectedRuns.length >= 2 && (

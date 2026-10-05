@@ -395,6 +395,27 @@ def test_backtest_history_extracts_summary_metrics(store):
     assert item["summary"]["range"] == ["2025-01-01", "2025-12-31"]
 
 
+def test_delete_backtest_and_delete_backtests(store):
+    store.save_backtest(run_id="del-1", user_id="u1", status="done", params={}, dataset=None)
+    store.save_backtest(run_id="del-2", user_id="u1", status="done", params={}, dataset=None)
+    store.save_backtest(run_id="del-3", user_id="u1", status="done", params={}, dataset=None)
+    store.save_backtest(run_id="del-other", user_id="u2", status="done", params={}, dataset=None)
+
+    # Deleting run for u1
+    assert store.delete_backtest("u1", "del-1") is True
+    assert store.get_backtest("del-1", "u1") is None
+    # Deleting non-existent run returns False
+    assert store.delete_backtest("u1", "del-1") is False
+
+    # Deleting bulk runs
+    assert store.delete_backtests("u1", ["del-2", "del-3", "nonexistent"]) == 2
+    assert store.get_backtest("del-2", "u1") is None
+    assert store.get_backtest("del-3", "u1") is None
+
+    # Other user's runs remain unaffected
+    assert store.get_backtest("del-other", "u2") is not None
+
+
 def test_a_database_from_an_earlier_build_gains_the_version_column(tmp_path):
     """CREATE TABLE IF NOT EXISTS leaves an existing table alone, so without a
     migration every read of the new column fails on an existing database."""

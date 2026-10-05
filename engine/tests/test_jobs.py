@@ -602,3 +602,15 @@ def test_coverage_describes_this_run_not_the_whole_session(store):
     job = run_job(market=market)
     assert job.status == "done", job.error
     assert seen["since"] == 7, "the job must count from where it started"
+
+
+def test_job_store_delete_and_delete_many(store):
+    js = JobStore(store)
+    js.start(FakeMarket(), "u1", params())
+    job = _wait(js)
+    assert job.status == "done"
+
+    # Should delete from db and clear current job if matching
+    assert js.delete("u1", job.job_id) is True
+    assert js.get("u1") is None
+    assert store.get_backtest(job.job_id, "u1") is None

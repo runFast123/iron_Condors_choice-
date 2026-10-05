@@ -605,6 +605,29 @@ class Store:
                 (user_id, strategy_id),
             )
 
+    def delete_backtest(self, user_id: str, run_id: str) -> bool:
+        """Drop a single backtest run for this user. Returns True if deleted."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM backtest_runs WHERE user_id = ? AND run_id = ?",
+                (user_id, run_id),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def delete_backtests(self, user_id: str, run_ids: list[str]) -> int:
+        """Drop multiple backtest runs for this user. Returns count of deleted rows."""
+        if not run_ids:
+            return 0
+        placeholders = ",".join("?" for _ in run_ids)
+        with self._lock:
+            cur = self._conn.execute(
+                f"DELETE FROM backtest_runs WHERE user_id = ? AND run_id IN ({placeholders})",
+                (user_id, *run_ids),
+            )
+            self._conn.commit()
+            return cur.rowcount
+
     # ---------------------------------------------------------------- meta
 
     def get_meta(self, key: str) -> str | None:

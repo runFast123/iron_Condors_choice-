@@ -881,6 +881,41 @@ def backtest_clear(session: UserSession = Depends(current_user)) -> dict[str, bo
     return {"ok": True}
 
 
+class DeleteBacktestRequest(BaseModel):
+    run_id: str | None = None
+    run_ids: list[str] | None = None
+
+
+@app.post("/backtest/delete", dependencies=[Depends(check_engine_key)])
+def backtest_delete(
+    body: DeleteBacktestRequest,
+    session: UserSession = Depends(current_user),
+) -> dict[str, Any]:
+    ids: list[str] = []
+    if body.run_id:
+        ids.append(body.run_id)
+    if body.run_ids:
+        ids.extend(body.run_ids)
+
+    unique_ids = list(dict.fromkeys(ids))
+    if not unique_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No run_id or run_ids provided.")
+
+    count = backtest_store.delete_many(session.user_id, unique_ids)
+    return {"ok": True, "deleted": count, "run_ids": unique_ids}
+
+
+@app.delete("/backtest/run/{run_id}", dependencies=[Depends(check_engine_key)])
+def backtest_delete_single(
+    run_id: str,
+    session: UserSession = Depends(current_user),
+) -> dict[str, Any]:
+    deleted = backtest_store.delete(session.user_id, run_id)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Run {run_id} not found.")
+    return {"ok": True, "run_id": run_id}
+
+
 # ------------------------------------------------------------ forward testing
 
 

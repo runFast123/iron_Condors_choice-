@@ -182,6 +182,19 @@ export const engine = {
   backtestRun: (token: string, body: Record<string, unknown>) =>
     call<{ ok: boolean; job: BacktestJob }>("/backtest/run", { method: "POST", token, body }),
 
+  backtestDelete: (token: string, runId: string) =>
+    call<{ ok: boolean; run_id: string }>(`/backtest/run/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      token,
+    }),
+
+  backtestDeleteMany: (token: string, runIds: string[]) =>
+    call<{ ok: boolean; deleted: number; run_ids: string[] }>("/backtest/delete", {
+      method: "POST",
+      token,
+      body: { run_ids: runIds },
+    }),
+
   // `run` names which of the user's forward tests a call is about. Omitted,
   // the engine defaults to the one called "ladder", which is what a single run
   // has always been -- so a caller that predates named runs keeps working.
