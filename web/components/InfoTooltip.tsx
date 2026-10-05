@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 
 export interface InfoExplanation {
   title: string;
@@ -181,8 +189,6 @@ interface InfoTooltipProps {
   tip?: ReactNode;
   example?: string;
   field?: string;
-  align?: "left" | "center" | "right";
-  side?: "top" | "bottom";
   className?: string;
 }
 
@@ -192,12 +198,20 @@ export function InfoTooltip({
   tip,
   example,
   field,
-  align = "center",
-  side = "top",
   className = "",
 }: InfoTooltipProps) {
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLSpanElement>(null);
+  const [mounted, setMounted] = useState(false);
+  const [coords, setCoords] = useState<{
+    top: number;
+    left: number;
+    placement: "top" | "bottom";
+    arrowLeft: number;
+  }>({ top: 0, left: 0, placement: "top", arrowLeft: 20 });
+
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Look up predefined explanation if `field` is provided
   const exp = field ? FIELD_EXPLANATIONS[field] : undefined;
@@ -207,40 +221,134 @@ export function InfoTooltip({
   const finalExample = example ?? exp?.example;
 
   useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current) return;
+    const triggerRect = triggerRef.current.getBoundingClientRect();
+    const popover = popoverRef.current;
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const PADDING = 12;
+    const GAP = 8;
+
+    // Use measured dimensions if available, otherwise sensible default
+    const popWidth = popover ? popover.offsetWidth : 300;
+    const popHeight = popover ? popover.offsetHeight : 180;
+
+    // Center horizontally on the trigger icon
+    const triggerCenterX = triggerRect.left + triggerRect.width / 2;
+    let left = triggerCenterX - popWidth / 2;
+
+    // Strict boundary clamping so the tooltip NEVER cuts off on left or right
+    if (left < PADDING) {
+      left = PADDING;
+    } else if (left + popWidth > viewportWidth - PADDING) {
+      left = viewportWidth - PADDING - popWidth;
+    }
+
+    // Vertical placement: prefer top unless space above is cramped
+    const spaceAbove = triggerRect.top;
+    const spaceBelow = viewportHeight - triggerRect.bottom;
+    const placement: "top" | "bottom" =
+      spaceAbove >= popHeight + GAP + PADDING || spaceAbove >= spaceBelow
+        ? "top"
+        : "bottom";
+
+    let top =
+      placement === "top"
+        ? triggerRect.top - popHeight - GAP
+        : triggerRect.bottom + GAP;
+
+    // Clamp top to viewport
+    if (top < PADDING) top = PADDING;
+    if (top + popHeight > viewportHeight - PADDING) {
+      top = viewportHeight - PADDING - popHeight;
+    }
+
+    // Pointer arrow position aligned with trigger center
+    const arrowLeft = Math.max(14, Math.min(triggerCenterX - left, popWidth - 14));
+
+    setCoords({ top, left, placement, arrowLeft });
+  }, []);
+
+  const handleOpen = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setOpen(true);
+  };
+
+  const handleClose = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => {
+      setOpen(false);
+    }, 120);
+  };
+
+  useLayoutEffect(() => {
+    if (open) {
+      updatePosition();
+    }
+  }, [open, updatePosition]);
+
+  useEffect(() => {
     if (!open) return;
+
+    // Recalculate on window resize or any parent container scroll
+    const onScrollOrResize = () => {
+      updatePosition();
+    };
+
+    window.addEventListener("resize", onScrollOrResize);
+    window.addEventListener("scroll", onScrollOrResize, { capture: true, passive: true });
+
     function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      if (
+        triggerRef.current &&
+        !triggerRef.current.contains(e.target as Node) &&
+        popoverRef.current &&
+        !popoverRef.current.contains(e.target as Node)
+      ) {
         setOpen(false);
       }
     }
+
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
+
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleKeyDown);
+
     return () => {
+      window.removeEventListener("resize", onScrollOrResize);
+      window.removeEventListener("scroll", onScrollOrResize, { capture: true });
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [open]);
+  }, [open, updatePosition]);
 
   if (!finalContent && !finalTitle) return null;
 
   return (
     <span
-      ref={containerRef}
       className={`info-tooltip-wrapper ${className}`}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={handleOpen}
+      onMouseLeave={handleClose}
       style={{
         display: "inline-flex",
         alignItems: "center",
-        position: "relative",
         verticalAlign: "middle",
         marginLeft: 5,
+        position: "relative",
       }}
     >
       <button
+        ref={triggerRef}
         type="button"
         aria-label={finalTitle ? `Information about ${finalTitle}` : "More information"}
         aria-expanded={open}
@@ -284,97 +392,122 @@ export function InfoTooltip({
         </svg>
       </button>
 
-      {open && (
-        <div
-          role="tooltip"
-          className="info-tooltip-popover"
-          style={{
-            position: "absolute",
-            zIndex: 1200,
-            width: "max-content",
-            maxWidth: 300,
-            padding: "10px 12px",
-            background: "var(--surface-2, #ffffff)",
-            color: "var(--ink, #221f20)",
-            border: "1px solid var(--border-strong, #c6d3dd)",
-            borderRadius: 8,
-            boxShadow: "0 6px 20px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.1)",
-            fontSize: 11.5,
-            lineHeight: 1.48,
-            pointerEvents: "auto",
-            animation: "fadeIn 0.15s ease-out",
-            ...(side === "top"
-              ? { bottom: "calc(100% + 6px)" }
-              : { top: "calc(100% + 6px)" }),
-            ...(align === "center"
-              ? { left: "50%", transform: "translateX(-50%)" }
-              : align === "right"
-              ? { right: -6 }
-              : { left: -6 }),
-          }}
-        >
-          {finalTitle && (
+      {/* Render via Portal to document.body so no parent overflow:hidden or transform can ever clip it */}
+      {mounted && open &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            role="tooltip"
+            className="info-tooltip-popover"
+            onMouseEnter={handleOpen}
+            onMouseLeave={handleClose}
+            style={{
+              position: "fixed",
+              top: coords.top,
+              left: coords.left,
+              zIndex: 99999,
+              width: "max-content",
+              maxWidth: 310,
+              padding: "11px 13px",
+              background: "var(--surface-2, #ffffff)",
+              color: "var(--ink, #221f20)",
+              border: "1px solid var(--border-strong, #c6d3dd)",
+              borderRadius: 9,
+              boxShadow:
+                "0 8px 24px rgba(0, 0, 0, 0.28), 0 2px 6px rgba(0, 0, 0, 0.12)",
+              fontSize: 11.5,
+              lineHeight: 1.5,
+              pointerEvents: "auto",
+            }}
+          >
+            {/* Pointer arrow pointing to trigger icon */}
             <div
               style={{
-                fontWeight: 700,
-                fontSize: 12,
-                color: "var(--ink, #221f20)",
-                marginBottom: 5,
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                borderBottom: "1px solid var(--border, #e4eaf0)",
-                paddingBottom: 4,
+                position: "absolute",
+                width: 8,
+                height: 8,
+                background: "var(--surface-2, #ffffff)",
+                left: coords.arrowLeft,
+                transform: "translateX(-50%) rotate(45deg)",
+                zIndex: -1,
+                ...(coords.placement === "top"
+                  ? {
+                      bottom: -4,
+                      borderRight: "1px solid var(--border-strong, #c6d3dd)",
+                      borderBottom: "1px solid var(--border-strong, #c6d3dd)",
+                    }
+                  : {
+                      top: -4,
+                      borderLeft: "1px solid var(--border-strong, #c6d3dd)",
+                      borderTop: "1px solid var(--border-strong, #c6d3dd)",
+                    }),
               }}
-            >
-              <span
+            />
+
+            {finalTitle && (
+              <div
                 style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  background: "var(--brand, #2777f3)",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  color: "var(--ink, #221f20)",
+                  marginBottom: 6,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  borderBottom: "1px solid var(--border, #e4eaf0)",
+                  paddingBottom: 4,
                 }}
-              />
-              {finalTitle}
-            </div>
-          )}
+              >
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "var(--brand, #2777f3)",
+                    flexShrink: 0,
+                  }}
+                />
+                {finalTitle}
+              </div>
+            )}
 
-          <div style={{ color: "var(--ink-2, #3f454d)", margin: "4px 0" }}>
-            {finalContent}
-          </div>
-
-          {finalTip && (
-            <div
-              style={{
-                marginTop: 6,
-                padding: "5px 7px",
-                background: "var(--surface-3, #f3f6fa)",
-                borderRadius: 5,
-                borderLeft: "3px solid var(--brand, #2777f3)",
-                fontSize: 11,
-                color: "var(--ink-2, #3f454d)",
-              }}
-            >
-              <strong style={{ color: "var(--brand, #2777f3)" }}>Tip: </strong>
-              {finalTip}
+            <div style={{ color: "var(--ink-2, #3f454d)", margin: "4px 0" }}>
+              {finalContent}
             </div>
-          )}
 
-          {finalExample && (
-            <div
-              style={{
-                marginTop: 6,
-                fontSize: 11,
-                color: "var(--ink-muted, #667485)",
-                fontStyle: "italic",
-              }}
-            >
-              <strong style={{ fontStyle: "normal", color: "var(--ink-2)" }}>Example: </strong>
-              {finalExample}
-            </div>
-          )}
-        </div>
-      )}
+            {finalTip && (
+              <div
+                style={{
+                  marginTop: 7,
+                  padding: "5px 8px",
+                  background: "var(--surface-3, #f3f6fa)",
+                  borderRadius: 5,
+                  borderLeft: "3px solid var(--brand, #2777f3)",
+                  fontSize: 11,
+                  color: "var(--ink-2, #3f454d)",
+                }}
+              >
+                <strong style={{ color: "var(--brand, #2777f3)" }}>Tip: </strong>
+                {finalTip}
+              </div>
+            )}
+
+            {finalExample && (
+              <div
+                style={{
+                  marginTop: 7,
+                  fontSize: 11,
+                  color: "var(--ink-muted, #667485)",
+                  fontStyle: "italic",
+                }}
+              >
+                <strong style={{ fontStyle: "normal", color: "var(--ink-2)" }}>Example: </strong>
+                {finalExample}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
     </span>
   );
 }

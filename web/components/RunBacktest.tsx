@@ -173,7 +173,7 @@ export function RunBacktest({
   }
 
   return (
-    <section className="card" style={{ overflow: "hidden" }}>
+    <section className="card" style={{ overflow: open ? "visible" : "hidden" }}>
       <div
         style={{
           padding: "12px 16px",
