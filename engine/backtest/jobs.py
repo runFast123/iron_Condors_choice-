@@ -1247,8 +1247,14 @@ class JobStore:
         with self._lock:
             return self._jobs.get(user_id)
 
-    def dataset(self, user_id: str) -> dict[str, Any]:
-        """The user's latest result, or an honest empty bundle."""
+    def dataset(self, user_id: str, run_id: str | None = None) -> dict[str, Any]:
+        """The user's latest result, a specific past run by run_id, or an honest empty bundle."""
+        if run_id:
+            saved = self._db.get_backtest(run_id, user_id) if self._db else None
+            if saved and saved.get("dataset"):
+                return saved["dataset"]
+            return empty_bundle(f"Run {run_id} was not found or has no stored dataset.", awaiting_connection=False)
+
         job = self.get(user_id)
         # Signed in either way, so never "awaiting connection" here.
         if job is None:
@@ -1291,8 +1297,8 @@ class JobStore:
         if self._db is not None:
             self._db.clear_backtests(user_id)
 
-    def history(self, user_id: str) -> list[dict[str, Any]]:
-        return self._db.backtest_history(user_id) if self._db else []
+    def history(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        return self._db.backtest_history(user_id, limit=limit) if self._db else []
 
 
 store = JobStore()

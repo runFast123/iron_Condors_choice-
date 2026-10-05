@@ -364,3 +364,34 @@ export interface Dataset {
   warnings: string[];
   skipped: [string, number, string][];
 }
+
+export interface BacktestSummaryMetrics {
+  net_pnl: number;
+  total_pnl: number;
+  open_pnl?: number;
+  win_rate: number;
+  profit_factor: number | null;
+  max_drawdown: number;
+  max_drawdown_pct: number;
+  condors: number;
+  open_positions?: number;
+  wins?: number;
+  losses?: number;
+  total_credit: number;
+  total_costs: number;
+  capital_at_risk: number;
+  range: [string, string];
+  resolution: string;
+  real_price_fraction: number;
+}
+
+export interface BacktestHistoryRun {
+  run_id: string;
+  created_at: string;
+  status: "queued" | "running" | "done" | "error";
+  strategy_id: string;
+  params: Record<string, unknown>;
+  error?: string | null;
+  result_version?: number;
+  summary?: BacktestSummaryMetrics | null;
+}

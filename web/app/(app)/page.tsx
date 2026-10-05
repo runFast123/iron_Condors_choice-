@@ -1,10 +1,12 @@
 export const dynamic = "force-dynamic";
 
-import { getDataset } from "@/lib/data";
+import { getBacktestHistory, getDataset } from "@/lib/data";
 import { inr, num, pct, ratio, shortDate } from "@/lib/format";
 import { Badge, Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { EquityChart } from "@/components/charts/EquityChart";
 import { RunBacktest } from "@/components/RunBacktest";
+import { StrategyConditions } from "@/components/StrategyConditions";
+import { BacktestHistoryComparison } from "@/components/BacktestHistoryComparison";
 import { engine, engineConfigured } from "@/lib/engine";
 import { getSessionToken } from "@/lib/session";
 import Link from "next/link";
@@ -24,12 +26,19 @@ async function latestJob() {
   }
 }
 
-export default async function Overview() {
-  // Both calls go to the same engine and neither depends on the other, so they
-  // go together. Awaiting them in sequence made the landing page cost two
-  // round-trips where every other page costs one -- the first screen after
-  // login was the slowest in the app.
-  const [dataset, job] = await Promise.all([getDataset(), latestJob()]);
+export default async function Overview({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const currentRunId = resolvedParams.run || null;
+
+  const [dataset, job, historyRuns] = await Promise.all([
+    getDataset(currentRunId),
+    latestJob(),
+    getBacktestHistory(30),
+  ]);
   const { metrics: m, attribution: attr, equity, netting, condors, params, provenance, campaigns, rolls } = dataset;
 
   const hasData = condors.length > 0;
@@ -131,6 +140,10 @@ export default async function Overview() {
               step, to give the ladder something to trigger on.
             </p>
           </div>
+        )}
+
+        {hasData && (
+          <StrategyConditions params={params} provenance={provenance} />
         )}
 
         <RunBacktest
@@ -283,6 +296,13 @@ export default async function Overview() {
             </StatGrid>
           </Card>
         </div>
+
+        {historyRuns && historyRuns.length > 0 && (
+          <BacktestHistoryComparison
+            runs={historyRuns}
+            currentRunId={currentRunId}
+          />
+        )}
 
         <Card
           title="Condors opened"

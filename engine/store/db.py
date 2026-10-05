@@ -522,22 +522,78 @@ class Store:
             return None
         return {"run_id": row["run_id"], "created_at": row["created_at"], "dataset": dataset}
 
+    def get_backtest(self, run_id: str, user_id: str) -> dict[str, Any] | None:
+        """Fetch a specific backtest run by run_id for this user."""
+        rows = self._rows(
+            "SELECT * FROM backtest_runs WHERE run_id = ? AND user_id = ?",
+            (run_id, user_id),
+        )
+        if not rows:
+            return None
+        row = rows[0]
+        try:
+            dataset = json.loads(row["dataset_json"]) if row["dataset_json"] else None
+        except json.JSONDecodeError:
+            log.warning("Backtest %s has an unreadable dataset", row["run_id"])
+            return None
+        return {
+            "run_id": row["run_id"],
+            "created_at": row["created_at"],
+            "dataset": dataset,
+            "params": json.loads(row["params_json"]) if row["params_json"] else {},
+            "status": row["status"],
+            "error": row["error"],
+            "strategy_id": row["strategy_id"] or LADDER,
+        }
+
     def backtest_history(
-        self, user_id: str, limit: int = 20, *, strategy_id: str | None = None
+        self, user_id: str, limit: int = 30, *, strategy_id: str | None = None
     ) -> list[dict[str, Any]]:
-        sql = ("SELECT run_id, created_at, status, params_json, error, strategy_id "
+        sql = ("SELECT run_id, created_at, status, params_json, dataset_json, error, strategy_id, result_version "
                "FROM backtest_runs WHERE user_id = ?")
         params: tuple = (user_id,)
         if strategy_id is not None:
             sql, params = sql + " AND strategy_id = ?", (user_id, strategy_id)
-        return [
-            {
-                "run_id": r["run_id"], "created_at": r["created_at"], "status": r["status"],
-                "params": json.loads(r["params_json"]), "error": r["error"],
+        out = []
+        for r in self._rows(sql + " ORDER BY created_at DESC LIMIT ?", (*params, limit)):
+            summary = None
+            if r["dataset_json"]:
+                try:
+                    ds = json.loads(r["dataset_json"])
+                    m = ds.get("metrics") or {}
+                    prov = ds.get("provenance") or {}
+                    summary = {
+                        "net_pnl": m.get("net_pnl", 0.0),
+                        "total_pnl": m.get("total_pnl", m.get("net_pnl", 0.0)),
+                        "open_pnl": m.get("open_pnl", 0.0),
+                        "win_rate": m.get("win_rate", 0.0),
+                        "profit_factor": m.get("profit_factor"),
+                        "max_drawdown": m.get("max_drawdown", 0.0),
+                        "max_drawdown_pct": m.get("max_drawdown_pct", 0.0),
+                        "condors": m.get("condors", 0),
+                        "open_positions": m.get("open_positions", 0),
+                        "wins": m.get("wins", 0),
+                        "losses": m.get("losses", 0),
+                        "total_credit": m.get("total_credit", 0.0),
+                        "total_costs": m.get("total_costs", 0.0),
+                        "capital_at_risk": m.get("capital_at_risk", 0.0),
+                        "range": prov.get("range", ["-", "-"]),
+                        "resolution": prov.get("resolution", "-"),
+                        "real_price_fraction": m.get("real_price_fraction", 0.0),
+                    }
+                except Exception:
+                    pass
+            out.append({
+                "run_id": r["run_id"],
+                "created_at": r["created_at"],
+                "status": r["status"],
+                "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                "error": r["error"],
                 "strategy_id": r["strategy_id"] or LADDER,
-            }
-            for r in self._rows(sql + " ORDER BY created_at DESC LIMIT ?", (*params, limit))
-        ]
+                "result_version": r["result_version"] if "result_version" in r else 0,
+                "summary": summary,
+            })
+        return out
 
     def clear_backtests(self, user_id: str, *, strategy_id: str | None = None) -> None:
         """Drop this user's saved runs -- one strategy's, or all of them."""

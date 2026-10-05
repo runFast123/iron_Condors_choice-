@@ -167,7 +167,14 @@ export const engine = {
   spot: (token: string) =>
     call<{ symbol: string; token: number; ltp: number | null; ts: string }>("/market/spot", { token }),
 
-  backtestDataset: (token: string) => call<Record<string, unknown>>("/backtest/dataset", { token }),
+  backtestDataset: (token: string, runId?: string | null) =>
+    call<Record<string, unknown>>(
+      runId ? `/backtest/dataset?run_id=${encodeURIComponent(runId)}` : "/backtest/dataset",
+      { token },
+    ),
+
+  backtestHistory: (token: string, limit: number = 30) =>
+    call<{ runs: import("./types").BacktestHistoryRun[] }>(`/backtest/history?limit=${limit}`, { token }),
 
   backtestStatus: (token: string) =>
     call<{ job: BacktestJob | null }>("/backtest/status", { token }),

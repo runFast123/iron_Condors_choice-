@@ -355,6 +355,46 @@ def test_a_current_result_is_served(store):
     assert saved and saved["run_id"] == "new"
 
 
+def test_get_backtest_by_id(store):
+    store.save_backtest(run_id="run-123", user_id="u1", status="done",
+                        params={"step": 100}, dataset={"metrics": {"net_pnl": 5000.0}}, result_version=9)
+    run = store.get_backtest("run-123", "u1")
+    assert run is not None
+    assert run["run_id"] == "run-123"
+    assert run["dataset"]["metrics"]["net_pnl"] == 5000.0
+    assert run["params"]["step"] == 100
+    # Different user cannot access
+    assert store.get_backtest("run-123", "u2") is None
+
+
+def test_backtest_history_extracts_summary_metrics(store):
+    store.save_backtest(
+        run_id="run-sum", user_id="u1", status="done",
+        params={"step": 100, "direction": "both"},
+        dataset={
+            "metrics": {
+                "net_pnl": 12500.0,
+                "win_rate": 0.75,
+                "profit_factor": 1.8,
+                "max_drawdown": -3000.0,
+                "condors": 12,
+            },
+            "provenance": {"range": ["2025-01-01", "2025-12-31"], "resolution": "D"},
+        },
+        result_version=9,
+    )
+    history = store.backtest_history("u1")
+    assert len(history) >= 1
+    item = next(h for h in history if h["run_id"] == "run-sum")
+    assert item["summary"] is not None
+    assert item["summary"]["net_pnl"] == 12500.0
+    assert item["summary"]["win_rate"] == 0.75
+    assert item["summary"]["profit_factor"] == 1.8
+    assert item["summary"]["max_drawdown"] == -3000.0
+    assert item["summary"]["condors"] == 12
+    assert item["summary"]["range"] == ["2025-01-01", "2025-12-31"]
+
+
 def test_a_database_from_an_earlier_build_gains_the_version_column(tmp_path):
     """CREATE TABLE IF NOT EXISTS leaves an existing table alone, so without a
     migration every read of the new column fails on an existing database."""

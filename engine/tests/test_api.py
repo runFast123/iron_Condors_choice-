@@ -378,3 +378,34 @@ def test_a_static_ip_refusal_inside_a_request_is_403(client):
 def test_an_unknown_dashboard_token_is_still_401(client):
     res = client.get(_raising_route(ChoiceAuthError("never reached")), headers=bearer("not-a-token"))
     assert res.status_code == 401
+
+
+def test_backtest_history_and_dataset_by_run_id(client):
+    token = login(client, ALICE).json()["token"]
+    user_id = client.get("/me", headers=bearer(token)).json()["user"]["user_id"]
+
+    # Save a run directly to the store
+    from engine.api import backtest_store
+    backtest_store._db.save_backtest(
+        run_id="bt-custom-run",
+        user_id=user_id,
+        status="done",
+        params={"step": 100, "direction": "both"},
+        dataset={"metrics": {"net_pnl": 9999.0, "win_rate": 0.8}, "condors": []},
+        result_version=9,
+    )
+
+    # 1. Test /backtest/history returns the run with summary
+    res = client.get("/backtest/history", headers=bearer(token))
+    assert res.status_code == 200
+    runs = res.json()["runs"]
+    assert len(runs) >= 1
+    custom_run = next(r for r in runs if r["run_id"] == "bt-custom-run")
+    assert custom_run["summary"]["net_pnl"] == 9999.0
+    assert custom_run["summary"]["win_rate"] == 0.8
+
+    # 2. Test /backtest/dataset with run_id loads that specific run
+    res_ds = client.get("/backtest/dataset?run_id=bt-custom-run", headers=bearer(token))
+    assert res_ds.status_code == 200
+    ds = res_ds.json()
+    assert ds["metrics"]["net_pnl"] == 9999.0

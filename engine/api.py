@@ -854,15 +854,21 @@ def backtest_status(session: UserSession = Depends(current_user)) -> dict[str, A
 
 
 @app.get("/backtest/dataset", dependencies=[Depends(check_engine_key)])
-def backtest_dataset(session: UserSession = Depends(current_user)) -> dict[str, Any]:
-    """This user's latest result, or an honest empty bundle explaining why not."""
-    return backtest_store.dataset(session.user_id)
+def backtest_dataset(
+    run_id: str | None = None,
+    session: UserSession = Depends(current_user),
+) -> dict[str, Any]:
+    """This user's latest result, or a specific past run by run_id, or an honest empty bundle explaining why not."""
+    return backtest_store.dataset(session.user_id, run_id=run_id)
 
 
 @app.get("/backtest/history", dependencies=[Depends(check_engine_key)])
-def backtest_history(session: UserSession = Depends(current_user)) -> dict[str, Any]:
+def backtest_history(
+    limit: int = 30,
+    session: UserSession = Depends(current_user),
+) -> dict[str, Any]:
     """Past runs, which now outlive the process that produced them."""
-    return {"runs": backtest_store.history(session.user_id)}
+    return {"runs": backtest_store.history(session.user_id, limit=limit)}
 
 
 @app.post("/backtest/clear", dependencies=[Depends(check_engine_key)])
