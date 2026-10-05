@@ -1071,6 +1071,9 @@ export function ForwardControl({
                   style={{ minWidth: 100 }}
                 >
                   <option value="">Hold</option>
+                  <option value={0.3}>0.3× credit</option>
+                  <option value={0.5}>0.5× credit (tight wing limit)</option>
+                  <option value={0.75}>0.75× credit</option>
                   <option value={1.0}>1.0× credit</option>
                   <option value={1.5}>1.5× credit</option>
                   <option value={2.0}>2.0× credit</option>

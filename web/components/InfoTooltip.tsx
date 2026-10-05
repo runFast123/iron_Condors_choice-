@@ -86,10 +86,10 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
   stop_loss: {
     title: "Stop Loss Multiple",
     description:
-      "Initial fixed risk limit expressed as a multiple of collected credit. If a position incurs a mark-to-market loss equal to this multiple, it is stopped out immediately to prevent catastrophic drawdowns.",
+      "Initial fixed risk limit expressed as a multiple of collected credit (e.g. 0.5×, 1.5×, 2.0×). If a position incurs a mark-to-market loss equal to this multiple of credit, it is stopped out immediately.",
     howToUse:
-      "Typically set to 1.5× to 2.5×. Prevents a single runaway trending gap from wiping out gains from multiple successful campaigns.",
-    example: "Collected ₹100 credit. A 2.0× Stop Loss exits if loss reaches -₹200 (net position cost ₹300).",
+      "Important for defined-risk condors: If your collected credit is high relative to wing width (e.g. ₹8,400 credit on a 200 pt wing), your maximum theoretical loss is capped by the protective wings at ~₹4,700 (0.55× credit). In that case, a 1.0× or 2.0× SL will never trigger because the wing stops the loss first! Choose 0.3× or 0.5× credit to cut losses early.",
+    example: "Collected ₹100 credit. A 0.5× Stop Loss exits if loss reaches -₹50. A 2.0× Stop Loss exits if loss reaches -₹200.",
   },
   trailing_sl: {
     title: "Trailing Stop-Loss (Trailing SL)",
