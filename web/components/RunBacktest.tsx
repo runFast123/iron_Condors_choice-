@@ -61,7 +61,7 @@ export function RunBacktest({
   const [takeProfit, setTakeProfit] = useState<number | "">("");
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [trailingSl, setTrailingSl] = useState<number | "">("");
-  const [trailingTrigger, setTrailingTrigger] = useState<number | "">("");
+  const [trailingTrigger, setTrailingTrigger] = useState<number | "">(75000);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -140,6 +140,8 @@ export function RunBacktest({
           campaign_stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
           campaign_trailing_sl_pct: trailingSl !== "" ? Number(trailingSl) : undefined,
           trailing_sl: trailingSl !== "" ? Number(trailingSl) : undefined,
+          campaign_trailing_sl_trigger: trailingSl !== "" && trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
+          trailing_sl_trigger: trailingSl !== "" && trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
           // HIC derives direction and both caps from its band and spreads, and
           // is symmetric by construction. The ladder's own settings used to be
           // sent to it anyway -- including an untouched Max up of 10 behind a
@@ -490,6 +492,27 @@ export function RunBacktest({
                   <option value={0.3}>30% of Peak Capital</option>
                 </select>
               </label>
+
+              {trailingSl !== "" && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Arm TSL After Profit
+                    <InfoTooltip field="trailing_trigger" />
+                  </span>
+                  <select
+                    value={trailingTrigger}
+                    onChange={(e) => setTrailingTrigger(e.target.value === "" ? 0 : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, minWidth: 185 }}
+                  >
+                    <option value={75000}>After ₹75,000 profit (Recommended)</option>
+                    <option value={100000}>After ₹1,00,000 profit</option>
+                    <option value={50000}>After ₹50,000 profit</option>
+                    <option value={25000}>After ₹25,000 profit</option>
+                    <option value={0}>Immediate (from ₹0)</option>
+                  </select>
+                </label>
+              )}
 
               {strategy !== "hic" && (
                 <>

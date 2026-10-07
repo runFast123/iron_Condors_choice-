@@ -31,7 +31,6 @@ def _load_dotenv(path: Path) -> None:
 
 
 _load_dotenv(REPO_ROOT / ".env")
-_load_dotenv(REPO_ROOT / ".env.engine.local")
 
 
 def _f(key: str, default: float) -> float:

@@ -406,6 +406,14 @@ class Backtest:
             if campaign_tsl_pct > 1.0 and campaign_tsl_pct <= 100.0:
                 campaign_tsl_pct = campaign_tsl_pct / 100.0
 
+        campaign_tsl_hurdle = (
+            float(params.campaign_trailing_sl_trigger)
+            if params.campaign_trailing_sl_trigger is not None
+            else float(getattr(params.strategy, "campaign_trailing_sl_trigger", None))
+            if getattr(params.strategy, "campaign_trailing_sl_trigger", None) is not None
+            else 0.0
+        )
+
         peak_campaign_capital: float = 0.0
         strategy_tsl_halted: bool = False
         strategy_tsl_reason: str | None = None
@@ -496,7 +504,7 @@ class Backtest:
                 if size != strategy.lot_size:
                     strategy = replace(strategy, lot_size=size)
 
-            if not strategy_tsl_halted and campaign_tsl_pct is not None and peak_campaign_capital > 0:
+            if not strategy_tsl_halted and campaign_tsl_pct is not None and peak_campaign_capital > 0 and peak_campaign_capital >= campaign_tsl_hurdle:
                 tsl_pullback = peak_campaign_capital * campaign_tsl_pct
                 tsl_threshold = peak_campaign_capital - tsl_pullback
                 if cumulative_realised <= tsl_threshold:
@@ -635,7 +643,7 @@ class Backtest:
                     triggered_status: CondorStatus = CondorStatus.CLOSED_STOP
 
                     # 1. Monthly Campaign Trailing Stop Loss (TSL) based on peak campaign-end capital
-                    if campaign_tsl_pct is not None and peak_campaign_capital > 0:
+                    if campaign_tsl_pct is not None and peak_campaign_capital > 0 and peak_campaign_capital >= campaign_tsl_hurdle:
                         tsl_pullback = peak_campaign_capital * campaign_tsl_pct
                         tsl_threshold = peak_campaign_capital - tsl_pullback
                         if current_total_capital <= tsl_threshold:

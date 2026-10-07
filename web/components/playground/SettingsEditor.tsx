@@ -57,6 +57,7 @@ export const FIELDS: Field[] = [
   { key: "take_profit", label: "Take profit", hint: "% of credit; blank = hold", kind: "optional", percent: true, replayOnly: true },
   { key: "stop_loss", label: "Campaign Stop loss", hint: "₹ max monthly loss (e.g. 25000); blank = hold", kind: "optional", replayOnly: true },
   { key: "trailing_sl", label: "Campaign Trailing SL", hint: "% pullback from peak capital (e.g. 15% halts at ₹21,250 on ₹25k); blank = off", kind: "optional", percent: true, replayOnly: true },
+  { key: "trailing_sl_trigger", label: "TSL Hurdle", hint: "₹ profit required before TSL arms (e.g. 75000); blank = 0", kind: "optional", step: 5000, replayOnly: true },
   {
     key: "bar_minutes", label: "Time frame", hint: "what a level fires on", kind: "select", replayOnly: true,
     options: [
@@ -107,11 +108,11 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
   },
   {
     id: "trail_15",
-    label: "15% Monthly TSL",
+    label: "15% Monthly TSL (≥ ₹75k)",
     icon: <IconShield size={13} />,
-    hint: "Halt if capital pulls back 15% from peak campaign-end capital (e.g. ₹21,250 on ₹25k)",
+    hint: "Arms after ₹75k profit: halts if capital pulls back 15% from peak (e.g. locks in 1.25L on 1.46L peak)",
     replayOnly: true,
-    edits: { trailing_sl: 0.15 },
+    edits: { trailing_sl: 0.15, trailing_sl_trigger: 75000 },
   },
   {
     id: "vix_14",

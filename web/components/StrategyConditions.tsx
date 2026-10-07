@@ -29,6 +29,7 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
   const isTrailingSlActive = (params.campaign_trailing_sl_pct != null && params.campaign_trailing_sl_pct > 0) || (params.campaign_trailing_sl != null && params.campaign_trailing_sl > 0) || (params.trailing_sl_mult != null && params.trailing_sl_mult > 0);
   const tslVal = params.campaign_trailing_sl_pct ?? params.campaign_trailing_sl ?? params.trailing_sl_mult;
   const slVal = params.campaign_stop_loss ?? params.stop_loss_mult;
+  const hurdleVal = params.campaign_trailing_sl_trigger ?? params.trailing_sl_trigger;
 
   return (
     <section
@@ -332,11 +333,9 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                 </span>
                 <span style={{ fontWeight: 600, color: isTrailingSlActive ? "#38bdf8" : "var(--ink-muted)" }}>
                   {isTrailingSlActive
-                    ? tslVal! <= 1
-                      ? `${Math.round(tslVal! * 100)}% of Peak Capital`
-                      : tslVal! <= 100
-                      ? `${Math.round(tslVal!)}% of Peak Capital`
-                      : `₹${Math.round(tslVal!).toLocaleString()} Pullback`
+                    ? `${tslVal! <= 1 ? Math.round(tslVal! * 100) : Math.round(tslVal!)}% of Peak Capital${
+                        hurdleVal != null && hurdleVal > 0 ? ` (arms ≥ ₹${Math.round(hurdleVal).toLocaleString()})` : ""
+                      }`
                     : "Off"}
                 </span>
               </div>

@@ -144,7 +144,7 @@ export function ForwardControl({
   const [takeProfit, setTakeProfit] = useState<number | "">("");
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [trailingSl, setTrailingSl] = useState<number | "">("");
-  const [trailingTrigger, setTrailingTrigger] = useState<number | "">("");
+  const [trailingTrigger, setTrailingTrigger] = useState<number | "">(75000);
   // The time frame the ladder acts on: a level fires on the close of a bar
   // this many minutes long, as in a backtest at that bar size. 1 acts on every
   // minute's price, which is what every run did before this existed.
@@ -372,6 +372,8 @@ export function ForwardControl({
         campaign_stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
         campaign_trailing_sl_pct: trailingSl !== "" ? Number(trailingSl) : undefined,
         trailing_sl: trailingSl !== "" ? Number(trailingSl) : undefined,
+        campaign_trailing_sl_trigger: trailingSl !== "" && trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
+        trailing_sl_trigger: trailingSl !== "" && trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
         ...(strategy === "hic"
           ? {
               full_band_steps: bandSteps,
@@ -1063,6 +1065,30 @@ export function ForwardControl({
                   Trails peak campaign-end capital. Halts all entries if hit.
                 </span>
               </label>
+
+              {trailingSl !== "" && (
+                <label style={FIELD}>
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Arm TSL After Profit
+                    <InfoTooltip field="trailing_trigger" />
+                  </span>
+                  <select
+                    value={trailingTrigger}
+                    onChange={(e) => setTrailingTrigger(e.target.value === "" ? 0 : Number(e.target.value))}
+                    className="auth-input"
+                    style={{ minWidth: 185 }}
+                  >
+                    <option value={75000}>After ₹75,000 profit (Recommended)</option>
+                    <option value={100000}>After ₹1,00,000 profit</option>
+                    <option value={50000}>After ₹50,000 profit</option>
+                    <option value={25000}>After ₹25,000 profit</option>
+                    <option value={0}>Immediate (from ₹0)</option>
+                  </select>
+                  <span style={{ ...HINT, maxWidth: 180 }}>
+                    Minimum profit required before TSL begins trailing.
+                  </span>
+                </label>
+              )}
 
               {strategy !== "hic" && (
                 <>

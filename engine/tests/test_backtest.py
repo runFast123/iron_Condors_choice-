@@ -222,6 +222,27 @@ def test_tsl_halts_subsequent_campaigns_after_stop_hit():
     assert len(third_camp) == 0, "System must not open positions in subsequent campaigns after TSL hit"
 
 
+def test_tsl_respects_activation_hurdle():
+    """TSL remains dormant until peak capital reaches the activation hurdle."""
+    params = BacktestParams(
+        strategy=cfg(step=100.0),
+        campaign_trailing_sl_pct=0.15,
+        campaign_trailing_sl_trigger=50_000.0,  # Hurdle 50k > Campaign 1 peak (~5.2k)
+        costs=ZERO_COST,
+        roll_to_next_expiry=True,
+    )
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2], min_dte=1))
+    prices = [24_000] * 80 + [23_600, 23_500, 23_200, 23_000] + [22_800] * 20
+    result = engine.run(spot_path(prices, minutes=60))
+
+    # Campaign 2 opens and trades because 50k hurdle was not reached (early noise protected)
+    second_camp = [c for c in result.condors if c.expiry == EXPIRY_2]
+    assert len(second_camp) > 0
+    # No condors closed by TSL because TSL was disarmed below the 50k hurdle
+    tsl_closed = [c for c in second_camp if c.status is CondorStatus.CLOSED_TRAILING_STOP]
+    assert len(tsl_closed) == 0
+
+
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,
     which flatters exactly the configurations that trade most."""

@@ -102,11 +102,13 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
       "If peak capital at campaign end reaches ₹25,000, a 15% TSL equals ₹3,750. In the next upcoming month, if total capital drops to ₹21,250, all positions exit immediately and the system halts all further entries.",
   },
   trailing_trigger: {
-    title: "Trailing Stop Activation Trigger",
+    title: "TSL Activation Hurdle (Min Profit to Arm TSL)",
     description:
-      "The profit threshold required before trailing stop-loss activates. 'Auto (breakeven)' waits until profit covers the trailing distance, guaranteeing the stop floor is at or above breakeven (₹0). Alternatively, choose an explicit profit target like 20% or 30%.",
+      "The minimum cumulative profit required before Trailing Stop Loss arms. Prevents premature exits from small daily wiggles during early trading. Once peak capital reaches this hurdle (e.g. ₹75,000 or ₹1,00,000), TSL arms to protect your accumulated profits.",
     howToUse:
-      "Use 'Auto' to let the position breathe during initial entry noise while ensuring the trail never triggers at a loss.",
+      "Select 'After ₹75,000 profit (Recommended)' or 'After ₹1,00,000 profit' so your ladder can grow through the year and lock in peak returns (e.g. 1.46L) without being stopped out early.",
+    example:
+      "With a ₹75,000 hurdle and 15% TSL: early wiggles in months 1–3 don't trigger the stop. In August, when profit reaches ₹1,46,000, TSL arms. When September plunges, the 15% TSL halts at ₹1,24,100, saving over ₹51,000.",
   },
   min_dte: {
     title: "Skip Late Entries (Min DTE)",

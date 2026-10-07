@@ -195,6 +195,7 @@ export interface Params {
   campaign_trailing_sl_pct?: number | null;
   campaign_trailing_sl?: number | null;
   campaign_trailing_sl_trigger?: number | null;
+  trailing_sl_trigger?: number | null;
   trailing_sl_mult?: number | null;
   trailing_sl_trigger_pct?: number | null;
   direction?: "down" | "up" | "both";
