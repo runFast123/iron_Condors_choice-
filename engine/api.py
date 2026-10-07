@@ -189,6 +189,7 @@ class RunBacktestRequest(BaseModel):
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=10_000_000)
     campaign_stop_loss: float | None = Field(default=None, gt=0, le=10_000_000)
+    campaign_trailing_sl_pct: float | None = Field(default=None, gt=0, le=100)
     campaign_trailing_sl: float | None = Field(default=None, gt=0, le=10_000_000)
     campaign_trailing_sl_trigger: float | None = Field(default=None, ge=0, le=10_000_000)
     trailing_sl: float | None = Field(default=None, gt=0, le=10_000_000)
@@ -324,6 +325,7 @@ class StartForwardRequest(BaseModel):
     take_profit: float | None = Field(default=None, gt=0, le=1)
     stop_loss: float | None = Field(default=None, gt=0, le=10_000_000)
     campaign_stop_loss: float | None = Field(default=None, gt=0, le=10_000_000)
+    campaign_trailing_sl_pct: float | None = Field(default=None, gt=0, le=100)
     campaign_trailing_sl: float | None = Field(default=None, gt=0, le=10_000_000)
     campaign_trailing_sl_trigger: float | None = Field(default=None, ge=0, le=10_000_000)
     trailing_sl: float | None = Field(default=None, gt=0, le=10_000_000)
@@ -1009,6 +1011,15 @@ def _strategy_config(
         take_profit_pct=body.take_profit,
         stop_loss_mult=body.campaign_stop_loss or body.stop_loss,
         campaign_stop_loss=body.campaign_stop_loss or body.stop_loss,
+        campaign_trailing_sl_pct=(
+            body.campaign_trailing_sl_pct / 100.0 if body.campaign_trailing_sl_pct is not None and body.campaign_trailing_sl_pct > 1.0
+            else body.campaign_trailing_sl_pct if body.campaign_trailing_sl_pct is not None
+            else body.campaign_trailing_sl / 100.0 if body.campaign_trailing_sl is not None and 1.0 < body.campaign_trailing_sl <= 100.0
+            else body.campaign_trailing_sl if body.campaign_trailing_sl is not None
+            else body.trailing_sl / 100.0 if body.trailing_sl is not None and 1.0 < body.trailing_sl <= 100.0
+            else body.trailing_sl if body.trailing_sl is not None
+            else None
+        ),
         campaign_trailing_sl=body.campaign_trailing_sl or body.trailing_sl,
         campaign_trailing_sl_trigger=body.campaign_trailing_sl_trigger or body.trailing_sl_trigger,
         trailing_sl_mult=body.campaign_trailing_sl or body.trailing_sl,

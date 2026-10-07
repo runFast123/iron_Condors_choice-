@@ -25,8 +25,10 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
   const isDteActive = params.min_entry_dte != null && params.min_entry_dte > 0;
   const isCreditActive = params.min_credit_ratio != null && params.min_credit_ratio > 0;
   const isTakeProfitActive = params.take_profit_pct != null && params.take_profit_pct > 0;
-  const isStopLossActive = params.stop_loss_mult != null && params.stop_loss_mult > 0;
-  const isTrailingSlActive = params.trailing_sl_mult != null && params.trailing_sl_mult > 0;
+  const isStopLossActive = (params.campaign_stop_loss != null && params.campaign_stop_loss > 0) || (params.stop_loss_mult != null && params.stop_loss_mult > 0);
+  const isTrailingSlActive = (params.campaign_trailing_sl_pct != null && params.campaign_trailing_sl_pct > 0) || (params.campaign_trailing_sl != null && params.campaign_trailing_sl > 0) || (params.trailing_sl_mult != null && params.trailing_sl_mult > 0);
+  const tslVal = params.campaign_trailing_sl_pct ?? params.campaign_trailing_sl ?? params.trailing_sl_mult;
+  const slVal = params.campaign_stop_loss ?? params.stop_loss_mult;
 
   return (
     <section
@@ -151,20 +153,20 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
             {[
               isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% TP` : null,
               isStopLossActive
-                ? params.stop_loss_mult! > 20
-                  ? `₹${params.stop_loss_mult!.toLocaleString()} Campaign SL`
-                  : `${params.stop_loss_mult}x Campaign SL`
+                ? `₹${Math.round(slVal!).toLocaleString()} Campaign SL`
                 : null,
               isTrailingSlActive
-                ? params.trailing_sl_mult! > 20
-                  ? `₹${params.trailing_sl_mult!.toLocaleString()} Trail SL`
-                  : `${params.trailing_sl_mult}x Trail SL`
+                ? tslVal! <= 1
+                  ? `${Math.round(tslVal! * 100)}% Campaign TSL`
+                  : tslVal! <= 100
+                  ? `${Math.round(tslVal!)}% Campaign TSL`
+                  : `₹${Math.round(tslVal!).toLocaleString()} Campaign TSL`
                 : null,
             ].filter(Boolean).join(" / ") || "Hold to expiry"}
           </span>
           <InfoTooltip
             title="Exit Rules & Guardrails"
-            content="Automated exit triggers active on every bar. Take Profit locks in designated gains; Stop Loss limits max drawdown; Trailing SL locks in peak profit upon pullbacks."
+            content="Automated exit triggers active on every bar. Take Profit locks in designated gains; Stop Loss limits max monthly drawdown; Trailing SL locks in peak campaign-end capital upon pullbacks."
           />
         </div>
 
@@ -312,14 +314,14 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                   {[
                     isTakeProfitActive ? `${Math.round(params.take_profit_pct! * 100)}% Take Profit` : null,
                     isStopLossActive
-                      ? params.stop_loss_mult! > 20
-                        ? `₹${params.stop_loss_mult!.toLocaleString()} Campaign SL`
-                        : `${params.stop_loss_mult}x Campaign SL`
+                      ? `₹${Math.round(slVal!).toLocaleString()} Campaign SL`
                       : null,
                     isTrailingSlActive
-                      ? params.trailing_sl_mult! > 20
-                        ? `₹${params.trailing_sl_mult!.toLocaleString()} Campaign Trail`
-                        : `${params.trailing_sl_mult}x Campaign Trail`
+                      ? tslVal! <= 1
+                        ? `${Math.round(tslVal! * 100)}% Campaign TSL`
+                        : tslVal! <= 100
+                        ? `${Math.round(tslVal!)}% Campaign TSL`
+                        : `₹${Math.round(tslVal!).toLocaleString()} Campaign TSL`
                       : null,
                   ].filter(Boolean).join(" · ") || "Held to settlement / expiry"}
                 </span>
@@ -330,11 +332,11 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
                 </span>
                 <span style={{ fontWeight: 600, color: isTrailingSlActive ? "#38bdf8" : "var(--ink-muted)" }}>
                   {isTrailingSlActive
-                    ? `${params.trailing_sl_mult}x pullback${
-                        params.trailing_sl_trigger_pct != null
-                          ? ` (trig ≥ ${Math.round(params.trailing_sl_trigger_pct * 100)}%)`
-                          : " (auto trig)"
-                      }`
+                    ? tslVal! <= 1
+                      ? `${Math.round(tslVal! * 100)}% of Peak Capital`
+                      : tslVal! <= 100
+                      ? `${Math.round(tslVal!)}% of Peak Capital`
+                      : `₹${Math.round(tslVal!).toLocaleString()} Pullback`
                     : "Off"}
                 </span>
               </div>

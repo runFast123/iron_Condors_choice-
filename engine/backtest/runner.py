@@ -91,6 +91,7 @@ class BacktestParams:
     # for the campaign are squared off immediately and no further condors are
     # opened for the remainder of this monthly expiry.
     campaign_stop_loss: float | None = None
+    campaign_trailing_sl_pct: float | None = None
     campaign_trailing_sl: float | None = None
     campaign_trailing_sl_trigger: float | None = None
 
@@ -394,20 +395,23 @@ class Backtest:
             or getattr(params.strategy, "campaign_stop_loss", None)
             or getattr(params.strategy, "stop_loss_mult", None)
         )
-        campaign_tsl = (
-            params.campaign_trailing_sl
+        campaign_tsl_pct = (
+            params.campaign_trailing_sl_pct
+            or getattr(params.strategy, "campaign_trailing_sl_pct", None)
+            or params.campaign_trailing_sl
             or getattr(params.strategy, "campaign_trailing_sl", None)
             or getattr(params.strategy, "trailing_sl_mult", None)
         )
-        campaign_tsl_trigger = (
-            params.campaign_trailing_sl_trigger
-            or getattr(params.strategy, "campaign_trailing_sl_trigger", None)
-            or getattr(params.strategy, "trailing_sl_trigger_pct", None)
-        )
+        if campaign_tsl_pct is not None:
+            if campaign_tsl_pct > 1.0 and campaign_tsl_pct <= 100.0:
+                campaign_tsl_pct = campaign_tsl_pct / 100.0
+
+        peak_campaign_capital: float = 0.0
+        strategy_tsl_halted: bool = False
+        strategy_tsl_reason: str | None = None
 
         campaign_stopped = False
         campaign_stop_reason: str | None = None
-        campaign_peak_pnl: float = 0.0
         campaign_anchor_credit: float | None = None
 
         for i, (when, spot) in enumerate(spots):
@@ -443,15 +447,25 @@ class Backtest:
                 if campaign_expiry is None:
                     campaign_expiry = expiry
                 elif expiry != campaign_expiry:
+                    # Previous campaign ended and settled:
+                    # Update peak capital achieved at the end of a campaign
+                    capital_at_end = cumulative_realised
+                    if capital_at_end > peak_campaign_capital:
+                        peak_campaign_capital = capital_at_end
+
                     if params.roll_to_next_expiry:
                         ladder.reset()
                         result.rolls.append((when, campaign_expiry, expiry))
                     campaign_expiry = expiry
-                    # Reset campaign stop-loss state for the fresh monthly campaign
-                    campaign_stopped = False
-                    campaign_stop_reason = None
-                    campaign_peak_pnl = 0.0
-                    campaign_anchor_credit = None
+
+                    # For the upcoming fresh monthly campaign:
+                    if strategy_tsl_halted:
+                        campaign_stopped = True
+                        campaign_stop_reason = strategy_tsl_reason
+                    else:
+                        campaign_stopped = False
+                        campaign_stop_reason = None
+                        campaign_anchor_credit = None
 
             # 1. Open new rungs -- unless the VIX rule is holding entries back.
             fresh: list[LadderTrigger] = []
@@ -481,7 +495,27 @@ class Backtest:
                 size = params.lot_size_for(expiry)
                 if size != strategy.lot_size:
                     strategy = replace(strategy, lot_size=size)
+
+            if not strategy_tsl_halted and campaign_tsl_pct is not None and peak_campaign_capital > 0:
+                tsl_pullback = peak_campaign_capital * campaign_tsl_pct
+                tsl_threshold = peak_campaign_capital - tsl_pullback
+                if cumulative_realised <= tsl_threshold:
+                    strategy_tsl_halted = True
+                    strategy_tsl_reason = (
+                        f"campaign trailing-stop: capital ₹{cumulative_realised:,.0f} hit TSL limit ₹{tsl_threshold:,.0f} "
+                        f"({campaign_tsl_pct * 100:.0f}% pullback of ₹{tsl_pullback:,.0f} from peak campaign capital ₹{peak_campaign_capital:,.0f})"
+                    )
+                    campaign_stopped = True
+                    campaign_stop_reason = strategy_tsl_reason
+                    result.warnings.append(
+                        f"Campaign {campaign_expiry}: {strategy_tsl_reason} before entries on {when.strftime('%d-%b-%Y')}. "
+                        "Halted all further entries."
+                    )
+
             for trigger in fresh:
+                if strategy_tsl_halted:
+                    result.skipped.append((when, trigger.level, f"campaign trailing-stop active ({strategy_tsl_reason}); not opened"))
+                    continue
                 if campaign_stopped:
                     result.skipped.append((when, trigger.level, f"campaign stop-loss active ({campaign_stop_reason}); not opened"))
                     continue
@@ -551,13 +585,21 @@ class Backtest:
                     self._settle(condor, when, self._settlement_price(condor.expiry, spot), params)
                     realised.append(condor.realised_pnl())
                     cumulative_realised += condor.realised_pnl()
+                    if cumulative_realised > peak_campaign_capital:
+                        peak_campaign_capital = cumulative_realised
                     holding_days.append((when - condor.entry_time).total_seconds() / 86_400)
                     continue
 
                 marks = self._mark(condor, when, spot)
                 reason = condor.exit_signal(marks)
-                # Take-profit check on individual condor
-                if reason is not None and "take-profit" in reason:
+                if reason is not None:
+                    status = (
+                        CondorStatus.CLOSED_TARGET
+                        if "take-profit" in reason
+                        else CondorStatus.CLOSED_TRAILING_STOP
+                        if "trailing-stop" in reason
+                        else CondorStatus.CLOSED_STOP
+                    )
                     exits = {fl.leg: self._fill(marks[fl.leg], _flip(fl.leg.side)) for fl in condor.legs if fl.leg in marks}
                     exit_costs = sum(
                         params.costs.leg_cost(_flip(fl.leg.side), exits[fl.leg], fl.leg.qty, when.date())
@@ -566,13 +608,15 @@ class Backtest:
                     )
                     for fl in condor.legs:
                         fl.exit_price = exits[fl.leg]
-                    condor.close(when, reason, CondorStatus.CLOSED_TARGET, exit_costs)
+                    condor.close(when, reason, status, exit_costs)
                     realised.append(condor.realised_pnl())
                     cumulative_realised += condor.realised_pnl()
+                    if cumulative_realised > peak_campaign_capital:
+                        peak_campaign_capital = cumulative_realised
                     holding_days.append((when - condor.entry_time).total_seconds() / 86_400)
 
             # Campaign-level Stop Loss & Trailing SL across active monthly campaign
-            if (campaign_sl is not None or campaign_tsl is not None) and campaign_expiry is not None and not campaign_stopped:
+            if (campaign_sl is not None or campaign_tsl_pct is not None) and campaign_expiry is not None and not campaign_stopped and not strategy_tsl_halted:
                 active_campaign_condors = [c for c in condors if c.expiry == campaign_expiry]
                 open_campaign_condors = [c for c in active_campaign_condors if c.is_open]
                 if open_campaign_condors:
@@ -585,34 +629,30 @@ class Backtest:
                             c.open_pnl = c.mtm(c_marks)
                         camp_unrealised += c.open_pnl or 0.0
                     camp_total = camp_realised + camp_unrealised
-
-                    if camp_total > campaign_peak_pnl:
-                        campaign_peak_pnl = camp_total
+                    current_total_capital = cumulative_realised + camp_unrealised
 
                     triggered_reason: str | None = None
                     triggered_status: CondorStatus = CondorStatus.CLOSED_STOP
 
-                    # Fixed Campaign Stop Loss
-                    if campaign_sl is not None:
+                    # 1. Monthly Campaign Trailing Stop Loss (TSL) based on peak campaign-end capital
+                    if campaign_tsl_pct is not None and peak_campaign_capital > 0:
+                        tsl_pullback = peak_campaign_capital * campaign_tsl_pct
+                        tsl_threshold = peak_campaign_capital - tsl_pullback
+                        if current_total_capital <= tsl_threshold:
+                            triggered_reason = (
+                                f"campaign trailing-stop: capital ₹{current_total_capital:,.0f} hit TSL limit ₹{tsl_threshold:,.0f} "
+                                f"({campaign_tsl_pct * 100:.0f}% pullback of ₹{tsl_pullback:,.0f} from peak campaign capital ₹{peak_campaign_capital:,.0f})"
+                            )
+                            triggered_status = CondorStatus.CLOSED_TRAILING_STOP
+                            strategy_tsl_halted = True
+                            strategy_tsl_reason = triggered_reason
+
+                    # 2. Fixed Monthly Campaign Stop Loss
+                    if triggered_reason is None and campaign_sl is not None:
                         sl_threshold = campaign_sl if campaign_sl > 20 else campaign_sl * ref_crd
                         if camp_total <= -sl_threshold:
                             triggered_reason = f"campaign stop-loss: monthly loss -₹{abs(camp_total):,.0f} hit limit -₹{sl_threshold:,.0f}"
                             triggered_status = CondorStatus.CLOSED_STOP
-
-                    # Campaign Trailing Stop Loss
-                    if triggered_reason is None and campaign_tsl is not None:
-                        tsl_dist = campaign_tsl if campaign_tsl > 20 else campaign_tsl * ref_crd
-                        tsl_trig = (
-                            (campaign_tsl_trigger if campaign_tsl_trigger > 20 else campaign_tsl_trigger * ref_crd)
-                            if campaign_tsl_trigger is not None
-                            else tsl_dist
-                        )
-                        if campaign_peak_pnl >= tsl_trig and camp_total <= campaign_peak_pnl - tsl_dist:
-                            triggered_reason = (
-                                f"campaign trailing-stop: pulled back -₹{abs(campaign_peak_pnl - camp_total):,.0f} "
-                                f"from peak +₹{campaign_peak_pnl:,.0f} to +₹{camp_total:,.0f}"
-                            )
-                            triggered_status = CondorStatus.CLOSED_TRAILING_STOP
 
                     if triggered_reason is not None:
                         campaign_stopped = True
@@ -633,6 +673,9 @@ class Backtest:
                             holding_days.append((when - c.entry_time).total_seconds() / 86_400)
 
                         result.warnings.append(
+                            f"Campaign {campaign_expiry}: {triggered_reason} on {when.strftime('%d-%b-%Y')}. "
+                            f"Squared off {len(open_campaign_condors)} open condor(s) and halted all further entries."
+                            if strategy_tsl_halted else
                             f"Campaign {campaign_expiry}: {triggered_reason} on {when.strftime('%d-%b-%Y')}. "
                             f"Squared off {len(open_campaign_condors)} open condor(s) and halted new entries for this expiry."
                         )

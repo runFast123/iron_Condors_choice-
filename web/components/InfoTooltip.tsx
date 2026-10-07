@@ -86,20 +86,20 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
   stop_loss: {
     title: "Monthly Campaign Stop Loss",
     description:
-      "Caps cumulative loss across the entire monthly campaign (all condors opened for that monthly expiry). When cumulative monthly loss (realised + unrealised) hits this threshold, all open positions are immediately squared off and no further condors open for that month.",
+      "Caps cumulative loss across the monthly campaign (all condors opened for that monthly expiry). When cumulative monthly loss hits this threshold, all open positions are immediately squared off and no further condors open for that month.",
     howToUse:
-      "Essential for protecting against adverse trending months like September 2026. Without campaign SL, an adverse month can open 15+ condors and bleed over -₹60,000. Setting ₹20,000 or ₹25,000 (or 2.5× to 3.0× anchor credit) caps monthly drawdown cleanly and safeguards total account equity.",
+      "Essential for protecting against adverse trending months like September 2026. Setting ₹20,000 or ₹25,000 caps monthly drawdown cleanly.",
     example:
       "In Sep 2026, setting ₹25,000 Campaign SL squares off open condors when loss reaches -₹25k, saving +₹41,000 compared to holding without stop loss (-₹66k).",
   },
   trailing_sl: {
-    title: "Monthly Campaign Trailing SL",
+    title: "Monthly Campaign Trailing SL (% of Peak Capital)",
     description:
-      "Dynamic profit protection for the monthly campaign. Tracks the peak profit accumulated during the month. If campaign P&L pulls back from its peak by this amount (₹ or credit multiple), all open positions are closed to secure the month's gains.",
+      "Protects accumulated campaign capital across months. If the highest capital reached at the end of any monthly campaign is ₹25,000, setting a 15% TSL (₹3,750) will halt all new positions if capital drops to ₹21,250 in upcoming months, locking in your profits.",
     howToUse:
-      "Use ₹10,000 to ₹15,000 or 1.0× to 1.5× anchor credit to prevent a winning month from turning into a losing month during late-cycle market turns.",
+      "Select 15% (Recommended) or 10%–25% to lock in gains after profitable monthly campaigns and prevent giveback during subsequent adverse months.",
     example:
-      "Campaign reaches +₹35,000 peak profit. With a ₹15,000 trailing SL, if profit drops to +₹20,000, all positions exit, locking in +₹20,000 monthly gain.",
+      "If peak capital at campaign end reaches ₹25,000, a 15% TSL equals ₹3,750. In the next upcoming month, if total capital drops to ₹21,250, all positions exit immediately and the system halts all further entries.",
   },
   trailing_trigger: {
     title: "Trailing Stop Activation Trigger",

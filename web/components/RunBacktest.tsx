@@ -137,8 +137,9 @@ export function RunBacktest({
           max_entry_vix: maxVix === "" ? null : Number(maxVix),
           take_profit: takeProfit !== "" ? Number(takeProfit) : undefined,
           stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
+          campaign_stop_loss: stopLoss !== "" ? Number(stopLoss) : undefined,
+          campaign_trailing_sl_pct: trailingSl !== "" ? Number(trailingSl) : undefined,
           trailing_sl: trailingSl !== "" ? Number(trailingSl) : undefined,
-          trailing_sl_trigger: trailingTrigger !== "" ? Number(trailingTrigger) : undefined,
           // HIC derives direction and both caps from its band and spreads, and
           // is symmetric by construction. The ladder's own settings used to be
           // sent to it anyway -- including an untouched Max up of 10 behind a
@@ -432,43 +433,6 @@ export function RunBacktest({
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>
-                  Trailing SL (×)
-                  <InfoTooltip field="trailing_sl" />
-                </span>
-                <input
-                  type="number"
-                  min={0.1}
-                  max={10}
-                  step={0.1}
-                  value={trailingSl}
-                  placeholder="Off"
-                  onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
-                  className="auth-input"
-                  style={{ marginTop: 5, width: 85 }}
-                />
-              </label>
-
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                <span style={{ display: "inline-flex", alignItems: "center" }}>
-                  Trail trigger
-                  <InfoTooltip field="trailing_trigger" />
-                </span>
-                <select
-                  value={trailingTrigger}
-                  onChange={(e) => setTrailingTrigger(e.target.value === "" ? "" : Number(e.target.value))}
-                  className="auth-input"
-                  style={{ marginTop: 5, minWidth: 120 }}
-                >
-                  <option value="">Auto (breakeven)</option>
-                  <option value={0.1}>At 10% profit</option>
-                  <option value={0.2}>At 20% profit</option>
-                  <option value={0.3}>At 30% profit</option>
-                  <option value={0.5}>At 50% profit</option>
-                </select>
-              </label>
-
-              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                <span style={{ display: "inline-flex", alignItems: "center" }}>
                   Take profit
                   <InfoTooltip field="take_profit" />
                 </span>
@@ -504,29 +468,26 @@ export function RunBacktest({
                   <option value={30000}>₹30,000</option>
                   <option value={40000}>₹40,000</option>
                   <option value={50000}>₹50,000</option>
-                  <option value={2.0}>2.0× Anchor Credit (~₹17k)</option>
-                  <option value={3.0}>3.0× Anchor Credit (~₹25k)</option>
                 </select>
               </label>
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>
-                  Campaign Trailing SL
+                  Campaign Trailing SL (% of Peak Capital)
                   <InfoTooltip field="trailing_sl" />
                 </span>
                 <select
                   value={trailingSl}
                   onChange={(e) => setTrailingSl(e.target.value === "" ? "" : Number(e.target.value))}
                   className="auth-input"
-                  style={{ marginTop: 5, minWidth: 140 }}
+                  style={{ marginTop: 5, minWidth: 175 }}
                 >
                   <option value="">Off</option>
-                  <option value={10000}>₹10,000 Pullback</option>
-                  <option value={15000}>₹15,000 Pullback</option>
-                  <option value={20000}>₹20,000 Pullback</option>
-                  <option value={0.5}>0.5× Credit (~₹4.2k)</option>
-                  <option value={1.0}>1.0× Credit (~₹8.5k)</option>
-                  <option value={1.5}>1.5× Credit (~₹12.7k)</option>
+                  <option value={0.1}>10% of Peak Capital</option>
+                  <option value={0.15}>15% of Peak Capital (Recommended)</option>
+                  <option value={0.2}>20% of Peak Capital</option>
+                  <option value={0.25}>25% of Peak Capital</option>
+                  <option value={0.3}>30% of Peak Capital</option>
                 </select>
               </label>
 

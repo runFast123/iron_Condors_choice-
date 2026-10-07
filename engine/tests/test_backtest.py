@@ -177,6 +177,51 @@ def test_campaign_stop_loss_halts_entries_and_squares_off_campaign():
     assert any("campaign stop-loss" in (c.exit_reason or "") for c in closed_stops)
 
 
+def test_campaign_trailing_sl_pct_halts_upcoming_campaign():
+    # Campaign 1 runs and finishes with positive profit (held flat to expiry)
+    # Campaign 2 opens, market drops heavily, breaching the 15% TSL threshold
+    params = BacktestParams(
+        strategy=cfg(step=100.0),
+        campaign_trailing_sl_pct=0.15,
+        costs=ZERO_COST,
+        roll_to_next_expiry=True,
+    )
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2], min_dte=1))
+    # Prices: flat at 24000 across first expiry (settles positive), then plunges in second expiry
+    prices = [24_000] * 80 + [23_600, 23_500, 23_200, 23_000] + [22_800] * 20
+    result = engine.run(spot_path(prices, minutes=60))
+
+    # Campaign 1 settled
+    first_camp = [c for c in result.condors if c.expiry == EXPIRY]
+    assert len(first_camp) > 0
+    # Campaign 2 was stopped by trailing SL
+    second_camp = [c for c in result.condors if c.expiry == EXPIRY_2]
+    assert len(second_camp) > 0
+    tsl_closed = [c for c in second_camp if c.status is CondorStatus.CLOSED_TRAILING_STOP]
+    assert len(tsl_closed) > 0
+    assert any("campaign trailing-stop" in (c.exit_reason or "") for c in tsl_closed)
+    assert any("campaign trailing-stop" in w for w in result.warnings)
+
+
+def test_tsl_halts_subsequent_campaigns_after_stop_hit():
+    """Once TSL is hit, the system stops making positions across all subsequent campaigns."""
+    exp3 = dt.date(2026, 4, 9)
+    params = BacktestParams(
+        strategy=cfg(step=100.0),
+        campaign_trailing_sl_pct=0.15,
+        costs=ZERO_COST,
+        roll_to_next_expiry=True,
+    )
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2, exp3], min_dte=1))
+    # Prices: flat in expiry 1, drops in expiry 2, stays flat in expiry 3
+    prices = [24_000] * 80 + [23_600, 23_500, 23_200, 23_000, 22_800] * 10 + [23_500] * 80
+    result = engine.run(spot_path(prices, minutes=60))
+
+    # Campaign 3 should have 0 positions because TSL was triggered in Campaign 2
+    third_camp = [c for c in result.condors if c.expiry == exp3]
+    assert len(third_camp) == 0, "System must not open positions in subsequent campaigns after TSL hit"
+
+
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,
     which flatters exactly the configurations that trade most."""

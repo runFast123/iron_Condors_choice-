@@ -1974,9 +1974,11 @@ def run_settings(
         "min_entry_dte": strategy.min_entry_dte,
         "min_credit_ratio": strategy.min_credit_ratio,
         "take_profit": strategy.take_profit_pct,
-        "stop_loss": strategy.stop_loss_mult,
-        "trailing_sl": strategy.trailing_sl_mult,
-        "trailing_sl_trigger": strategy.trailing_sl_trigger_pct,
+        "stop_loss": strategy.campaign_stop_loss or strategy.stop_loss_mult,
+        "campaign_stop_loss": strategy.campaign_stop_loss or strategy.stop_loss_mult,
+        "campaign_trailing_sl_pct": strategy.campaign_trailing_sl_pct,
+        "trailing_sl": strategy.campaign_trailing_sl_pct or strategy.campaign_trailing_sl or strategy.trailing_sl_mult,
+        "trailing_sl_trigger": strategy.campaign_trailing_sl_trigger or strategy.trailing_sl_trigger_pct,
         "daily_loss_limit": daily_loss_limit,
     }
     if isinstance(strategy, HicConfig):

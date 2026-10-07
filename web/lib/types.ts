@@ -192,6 +192,7 @@ export interface Params {
   take_profit_pct: number | null;
   stop_loss_mult: number | null;
   campaign_stop_loss?: number | null;
+  campaign_trailing_sl_pct?: number | null;
   campaign_trailing_sl?: number | null;
   campaign_trailing_sl_trigger?: number | null;
   trailing_sl_mult?: number | null;

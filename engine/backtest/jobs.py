@@ -151,6 +151,15 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         take_profit_pct=p.get("take_profit"),
         stop_loss_mult=p.get("campaign_stop_loss") or p.get("stop_loss"),
         campaign_stop_loss=p.get("campaign_stop_loss") or p.get("stop_loss"),
+        campaign_trailing_sl_pct=(
+            float(p["campaign_trailing_sl_pct"]) / 100.0 if p.get("campaign_trailing_sl_pct") is not None and float(p["campaign_trailing_sl_pct"]) > 1.0
+            else float(p["campaign_trailing_sl_pct"]) if p.get("campaign_trailing_sl_pct") is not None
+            else float(p["campaign_trailing_sl"]) / 100.0 if p.get("campaign_trailing_sl") is not None and 1.0 < float(p["campaign_trailing_sl"]) <= 100.0
+            else float(p["campaign_trailing_sl"]) if p.get("campaign_trailing_sl") is not None
+            else float(p["trailing_sl"]) / 100.0 if p.get("trailing_sl") is not None and 1.0 < float(p["trailing_sl"]) <= 100.0
+            else float(p["trailing_sl"]) if p.get("trailing_sl") is not None
+            else None
+        ),
         campaign_trailing_sl=p.get("campaign_trailing_sl") or p.get("trailing_sl"),
         campaign_trailing_sl_trigger=p.get("campaign_trailing_sl_trigger") or p.get("trailing_sl_trigger"),
         trailing_sl_mult=p.get("campaign_trailing_sl") or p.get("trailing_sl"),
@@ -746,6 +755,15 @@ class BacktestRunner:
             single_campaign=pinned is not None,
             daily_loss_limit=float(p["daily_loss_limit"]) if p.get("daily_loss_limit") else None,
             campaign_stop_loss=float(p["campaign_stop_loss"]) if p.get("campaign_stop_loss") is not None else (float(p["stop_loss"]) if p.get("stop_loss") is not None else None),
+            campaign_trailing_sl_pct=(
+                float(p["campaign_trailing_sl_pct"]) / 100.0 if p.get("campaign_trailing_sl_pct") is not None and float(p["campaign_trailing_sl_pct"]) > 1.0
+                else float(p["campaign_trailing_sl_pct"]) if p.get("campaign_trailing_sl_pct") is not None
+                else float(p["campaign_trailing_sl"]) / 100.0 if p.get("campaign_trailing_sl") is not None and 1.0 < float(p["campaign_trailing_sl"]) <= 100.0
+                else float(p["campaign_trailing_sl"]) if p.get("campaign_trailing_sl") is not None
+                else float(p["trailing_sl"]) / 100.0 if p.get("trailing_sl") is not None and 1.0 < float(p["trailing_sl"]) <= 100.0
+                else float(p["trailing_sl"]) if p.get("trailing_sl") is not None
+                else None
+            ),
             campaign_trailing_sl=float(p["campaign_trailing_sl"]) if p.get("campaign_trailing_sl") is not None else (float(p["trailing_sl"]) if p.get("trailing_sl") is not None else None),
             campaign_trailing_sl_trigger=float(p["campaign_trailing_sl_trigger"]) if p.get("campaign_trailing_sl_trigger") is not None else (float(p["trailing_sl_trigger"]) if p.get("trailing_sl_trigger") is not None else None),
         )

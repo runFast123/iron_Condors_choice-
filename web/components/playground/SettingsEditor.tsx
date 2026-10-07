@@ -55,9 +55,8 @@ export const FIELDS: Field[] = [
   { key: "min_entry_dte", label: "Skip last days", hint: "no entry with fewer days left; blank = off", kind: "optional", ladderOnly: true },
   { key: "min_credit_ratio", label: "Min credit", hint: "% of the wing; blank = off", kind: "optional", percent: true, ladderOnly: true },
   { key: "take_profit", label: "Take profit", hint: "% of credit; blank = hold", kind: "optional", percent: true, replayOnly: true },
-  { key: "stop_loss", label: "Campaign Stop loss", hint: "₹ max monthly loss (e.g. 25000) or × credit; blank = hold", kind: "optional", replayOnly: true },
-  { key: "trailing_sl", label: "Campaign Trailing SL", hint: "₹ pullback (e.g. 15000) or × credit from peak; blank = off", kind: "optional", step: 0.1, replayOnly: true },
-  { key: "trailing_sl_trigger", label: "Trail trigger", hint: "% profit to activate trailing; blank = auto", kind: "optional", percent: true, replayOnly: true },
+  { key: "stop_loss", label: "Campaign Stop loss", hint: "₹ max monthly loss (e.g. 25000); blank = hold", kind: "optional", replayOnly: true },
+  { key: "trailing_sl", label: "Campaign Trailing SL", hint: "% pullback from peak capital (e.g. 15% halts at ₹21,250 on ₹25k); blank = off", kind: "optional", percent: true, replayOnly: true },
   {
     key: "bar_minutes", label: "Time frame", hint: "what a level fires on", kind: "select", replayOnly: true,
     options: [
@@ -107,12 +106,12 @@ export const STRATEGY_PRESETS: StrategyPreset[] = [
     edits: { take_profit: 0.5 },
   },
   {
-    id: "trail_05",
-    label: "0.5× Trailing SL",
+    id: "trail_15",
+    label: "15% Monthly TSL",
     icon: <IconShield size={13} />,
-    hint: "Lock in profits: exit if trade pulls back 0.5× from its peak",
+    hint: "Halt if capital pulls back 15% from peak campaign-end capital (e.g. ₹21,250 on ₹25k)",
     replayOnly: true,
-    edits: { trailing_sl: 0.5 },
+    edits: { trailing_sl: 0.15 },
   },
   {
     id: "vix_14",

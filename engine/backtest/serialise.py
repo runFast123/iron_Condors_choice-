@@ -72,7 +72,7 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             # a stale number is worse than showing none.
             "lots": 1, "lot_size": 0, "qty": 0, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
-            "campaign_stop_loss": None, "campaign_trailing_sl": None, "campaign_trailing_sl_trigger": None,
+            "campaign_stop_loss": None, "campaign_trailing_sl_pct": None, "campaign_trailing_sl": None, "campaign_trailing_sl_trigger": None,
             "trailing_sl_mult": None, "trailing_sl_trigger_pct": None,
             "direction": "down", "max_down": None, "max_up": None,
             "min_entry_dte": None, "min_credit_ratio": None, "max_entry_vix": None,
@@ -247,7 +247,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "take_profit_pct": strategy.take_profit_pct,
             "stop_loss_mult": getattr(params, "campaign_stop_loss", None) or strategy.stop_loss_mult,
             "campaign_stop_loss": getattr(params, "campaign_stop_loss", None) or getattr(strategy, "campaign_stop_loss", None) or strategy.stop_loss_mult,
-            "campaign_trailing_sl": getattr(params, "campaign_trailing_sl", None) or getattr(strategy, "campaign_trailing_sl", None) or strategy.trailing_sl_mult,
+            "campaign_trailing_sl_pct": getattr(params, "campaign_trailing_sl_pct", None) or getattr(strategy, "campaign_trailing_sl_pct", None),
+            "campaign_trailing_sl": getattr(params, "campaign_trailing_sl_pct", None) or getattr(strategy, "campaign_trailing_sl_pct", None) or getattr(params, "campaign_trailing_sl", None) or getattr(strategy, "campaign_trailing_sl", None) or strategy.trailing_sl_mult,
             "campaign_trailing_sl_trigger": getattr(params, "campaign_trailing_sl_trigger", None) or getattr(strategy, "campaign_trailing_sl_trigger", None) or strategy.trailing_sl_trigger_pct,
             "trailing_sl_mult": getattr(params, "campaign_trailing_sl", None) or strategy.trailing_sl_mult,
             "trailing_sl_trigger_pct": getattr(params, "campaign_trailing_sl_trigger", None) or strategy.trailing_sl_trigger_pct,

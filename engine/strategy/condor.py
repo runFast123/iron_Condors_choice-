@@ -110,7 +110,8 @@ class StrategyConfig:
     take_profit_pct: float | None = None   # e.g. 0.50 -> close at 50% of credit
     stop_loss_mult: float | None = None    # legacy / alias -> close at Nx credit lost
     campaign_stop_loss: float | None = None # e.g. 25000.0 (Rs) or 3.0 (x credit) -> monthly campaign stop loss
-    campaign_trailing_sl: float | None = None # e.g. 10000.0 or 1.0 -> monthly campaign trailing SL
+    campaign_trailing_sl_pct: float | None = None # e.g. 0.15 (15%) -> monthly trailing SL on peak campaign-end capital
+    campaign_trailing_sl: float | None = None # e.g. 0.15 (15%) or 10000.0 or 1.0 -> monthly campaign trailing SL
     campaign_trailing_sl_trigger: float | None = None # e.g. 15000.0 or 1.5 -> monthly campaign trailing trigger
     trailing_sl_mult: float | None = None  # e.g. 0.5  -> trail by 0.5x credit/debit pullback from peak
     trailing_sl_trigger_pct: float | None = None  # e.g. 0.3 -> profit fraction to activate trailing
@@ -166,6 +167,8 @@ class StrategyConfig:
             raise ValueError("trailing_sl_trigger_pct cannot be negative")
         if self.campaign_stop_loss is not None and self.campaign_stop_loss <= 0:
             raise ValueError("campaign_stop_loss must be positive")
+        if self.campaign_trailing_sl_pct is not None and self.campaign_trailing_sl_pct <= 0:
+            raise ValueError("campaign_trailing_sl_pct must be positive")
         if self.campaign_trailing_sl is not None and self.campaign_trailing_sl <= 0:
             raise ValueError("campaign_trailing_sl must be positive")
         if self.campaign_trailing_sl_trigger is not None and self.campaign_trailing_sl_trigger < 0:
