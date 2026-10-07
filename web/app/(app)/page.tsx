@@ -317,10 +317,11 @@ export default async function Overview({
                   <th>Level</th>
                   <th>Side</th>
                   <th>Opened</th>
+                  <th>Square-Off Date</th>
                   <th>Expiry</th>
                   <th style={{ textAlign: "right" }}>Credit</th>
-                  <th style={{ textAlign: "right" }}>Max loss</th>
-                  <th style={{ textAlign: "right" }}>P&amp;L</th>
+                  <th style={{ textAlign: "right" }}>Square-Off Price</th>
+                  <th style={{ textAlign: "right" }}>Net P&amp;L</th>
                   <th>Outcome</th>
                 </tr>
               </thead>
@@ -330,7 +331,7 @@ export default async function Overview({
                   {(i === 0 || c.expiry !== condors[i - 1].expiry) && (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={10}
                         style={{
                           background: "var(--surface-2)",
                           fontSize: 12,
@@ -353,13 +354,19 @@ export default async function Overview({
                       </Badge>
                     </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(c.entry_time)}</td>
+                    <td style={{ color: "var(--ink-2)" }}>
+                      {c.status === "OPEN" ? (
+                        <span style={{ color: "var(--brand)", fontWeight: 600 }}>Active</span>
+                      ) : (
+                        <span title={c.exit_time ? `Squared off on ${shortDate(c.exit_time)}` : `Settled at expiry on ${shortDate(c.expiry)}`}>
+                          {c.exit_time ? shortDate(c.exit_time) : `${shortDate(c.expiry)} (Expiry)`}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(c.expiry)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(c.credit)}</td>
                     <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
-                      {/* Negative, like every other Max loss column in the app.
-                          This one showed 9,750 where the Trades, Payoff and
-                          Live pages showed -9,750 for the same field. */}
-                      {inr(-c.max_loss)}
+                      {c.status === "OPEN" ? "--" : c.exit_total != null ? inr(c.exit_total) : "--"}
                     </td>
                     <td
                       className="tnum"
@@ -417,10 +424,11 @@ function campaignNote(first: Condor, previous: Condor | null, equity: EquityPoin
 }
 
 function Outcome({ status, reason }: { status: string; reason: string | null }) {
-  const map: Record<string, { tone: "pos" | "neg" | "neutral"; label: string }> = {
+  const map: Record<string, { tone: "pos" | "neg" | "neutral" | "brand"; label: string }> = {
     EXPIRED: { tone: "neutral", label: "Held to expiry" },
     CLOSED_TARGET: { tone: "pos", label: "Target hit" },
     CLOSED_STOP: { tone: "neg", label: "Stopped out" },
+    CLOSED_TRAILING_STOP: { tone: "brand", label: "Trailing stop" },
     CLOSED: { tone: "neutral", label: "Closed" },
     OPEN: { tone: "neutral", label: "Still open" },
   };

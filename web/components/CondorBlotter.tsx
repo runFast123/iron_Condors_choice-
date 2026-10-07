@@ -120,10 +120,10 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
               <th>Level</th>
               <th>Side</th>
               <th>Opened</th>
-              <th>Closed On</th>
+              <th>Square-Off Date</th>
               <th>Expiry</th>
               <th style={{ textAlign: "right" }}>Entry Credit</th>
-              <th style={{ textAlign: "right" }}>Square-off Debit</th>
+              <th style={{ textAlign: "right" }}>Square-Off Price</th>
               <th style={{ textAlign: "right" }}>Net P&amp;L</th>
               <th>Outcome</th>
             </tr>
@@ -140,7 +140,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                 ? "Active"
                 : condor.exit_time
                 ? shortDate(condor.exit_time)
-                : shortDate(condor.expiry);
+                : `${shortDate(condor.expiry)} (Expiry)`;
               const exitDebit = condor.exit_total != null
                 ? condor.exit_total
                 : (gross != null ? condor.credit - gross : null);
@@ -210,8 +210,8 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                                 <th>Side</th>
                                 <th style={{ textAlign: "right" }}>Strike</th>
                                 <th style={{ textAlign: "right" }}>Qty</th>
-                                <th style={{ textAlign: "right" }}>Entry</th>
-                                <th style={{ textAlign: "right" }}>Exit</th>
+                                <th style={{ textAlign: "right" }}>Entry Price</th>
+                                <th style={{ textAlign: "right" }}>Square-Off Price</th>
                                 <th style={{ textAlign: "right" }}>Leg P&amp;L</th>
                                 <th>Source</th>
                               </tr>
