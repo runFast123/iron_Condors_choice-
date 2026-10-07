@@ -21,16 +21,17 @@ def _load_dotenv(path: Path) -> None:
     """Minimal .env loader so the engine has no hard dependency on python-dotenv."""
     if not path.exists():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        key, val = key.strip(), val.split("#", 1)[0].strip().strip("'\"")
+        key, val = key.strip().lstrip("\ufeff"), val.split("#", 1)[0].strip().strip("'\"")
         os.environ.setdefault(key, val)
 
 
 _load_dotenv(REPO_ROOT / ".env")
+_load_dotenv(REPO_ROOT / ".env.engine.local")
 
 
 def _f(key: str, default: float) -> float:
