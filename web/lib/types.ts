@@ -284,6 +284,8 @@ export interface Condor {
   peak_pnl?: number;
   exit_time: string | null;
   exit_reason: string | null;
+  exit_total?: number | null;
+  exit_price?: number | null;
   credit: number;
   entry_costs: number;
   exit_costs: number;

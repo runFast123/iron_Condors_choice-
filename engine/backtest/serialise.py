@@ -166,6 +166,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "status": c.status.value,
             "exit_time": c.exit_time.isoformat() if c.exit_time else None,
             "exit_reason": c.exit_reason,
+            "exit_total": round(c.exit_total, 2) if c.exit_total is not None else None,
+            "exit_price": round(c.exit_price, 2) if c.exit_price is not None else None,
             "credit": round(c.credit, 2),
             "entry_costs": round(c.entry_costs, 2),
             "exit_costs": round(c.exit_costs, 2),

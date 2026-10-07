@@ -46,9 +46,16 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
 
   const totals = useMemo(() => {
     const closed = condors.filter((c) => c.status !== "OPEN");
+    const totalCredit = condors.reduce((sum, c) => sum + (c.credit ?? 0), 0);
+    const totalDebit = closed.reduce((sum, c) => {
+      const gross = grossOf(c);
+      return sum + (c.exit_total ?? (gross != null ? c.credit - gross : 0));
+    }, 0);
     return {
       net: condors.reduce((sum, c) => sum + (c.pnl ?? 0), 0),
       costs: condors.reduce((sum, c) => sum + c.entry_costs + c.exit_costs, 0),
+      credit: totalCredit,
+      debit: totalDebit,
       wins: closed.filter((c) => c.pnl > 0).length,
       losses: closed.filter((c) => c.pnl < 0).length,
       openNow: condors.length - closed.length,
@@ -91,7 +98,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
         <span className="tnum" style={{ marginLeft: "auto", fontWeight: 700, color: pnlColour(totals.net) }}>
           {inr(totals.net, { sign: true })}
           <span style={{ fontWeight: 500, color: "var(--ink-muted)", marginLeft: 8, fontSize: 11.5 }}>
-            net, after {inr(totals.costs)} of costs
+            net (credit {inr(totals.credit)} &minus; exit {inr(totals.debit)} &minus; costs {inr(totals.costs)})
           </span>
         </span>
         <button
@@ -113,9 +120,10 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
               <th>Level</th>
               <th>Side</th>
               <th>Opened</th>
+              <th>Closed On</th>
               <th>Expiry</th>
-              <th style={{ textAlign: "right" }}>Credit</th>
-              <th style={{ textAlign: "right" }}>Max loss</th>
+              <th style={{ textAlign: "right" }}>Entry Credit</th>
+              <th style={{ textAlign: "right" }}>Square-off Debit</th>
               <th style={{ textAlign: "right" }}>Net P&amp;L</th>
               <th>Outcome</th>
             </tr>
@@ -128,6 +136,14 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
               const outcome = condor.status === "CLOSED_TRAILING_STOP"
                 ? { label: "Trailing stop", tone: (condor.pnl ?? 0) >= 0 ? ("pos" as const) : ("neg" as const) }
                 : (OUTCOME[condor.status] ?? OUTCOME.OPEN);
+              const exitDate = condor.status === "OPEN"
+                ? "Active"
+                : condor.exit_time
+                ? shortDate(condor.exit_time)
+                : shortDate(condor.expiry);
+              const exitDebit = condor.exit_total != null
+                ? condor.exit_total
+                : (gross != null ? condor.credit - gross : null);
 
               return (
                 // Keyed on the Fragment, not the rows: a shorthand <> cannot
@@ -159,10 +175,19 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                       </Badge>
                     </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(condor.entry_time)}</td>
+                    <td style={{ color: "var(--ink-2)" }}>
+                      {condor.status === "OPEN" ? (
+                        <span style={{ color: "var(--brand)", fontWeight: 600 }}>Active</span>
+                      ) : (
+                        <span title={condor.exit_time ? `Squared off on ${shortDate(condor.exit_time)}` : `Settled at expiry on ${shortDate(condor.expiry)}`}>
+                          {exitDate}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ color: "var(--ink-2)" }}>{shortDate(condor.expiry)}</td>
                     <td className="tnum" style={{ textAlign: "right" }}>{inr(condor.credit)}</td>
                     <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>
-                      {inr(-condor.max_loss)}
+                      {exitDebit == null ? "--" : inr(exitDebit)}
                     </td>
                     <td
                       className="tnum"
@@ -177,7 +202,7 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
 
                   {expanded && (
                     <tr>
-                      <td colSpan={10} style={{ padding: 0, background: "var(--surface-3)" }}>
+                      <td colSpan={11} style={{ padding: 0, background: "var(--surface-3)" }}>
                         <div style={{ padding: "10px 14px 14px 40px" }}>
                           <table style={{ width: "100%" }}>
                             <thead>
@@ -258,24 +283,45 @@ export function CondorBlotter({ condors }: { condors: Condor[] }) {
                               </span>
                             ) : (
                               <>
-                                <span>Legs {inr(gross, { sign: true })}</span>
+                                <span>Entry Credit: <strong>{inr(condor.credit)}</strong></span>
                                 <span style={{ color: "var(--ink-muted)" }}>&minus;</span>
-                                <span>costs {inr(costs)}</span>
+                                <span>Square-Off Debit: <strong>{inr(exitDebit ?? (condor.credit - gross))}</strong></span>
+                                <span style={{ color: "var(--ink-muted)" }}>=</span>
+                                <span>Gross P&amp;L: {inr(gross, { sign: true })}</span>
+                                <span style={{ color: "var(--ink-muted)" }}>&minus;</span>
+                                <span>Costs: {inr(costs)}</span>
                                 <span style={{ color: "var(--ink-muted)" }}>=</span>
                                 <strong style={{ color: pnlColour(condor.pnl) }}>
-                                  {inr(condor.pnl, { sign: true })}
+                                  Net P&amp;L: {inr(condor.pnl, { sign: true })}
                                 </strong>
-                                <span style={{ color: "var(--ink-muted)", fontSize: 11.5 }}>
-                                  &mdash; leg figures are gross, so they always read better than the truth
-                                </span>
                               </>
                             )}
                           </p>
 
-                          {condor.exit_reason && (
-                            <p style={{ margin: "6px 0 0", fontSize: 11.5, color: "var(--ink-muted)" }}>
-                              Closed: {condor.exit_reason}
-                            </p>
+                          {condor.status !== "OPEN" && (
+                            <div
+                              style={{
+                                marginTop: 10,
+                                padding: "8px 12px",
+                                background: "var(--surface-2)",
+                                borderRadius: 6,
+                                fontSize: 11.5,
+                                borderLeft: `3px solid ${outcome.tone === "pos" ? "var(--pos)" : outcome.tone === "neg" ? "var(--neg)" : "var(--brand)"}`,
+                              }}
+                            >
+                              <strong>Square-Off Audit:</strong> Closed on{" "}
+                              <span style={{ color: "var(--ink)", fontWeight: 600 }}>{exitDate}</span>
+                              {exitDebit != null && (
+                                <>
+                                  {" "}at total square-off debit of{" "}
+                                  <strong style={{ color: "var(--ink)" }}>{inr(exitDebit)}</strong>
+                                  {condor.legs[0]?.qty ? ` (${num(exitDebit / condor.legs[0].qty, 2)}/share)` : ""}
+                                </>
+                              )}
+                              {condor.exit_reason && (
+                                <> &mdash; <em>{condor.exit_reason}</em></>
+                              )}
+                            </div>
                           )}
                         </div>
                       </td>

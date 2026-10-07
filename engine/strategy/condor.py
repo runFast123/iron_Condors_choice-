@@ -399,6 +399,24 @@ class PositionUnit:
             total += fl.pnl(fl.exit_price)
         return total - self.entry_costs - self.exit_costs
 
+    @property
+    def exit_total(self) -> float | None:
+        """Total cash paid to close/settle the structure (net exit debit in ₹)."""
+        if self.is_open or any(fl.exit_price is None for fl in self.legs):
+            return None
+        return sum(
+            fl.exit_price * fl.leg.qty if fl.leg.side is Side.SELL else -fl.exit_price * fl.leg.qty
+            for fl in self.legs
+        )
+
+    @property
+    def exit_price(self) -> float | None:
+        """Net exit price per share (₹/share)."""
+        tot = self.exit_total
+        if tot is None or self.config.qty <= 0:
+            return None
+        return tot / self.config.qty
+
     # --------------------------------------------------------------- exits
 
     def exit_signal(self, prices: dict[Leg, float]) -> str | None:
