@@ -203,8 +203,8 @@ def test_campaign_trailing_sl_pct_halts_upcoming_campaign():
     assert any("campaign trailing-stop" in w for w in result.warnings)
 
 
-def test_tsl_halts_subsequent_campaigns_after_stop_hit():
-    """Once TSL is hit, the system stops making positions across all subsequent campaigns."""
+def test_subsequent_campaign_trades_with_remaining_capital_after_stop():
+    """When a monthly campaign hits TSL, that month halts, but the next campaign starts and trades with remaining capital."""
     exp3 = dt.date(2026, 4, 9)
     params = BacktestParams(
         strategy=cfg(step=100.0),
@@ -213,13 +213,19 @@ def test_tsl_halts_subsequent_campaigns_after_stop_hit():
         roll_to_next_expiry=True,
     )
     engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2, exp3], min_dte=1))
-    # Prices: flat in expiry 1, drops in expiry 2, stays flat in expiry 3
-    prices = [24_000] * 80 + [23_600, 23_500, 23_200, 23_000, 22_800] * 10 + [23_500] * 80
+    # Prices: flat in expiry 1, drops in expiry 2, crosses into expiry 3
+    prices = [24_000] * 80 + [23_600, 23_500, 23_200, 23_000, 22_800] * 20 + [24_000] * 250
     result = engine.run(spot_path(prices, minutes=60))
 
-    # Campaign 3 should have 0 positions because TSL was triggered in Campaign 2
+    # Campaign 2 was stopped by trailing SL
+    second_camp = [c for c in result.condors if c.expiry == EXPIRY_2]
+    assert len(second_camp) > 0
+    tsl_closed = [c for c in second_camp if c.status is CondorStatus.CLOSED_TRAILING_STOP]
+    assert len(tsl_closed) > 0
+
+    # Campaign 3 started and traded with remaining capital!
     third_camp = [c for c in result.condors if c.expiry == exp3]
-    assert len(third_camp) == 0, "System must not open positions in subsequent campaigns after TSL hit"
+    assert len(third_camp) > 0, "System must open positions in next campaign with remaining capital"
 
 
 def test_tsl_respects_activation_hurdle():
