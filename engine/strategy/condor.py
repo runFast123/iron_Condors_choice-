@@ -285,7 +285,7 @@ def compute_dynamic_step(
     monthly_vol_pct = vix / math.sqrt(12.0)
     expected_move = spot * (monthly_vol_pct / 100.0)
     raw_step = expected_move / float(target_condors)
-    rounded_step = round_to_strike(raw_step, strike_step)
+    rounded_step = math.floor(raw_step / strike_step + 0.5 + 1e-9) * strike_step
     return max(100.0, baseline_step, rounded_step)
 
 
