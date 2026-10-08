@@ -166,6 +166,8 @@ def _strategy_for(p: dict, lot_size: int, listed, market) -> StrategyConfig:
         trailing_sl_trigger_pct=p.get("campaign_trailing_sl_trigger") or p.get("trailing_sl_trigger"),
         # The VIX rule applies to both strategies, unlike the entry filters.
         max_entry_vix=p.get("max_entry_vix"),
+        dynamic_step=bool(p.get("dynamic_step", False)),
+        dynamic_step_condors=int(p.get("dynamic_step_condors", 5)),
     )
     wanted = str(p.get("strategy") or "ladder")
     if wanted != "hic":
@@ -766,6 +768,8 @@ class BacktestRunner:
             ),
             campaign_trailing_sl=float(p["campaign_trailing_sl"]) if p.get("campaign_trailing_sl") is not None else (float(p["trailing_sl"]) if p.get("trailing_sl") is not None else None),
             campaign_trailing_sl_trigger=float(p["campaign_trailing_sl_trigger"]) if p.get("campaign_trailing_sl_trigger") is not None else (float(p["trailing_sl_trigger"]) if p.get("trailing_sl_trigger") is not None else None),
+            dynamic_step=bool(p.get("dynamic_step", False)),
+            dynamic_step_condors=int(p.get("dynamic_step_condors", 5)),
         )
         if pinned is not None:
             expiries, derived_expiries = [pinned], set()
@@ -801,7 +805,7 @@ class BacktestRunner:
         )
         vix_series: list[float | None] | None = None
         vix_readings: dict[str, int] = {}
-        if params.strategy.max_entry_vix is not None:
+        if params.strategy.max_entry_vix is not None or params.dynamic_step or params.strategy.dynamic_step:
             aligned = vix_lookup.align([when for when, _ in spots])
             vix_series, vix_readings = aligned.values, aligned.counts
 

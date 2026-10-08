@@ -73,6 +73,7 @@ def empty_bundle(reason: str, *, awaiting_connection: bool = True) -> dict:
             "lots": 1, "lot_size": 0, "qty": 0, "max_condors": 20,
             "fill_gaps": True, "take_profit_pct": None, "stop_loss_mult": None,
             "campaign_stop_loss": None, "campaign_trailing_sl_pct": None, "campaign_trailing_sl": None, "campaign_trailing_sl_trigger": None,
+            "dynamic_step": False, "dynamic_step_condors": 5,
             "trailing_sl_mult": None, "trailing_sl_trigger_pct": None,
             "direction": "down", "max_down": None, "max_up": None,
             "min_entry_dte": None, "min_credit_ratio": None, "max_entry_vix": None,
@@ -263,6 +264,8 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
             "min_credit_ratio": strategy.min_credit_ratio,
             # And the VIX rule, which can leave whole months without a trade.
             "max_entry_vix": strategy.max_entry_vix,
+            "dynamic_step": getattr(params, "dynamic_step", False) or strategy.dynamic_step,
+            "dynamic_step_condors": getattr(params, "dynamic_step_condors", 5) or strategy.dynamic_step_condors,
             "anchor_mode": params.anchor_mode or strategy.effective_anchor_mode,
             "roll_to_next_expiry": params.roll_to_next_expiry,
             "label": params.label,

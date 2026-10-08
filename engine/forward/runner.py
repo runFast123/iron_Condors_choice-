@@ -51,9 +51,11 @@ from engine.strategy.condor import (
     StrategyConfig,
     UnitKind,
     build_legs,
+    compute_dynamic_step,
     entry_refusal,
     net_positions,
     netting_summary,
+    scale_strategy_step,
     vix_allows_entries,
 )
 from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
@@ -1042,7 +1044,15 @@ class ForwardRunner:
         if not self._settle_expiry(now, spot, expired):
             return                      # already explained; try again next tick
         self.expiry = None
-        self.ladder.reset()
+        if getattr(self.strategy, "dynamic_step", False) and spot > 0:
+            dyn_step = compute_dynamic_step(
+                spot, self.last_vix,
+                target_condors=getattr(self.strategy, "dynamic_step_condors", 5),
+                baseline_step=self.strategy.step,
+                strike_step=self.strategy.strike_step,
+            )
+            self.strategy = scale_strategy_step(self.strategy, dyn_step)
+        self.ladder.reset(config=self.strategy)
         self.emit(
             "info",
             "Ladder re-anchored for the next expiry, because offsetting only "
@@ -1319,6 +1329,15 @@ class ForwardRunner:
             self.emit("info", f"Trading expiry {self.expiry:%d-%b-%Y}", expiry=self.expiry.isoformat())
 
         allowed = self._vix_allows_entries(now)
+        if self.ladder.anchor is None and getattr(self.strategy, "dynamic_step", False) and spot > 0:
+            dyn_step = compute_dynamic_step(
+                spot, self.last_vix,
+                target_condors=getattr(self.strategy, "dynamic_step_condors", 5),
+                baseline_step=self.strategy.step,
+                strike_step=self.strategy.strike_step,
+            )
+            self.strategy = scale_strategy_step(self.strategy, dyn_step)
+            self.ladder.reset(config=self.strategy)
         passed_before = len(self.ladder.passed)
         # No usable India VIX reading yet: nothing is decided this tick, and the
         # ladder is left exactly where it was for the next one. On a longer
@@ -1979,6 +1998,8 @@ def run_settings(
         "campaign_trailing_sl_pct": strategy.campaign_trailing_sl_pct,
         "trailing_sl": strategy.campaign_trailing_sl_pct or strategy.campaign_trailing_sl or strategy.trailing_sl_mult,
         "trailing_sl_trigger": strategy.campaign_trailing_sl_trigger or strategy.trailing_sl_trigger_pct,
+        "dynamic_step": getattr(strategy, "dynamic_step", False),
+        "dynamic_step_condors": getattr(strategy, "dynamic_step_condors", 5),
         "daily_loss_limit": daily_loss_limit,
     }
     if isinstance(strategy, HicConfig):

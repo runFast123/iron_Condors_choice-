@@ -86,6 +86,13 @@ export default async function AboutPage() {
             <li>
               <strong>Gap-Fill Logic:</strong> Overnight gap-downs or gap-ups trigger all intermediate skipped levels in order, ensuring an overnight gap builds the exact same hedged structure as a gradual intraday move.
             </li>
+            <li>
+              <strong>Dynamic VIX Grid Step (Optional):</strong> Instead of a static 100-point grid, the engine can dynamically size the step for each month at the campaign anchor using India VIX. The expected 1-month NIFTY move is calculated as:
+              <div className="mono" style={{ margin: "6px 0", padding: "6px 12px", background: "var(--surface)", borderRadius: 4, fontSize: 11.5 }}>
+                Expected Move = Spot &times; (VIX / &radic;12 / 100) &nbsp;&nbsp;|&nbsp;&nbsp; Step = max(100, round((Expected Move / N) / 50) &times; 50)
+              </div>
+              Where <em>N</em> is the target condors per side (default 5). For example, at spot 24,335 and VIX 11.10: 11.10 / &radic;12 = 3.21%, 24,335 &times; 3.21% = 781 points. Divided by 5 condors = 156 pts &rarr; rounded to <strong>150 points</strong>! The wing offsets scale proportionally (Short = 2 &times; Step = 300, Long = 4 &times; Step = 600), preserving exact two-way strike netting while preventing over-clustering in high-volatility regimes.
+            </li>
           </ul>
         </Card>
 
@@ -335,6 +342,8 @@ export default async function AboutPage() {
               <tbody>
                 {[
                   ["Direction mode", (params.direction ?? "down").toUpperCase(), "Grid expansion direction (Down-only, Two-way, or Up-only)"],
+                  ["Dynamic VIX grid step", params.dynamic_step ? "Enabled (VIX-based)" : "Disabled (Fixed step)", "Dynamically sizes step at campaign start from spot & VIX"],
+                  ["Target condors / side", params.dynamic_step ? String(params.dynamic_step_condors ?? 5) : "—", "Target condor density across expected monthly move"],
                   ["Step interval", `${num(params.step)} pts`, "Index point distance between consecutive ladder rungs"],
                   ["Short strike offset", `${num(params.short_offset)} pts`, "Strike distance for sold put and call legs (Level ± Short Offset)"],
                   ["Long strike offset", `${num(params.long_offset)} pts`, "Strike distance for bought protective wings (Level ± Long Offset)"],

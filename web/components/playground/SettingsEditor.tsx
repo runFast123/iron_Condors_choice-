@@ -72,7 +72,7 @@ export const FIELDS: Field[] = [
   { key: "max_call_spreads", label: "Call spreads", hint: "most above the band", kind: "number", hicOnly: true },
 ];
 
-export type Edits = Partial<Record<keyof RunSettings, number | string | null>>;
+export type Edits = Partial<Record<keyof RunSettings, number | string | boolean | null>>;
 
 /** The editable copy of `base` with `edits` applied, as the engine wants it. */
 export function applyEdits(base: RunSettings, edits: Edits): Record<string, unknown> {
@@ -90,6 +90,13 @@ export interface StrategyPreset {
 }
 
 export const STRATEGY_PRESETS: StrategyPreset[] = [
+  {
+    id: "dyn_vix_step",
+    label: "Dynamic VIX Step",
+    icon: <IconZap size={13} />,
+    hint: "Automatically calculate monthly step from India VIX (5 condors/side, min 100 pts)",
+    edits: { dynamic_step: true, dynamic_step_condors: 5 },
+  },
   {
     id: "sl_25k",
     label: "₹25k Monthly SL",
@@ -163,8 +170,8 @@ export function SettingsEditor({
   const fields = FIELDS.filter((f) => (hic ? !f.ladderOnly : !f.hicOnly) && (mode === "replay" || !f.replayOnly));
   const presets = STRATEGY_PRESETS.filter((p) => (!p.replayOnly || mode === "replay") && (!p.ladderOnly || !hic));
 
-  const value = (f: Field): number | string | null => {
-    const v = f.key in edits ? edits[f.key] : (base[f.key] as number | string | null | undefined);
+  const value = (f: Field): number | string | boolean | null => {
+    const v = f.key in edits ? edits[f.key] : (base[f.key] as number | string | boolean | null | undefined);
     return v ?? null;
   };
   const changed = (f: Field) => f.key in edits && (edits[f.key] ?? null) !== ((base[f.key] as unknown) ?? null);
@@ -193,8 +200,12 @@ export function SettingsEditor({
   };
 
   const set = (f: Field, raw: string) => {
-    let next: number | string | null;
-    if (f.kind === "select") next = f.key === "bar_minutes" ? Number(raw) : raw;
+    let next: number | string | boolean | null;
+    if (f.kind === "select") {
+      if (f.key === "bar_minutes") next = Number(raw);
+      else if (raw === "true" || raw === "false") next = raw === "true";
+      else next = raw;
+    }
     else if (raw.trim() === "") next = f.kind === "optional" ? null : (base[f.key] as number);
     else next = f.percent ? Number(raw) / 100 : Number(raw);
     const out = { ...edits, [f.key]: next };

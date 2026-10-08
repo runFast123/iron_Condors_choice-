@@ -213,6 +213,8 @@ class RunBacktestRequest(BaseModel):
     max_down: int | None = Field(default=None, ge=0, le=100)
     max_up: int | None = Field(default=None, ge=0, le=100)
     anchor_mode: str | None = Field(default=None, pattern="^(floor|round|nearest|explicit)$")
+    dynamic_step: bool = False
+    dynamic_step_condors: int = Field(default=5, ge=2, le=20)
 
     # Term structure of the modelled IV surface.
     #
@@ -337,6 +339,8 @@ class StartForwardRequest(BaseModel):
     # 15 for every new run unless the request says otherwise -- null switches
     # it off. Runs already trading keep the rules they started with.
     max_entry_vix: float | None = Field(default=15.0, gt=0, le=100)
+    dynamic_step: bool = False
+    dynamic_step_condors: int = Field(default=5, ge=2, le=20)
     # The time frame the ladder acts on, in minutes: a level fires on the close
     # of a bar this long, as a backtest at that bar size decides it. 1 acts on
     # every minute's price, which is how every run worked before this existed.
@@ -1025,6 +1029,8 @@ def _strategy_config(
         trailing_sl_mult=body.campaign_trailing_sl or body.trailing_sl,
         trailing_sl_trigger_pct=body.campaign_trailing_sl_trigger or body.trailing_sl_trigger,
         max_entry_vix=body.max_entry_vix,
+        dynamic_step=body.dynamic_step,
+        dynamic_step_condors=body.dynamic_step_condors,
     )
     if body.strategy == LADDER:
         return StrategyConfig(

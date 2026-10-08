@@ -403,3 +403,39 @@ def test_trailing_stop_with_explicit_trigger():
     sig = condor.exit_signal(marks_drop)
     assert sig is not None and "trailing-stop" in sig
 
+
+def test_compute_dynamic_step_exact_formula():
+    from engine.strategy.condor import compute_dynamic_step
+    # User's exact scenario:
+    # VIX 11.10 / sqrt(12) = 3.204%, Spot = 24335 -> 781 pts / 5 condors = 156 pts -> 150 pts!
+    step = compute_dynamic_step(spot=24335.0, vix=11.10, target_condors=5, baseline_step=100.0)
+    assert step == 150.0
+
+    # Never less than baseline (100 pts)
+    low_step = compute_dynamic_step(spot=20000.0, vix=7.0, target_condors=5, baseline_step=100.0)
+    assert low_step == 100.0
+
+    # Scales with higher volatility
+    high_step = compute_dynamic_step(spot=25000.0, vix=22.0, target_condors=5, baseline_step=100.0)
+    assert high_step == 300.0
+
+
+def test_scale_strategy_step_preserves_netting_and_offsets():
+    from engine.strategy.condor import scale_strategy_step, StrategyConfig, build_legs
+    base = StrategyConfig(step=100.0, short_offset=200.0, long_offset=400.0)
+    scaled = scale_strategy_step(base, new_step=150.0)
+    assert scaled.step == 150.0
+    assert scaled.short_offset == 300.0
+    assert scaled.long_offset == 600.0
+    assert scaled.long_offset - scaled.short_offset == 300.0  # exactly 2 steps
+
+    # Check legs cancel:
+    legs_l = build_legs(24000.0, scaled)
+    legs_l_minus_2 = build_legs(24000.0 - 2 * 150.0, scaled)
+    long_put_l = next(l for l in legs_l if l.right == "PE" and l.side.value == "BUY")
+    assert long_put_l.strike == 23400.0
+    short_put_l2 = next(l for l in legs_l_minus_2 if l.right == "PE" and l.side.value == "SELL")
+    assert short_put_l2.strike == 23400.0
+    assert long_put_l.strike == short_put_l2.strike  # Cancels to zero!
+
+

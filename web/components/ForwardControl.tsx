@@ -145,6 +145,8 @@ export function ForwardControl({
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [trailingSl, setTrailingSl] = useState<number | "">("");
   const [trailingTrigger, setTrailingTrigger] = useState<number | "">(75000);
+  const [dynamicStep, setDynamicStep] = useState(false);
+  const [dynamicCondors, setDynamicCondors] = useState(5);
   // The time frame the ladder acts on: a level fires on the close of a bar
   // this many minutes long, as in a backtest at that bar size. 1 acts on every
   // minute's price, which is what every run did before this existed.
@@ -364,6 +366,8 @@ export function ForwardControl({
         poll_seconds: 10,
         expiry_cadence: cadence,
         bar_minutes: barMinutes,
+        dynamic_step: dynamicStep,
+        dynamic_step_condors: dynamicCondors,
         // Null, not omitted, when cleared: an omitted field takes the
         // engine's default of 15, which is the opposite of "off".
         max_entry_vix: maxVix === "" ? null : Number(maxVix),
@@ -996,6 +1000,49 @@ export function ForwardControl({
                   No new positions while India VIX is above this. Clear to switch off.
                 </span>
               </label>
+
+              <label style={FIELD}>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Grid Step
+                  <InfoTooltip field="dynamic_step" />
+                </span>
+                <select
+                  value={dynamicStep ? "dynamic" : "fixed"}
+                  onChange={(e) => setDynamicStep(e.target.value === "dynamic")}
+                  className="auth-input"
+                  style={{ minWidth: 155 }}
+                >
+                  <option value="fixed">Fixed 100 points</option>
+                  <option value="dynamic">Dynamic (from India VIX)</option>
+                </select>
+                <span style={{ ...HINT, maxWidth: 160 }}>
+                  Adjusts step size each month from India VIX.
+                </span>
+              </label>
+
+              {dynamicStep && (
+                <label style={FIELD}>
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Target Condors / Side
+                    <InfoTooltip field="dynamic_condors" />
+                  </span>
+                  <select
+                    value={dynamicCondors}
+                    onChange={(e) => setDynamicCondors(Number(e.target.value))}
+                    className="auth-input"
+                    style={{ minWidth: 140 }}
+                  >
+                    <option value={3}>3 condors (wider step)</option>
+                    <option value={4}>4 condors</option>
+                    <option value={5}>5 condors (Recommended)</option>
+                    <option value={6}>6 condors</option>
+                    <option value={8}>8 condors</option>
+                  </select>
+                  <span style={{ ...HINT, maxWidth: 160 }}>
+                    Condors deployed across expected monthly move.
+                  </span>
+                </label>
+              )}
 
               <label style={FIELD}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>

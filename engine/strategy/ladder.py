@@ -427,12 +427,14 @@ class Ladder:
             "long_ce": level + cfg.long_offset,
         }
 
-    def reset(self) -> None:
+    def reset(self, config: StrategyConfig | None = None) -> None:
         """Start a fresh campaign. Called on every expiry roll.
 
         `high_level` has to go with the rest: a stale up bound left over from
         last month would suppress the whole up side of the new campaign.
         """
+        if config is not None:
+            self.config = config
         self.anchor = None
         self.last_level = None
         self.high_level = None

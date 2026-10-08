@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import ClassVar, Iterable, Literal, Sequence
 
@@ -136,6 +136,11 @@ class StrategyConfig:
     # the one it started as. New runs and backtests get 15 from the API.
     max_entry_vix: float | None = None
 
+    # Dynamic VIX-based step sizing:
+    # At each monthly campaign start, step = max(100, round(spot * (VIX / sqrt(12) / 100) / target_condors / 50) * 50)
+    dynamic_step: bool = False
+    dynamic_step_condors: int = 5
+
     #: HIC's core condors are part of its band structure and are never
     #: filtered; HicConfig turns this off.
     entry_filters_apply: ClassVar[bool] = True
@@ -161,6 +166,8 @@ class StrategyConfig:
             raise ValueError("min_credit_ratio must be between 0 and 1")
         if self.max_entry_vix is not None and not 0 < self.max_entry_vix <= 100:
             raise ValueError("max_entry_vix must be above 0 and at most 100")
+        if self.dynamic_step_condors <= 0:
+            raise ValueError("dynamic_step_condors must be positive")
         if self.trailing_sl_mult is not None and self.trailing_sl_mult <= 0:
             raise ValueError("trailing_sl_mult must be positive")
         if self.trailing_sl_trigger_pct is not None and self.trailing_sl_trigger_pct < 0:
@@ -252,6 +259,57 @@ def round_to_strike(value: float, strike_step: float) -> float:
     if strike_step <= 0:
         return float(value)
     return round(value / strike_step) * strike_step
+
+
+def compute_dynamic_step(
+    spot: float,
+    vix: float | None,
+    target_condors: int = 5,
+    baseline_step: float = 100.0,
+    strike_step: float = 50.0,
+) -> float:
+    """Dynamic monthly step sizing from India VIX.
+
+    Formula:
+      monthly_vol_pct = VIX / sqrt(12)
+      expected_move = spot * (monthly_vol_pct / 100.0)
+      raw_step = expected_move / target_condors
+      rounded_step = round(raw_step / strike_step) * strike_step
+      dynamic_step = max(baseline_step, rounded_step)
+
+    Baseline step is never less than 100 points (or baseline_step).
+    """
+    if vix is None or vix <= 0 or spot <= 0 or target_condors <= 0:
+        return max(100.0, baseline_step)
+
+    monthly_vol_pct = vix / math.sqrt(12.0)
+    expected_move = spot * (monthly_vol_pct / 100.0)
+    raw_step = expected_move / float(target_condors)
+    rounded_step = round_to_strike(raw_step, strike_step)
+    return max(100.0, baseline_step, rounded_step)
+
+
+def scale_strategy_step(config: StrategyConfig, new_step: float) -> StrategyConfig:
+    """Scale step and offsets proportionally to preserve the 2-step netting property."""
+    if abs(config.step - new_step) < 1e-6:
+        return config
+
+    base_step = config.step if config.step > 0 else 100.0
+    short_ratio = config.short_offset / base_step
+    long_ratio = config.long_offset / base_step
+    strike_step = getattr(config, "strike_step", 50.0)
+
+    new_short = round_to_strike(new_step * short_ratio, strike_step)
+    new_long = round_to_strike(new_step * long_ratio, strike_step)
+    if new_long <= new_short:
+        new_long = new_short + new_step
+
+    return replace(
+        config,
+        step=new_step,
+        short_offset=new_short,
+        long_offset=new_long,
+    )
 
 
 def build_legs(level: float, config: StrategyConfig) -> list[Leg]:

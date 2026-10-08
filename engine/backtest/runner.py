@@ -40,9 +40,11 @@ from engine.strategy.condor import (
     StrategyConfig,
     UnitKind,
     build_legs,
+    compute_dynamic_step,
     entry_refusal,
     net_positions,
     netting_summary,
+    scale_strategy_step,
     vix_allows_entries,
 )
 from engine.strategy.hic import HicConfig, build_hic_legs, steps_from_anchor, structure_kind
@@ -94,6 +96,8 @@ class BacktestParams:
     campaign_trailing_sl_pct: float | None = None
     campaign_trailing_sl: float | None = None
     campaign_trailing_sl_trigger: float | None = None
+    dynamic_step: bool = False
+    dynamic_step_condors: int = 5
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -230,8 +234,21 @@ def discover_requirements(
     fetch the wrong legs.
     """
     limit = _vix_limit(params, spots, vix)
+    is_dynamic = params.dynamic_step or getattr(params.strategy, "dynamic_step", False)
+    target_condors = getattr(params, "dynamic_step_condors", None) or getattr(params.strategy, "dynamic_step_condors", 5)
+    campaign_strategy = params.strategy
+    if is_dynamic and spots:
+        vix_val = vix[0] if vix is not None and len(vix) > 0 else None
+        dyn_step = compute_dynamic_step(
+            spots[0][1], vix_val,
+            target_condors=target_condors,
+            baseline_step=params.strategy.step,
+            strike_step=params.strategy.strike_step,
+        )
+        campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+
     ladder = Ladder(
-        config=params.strategy,
+        config=campaign_strategy,
         anchor_mode=params.anchor_mode,
         explicit_anchor=params.explicit_anchor,
     )
@@ -251,15 +268,34 @@ def discover_requirements(
         # Mirror the roll in pass 2, or this pass discovers the wrong legs.
         if campaign_expiry is None:
             campaign_expiry = expiry
+            if is_dynamic:
+                vix_val = vix[i] if vix is not None and i < len(vix) else None
+                dyn_step = compute_dynamic_step(
+                    spot, vix_val,
+                    target_condors=target_condors,
+                    baseline_step=params.strategy.step,
+                    strike_step=params.strategy.strike_step,
+                )
+                campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+                ladder.reset(config=campaign_strategy)
         elif expiry != campaign_expiry:
+            if is_dynamic:
+                vix_val = vix[i] if vix is not None and i < len(vix) else None
+                dyn_step = compute_dynamic_step(
+                    spot, vix_val,
+                    target_condors=target_condors,
+                    baseline_step=params.strategy.step,
+                    strike_step=params.strategy.strike_step,
+                )
+                campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
             if params.roll_to_next_expiry:
-                ladder.reset()
+                ladder.reset(config=campaign_strategy)
             campaign_expiry = expiry
 
         allowed = True if limit is None else vix_allows_entries(vix[i], limit, ladder.paused)
         for trigger in ladder.on_price(spot, when, entries_allowed=allowed):
             triggers.append(trigger)
-            for leg in _legs_for(trigger.level, ladder, params.strategy):
+            for leg in _legs_for(trigger.level, ladder, campaign_strategy):
                 requirement = LegRequirement(expiry, leg.strike, leg.right, when)
                 requirements.setdefault(requirement.key(), requirement)
 
@@ -418,6 +454,20 @@ class Backtest:
         strategy_tsl_halted: bool = False
         strategy_tsl_reason: str | None = None
 
+        is_dynamic = params.dynamic_step or getattr(params.strategy, "dynamic_step", False)
+        target_condors = getattr(params, "dynamic_step_condors", None) or getattr(params.strategy, "dynamic_step_condors", 5)
+        campaign_strategy = params.strategy
+        if is_dynamic and spots:
+            vix_val = vix[0] if vix is not None and len(vix) > 0 else None
+            dyn_step = compute_dynamic_step(
+                spots[0][1], vix_val,
+                target_condors=target_condors,
+                baseline_step=params.strategy.step,
+                strike_step=params.strategy.strike_step,
+            )
+            campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+            ladder.reset(config=campaign_strategy)
+
         campaign_stopped = False
         campaign_stop_reason: str | None = None
         campaign_anchor_credit: float | None = None
@@ -454,6 +504,21 @@ class Backtest:
             if expiry is not None:
                 if campaign_expiry is None:
                     campaign_expiry = expiry
+                    if is_dynamic:
+                        vix_val = vix[i] if vix is not None and i < len(vix) else None
+                        dyn_step = compute_dynamic_step(
+                            spot, vix_val,
+                            target_condors=target_condors,
+                            baseline_step=params.strategy.step,
+                            strike_step=params.strategy.strike_step,
+                        )
+                        campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+                        ladder.reset(config=campaign_strategy)
+                        if dyn_step != params.strategy.step and vix_val is not None:
+                            result.warnings.append(
+                                f"Campaign {campaign_expiry}: dynamic VIX step {dyn_step:,.0f} pts applied "
+                                f"(VIX {vix_val:.2f}, spot {spot:,.0f})."
+                            )
                 elif expiry != campaign_expiry:
                     # Previous campaign ended and settled:
                     # Update peak capital achieved at the end of a campaign
@@ -465,10 +530,26 @@ class Backtest:
                         # starts with a clean baseline and can trade with remaining capital:
                         peak_campaign_capital = cumulative_realised
 
+                    if is_dynamic:
+                        vix_val = vix[i] if vix is not None and i < len(vix) else None
+                        dyn_step = compute_dynamic_step(
+                            spot, vix_val,
+                            target_condors=target_condors,
+                            baseline_step=params.strategy.step,
+                            strike_step=params.strategy.strike_step,
+                        )
+                        campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+
                     if params.roll_to_next_expiry:
-                        ladder.reset()
+                        ladder.reset(config=campaign_strategy)
                         result.rolls.append((when, campaign_expiry, expiry))
                     campaign_expiry = expiry
+
+                    if is_dynamic and dyn_step != params.strategy.step and vix_val is not None:
+                        result.warnings.append(
+                            f"Campaign {campaign_expiry}: dynamic VIX step {dyn_step:,.0f} pts applied "
+                            f"(VIX {vix_val:.2f}, spot {spot:,.0f})."
+                        )
 
                     # Each new monthly campaign starts fresh with the remaining capital:
                     campaign_stopped = False

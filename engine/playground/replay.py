@@ -21,6 +21,7 @@ EDITABLE = (
     "anchor_mode", "max_down", "max_up", "max_entry_vix", "min_entry_dte",
     "min_credit_ratio", "take_profit", "stop_loss", "trailing_sl", "trailing_sl_trigger",
     "campaign_stop_loss", "campaign_trailing_sl_pct", "campaign_trailing_sl",
+    "dynamic_step", "dynamic_step_condors",
     "bar_minutes", "daily_loss_limit",
     "full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads",
 )
@@ -58,6 +59,8 @@ def backtest_params(settings: dict[str, Any], campaign: dict[str, Any]) -> dict[
         "campaign_trailing_sl_pct": settings.get("campaign_trailing_sl_pct") or settings.get("campaign_trailing_sl") or settings.get("trailing_sl"),
         "trailing_sl": settings.get("trailing_sl"),
         "trailing_sl_trigger": settings.get("trailing_sl_trigger"),
+        "dynamic_step": bool(settings.get("dynamic_step", False)),
+        "dynamic_step_condors": int(settings.get("dynamic_step_condors") or 5),
         "short_offset": settings.get("short_offset"),
         "long_offset": settings.get("long_offset"),
         "expiry_cadence": settings.get("expiry_cadence") or "monthly",

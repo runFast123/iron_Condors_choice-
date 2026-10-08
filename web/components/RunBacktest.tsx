@@ -62,6 +62,8 @@ export function RunBacktest({
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [trailingSl, setTrailingSl] = useState<number | "">("");
   const [trailingTrigger, setTrailingTrigger] = useState<number | "">(75000);
+  const [dynamicStep, setDynamicStep] = useState(false);
+  const [dynamicCondors, setDynamicCondors] = useState(5);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   // Collapsed once there is something to look at, so the controls stay
@@ -132,6 +134,8 @@ export function RunBacktest({
           roll: true,
           expiry_cadence: cadence,
           strategy,
+          dynamic_step: dynamicStep,
+          dynamic_step_condors: dynamicCondors,
           // Null, not omitted, when cleared: an omitted field takes the
           // engine's default of 15, which is the opposite of "off".
           max_entry_vix: maxVix === "" ? null : Number(maxVix),
@@ -432,6 +436,43 @@ export function RunBacktest({
                   style={{ marginTop: 5, width: 90 }}
                 />
               </label>
+
+              <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>
+                  Grid Step
+                  <InfoTooltip field="dynamic_step" />
+                </span>
+                <select
+                  value={dynamicStep ? "dynamic" : "fixed"}
+                  onChange={(e) => setDynamicStep(e.target.value === "dynamic")}
+                  className="auth-input"
+                  style={{ marginTop: 5, minWidth: 155 }}
+                >
+                  <option value="fixed">Fixed 100 points</option>
+                  <option value="dynamic">Dynamic (from India VIX)</option>
+                </select>
+              </label>
+
+              {dynamicStep && (
+                <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center" }}>
+                    Target Condors / Side
+                    <InfoTooltip field="dynamic_condors" />
+                  </span>
+                  <select
+                    value={dynamicCondors}
+                    onChange={(e) => setDynamicCondors(Number(e.target.value))}
+                    className="auth-input"
+                    style={{ marginTop: 5, minWidth: 140 }}
+                  >
+                    <option value={3}>3 condors (wider step)</option>
+                    <option value={4}>4 condors</option>
+                    <option value={5}>5 condors (Recommended)</option>
+                    <option value={6}>6 condors</option>
+                    <option value={8}>8 condors</option>
+                  </select>
+                </label>
+              )}
 
               <label style={{ fontSize: 11.5, fontWeight: 600, color: "var(--ink-2)" }}>
                 <span style={{ display: "inline-flex", alignItems: "center" }}>

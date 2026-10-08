@@ -249,6 +249,27 @@ def test_tsl_respects_activation_hurdle():
     assert len(tsl_closed) == 0
 
 
+def test_dynamic_step_backtest_applies_vix_step():
+    params = BacktestParams(
+        strategy=cfg(step=100.0, dynamic_step=True, dynamic_step_condors=5),
+        costs=ZERO_COST,
+        roll_to_next_expiry=True,
+    )
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY, EXPIRY_2], min_dte=1))
+    # At spot 24,000, vix = 11.10: expected move 769 pts / 5 = 153.8 -> 150 pts step!
+    prices = [24_000] * 10 + [23_850, 23_700] + [23_700] * 10
+    path = spot_path(prices, minutes=60)
+    vix_series = [11.10] * len(path)
+    result = engine.run(path, vix=vix_series)
+
+    levels = [c.level for c in result.condors]
+    assert 24000.0 in levels
+    assert 23850.0 in levels
+    assert 23700.0 in levels
+    assert abs(levels[0] - levels[1]) == 150.0
+    assert any("dynamic VIX step 150 pts applied" in w for w in result.warnings)
+
+
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,
     which flatters exactly the configurations that trade most."""

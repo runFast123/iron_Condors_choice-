@@ -198,6 +198,8 @@ export interface Params {
   trailing_sl_trigger?: number | null;
   trailing_sl_mult?: number | null;
   trailing_sl_trigger_pct?: number | null;
+  dynamic_step?: boolean;
+  dynamic_step_condors?: number;
   direction?: "down" | "up" | "both";
   /** Ladder entry filters. Null when off. */
   min_entry_dte?: number | null;

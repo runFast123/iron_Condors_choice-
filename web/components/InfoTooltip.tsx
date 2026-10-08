@@ -146,6 +146,22 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
     howToUse:
       "100 points is standard for NIFTY weekly strikes. Use 150 or 200 points for a wider, less frequent ladder deployment.",
   },
+  dynamic_step: {
+    title: "Dynamic VIX Grid Step",
+    description:
+      "Dynamically calculates the step size at the start of each monthly campaign using India VIX. Computes expected 1-month index volatility: Spot × (VIX / √12 / 100) ÷ Target Condors, rounded to 50 pts (minimum 100 pts baseline).",
+    howToUse:
+      "Prevents piling on too many tight condors in high-volatility months (which causes massive drawdowns during 1,000+ pt trends). Spreads out rungs when VIX expands and tightens them when VIX cools.",
+    example:
+      "At spot 24,335 and VIX 11.10: 11.10 / √12 = 3.21%. 24,335 × 3.21% = 781 pts expected move. 781 / 5 condors = 156 pts → 150 pts dynamic step.",
+  },
+  dynamic_condors: {
+    title: "Target Condors per Side",
+    description:
+      "The target number of condors distributed across the expected 1-month NIFTY move. Controls how finely the monthly volatility band is segmented into ladder rungs.",
+    howToUse:
+      "5 condors is recommended. Lower values (3 or 4) create wider, more defensive steps; higher values (6 or 8) create tighter grids.",
+  },
   wings: {
     title: "Condor Wing Offsets",
     description:

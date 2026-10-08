@@ -73,6 +73,8 @@ export interface RunSettings {
   stop_loss: number | null;
   trailing_sl?: number | null;
   trailing_sl_trigger?: number | null;
+  dynamic_step?: boolean;
+  dynamic_step_condors?: number;
   daily_loss_limit: number | null;
   full_band_steps?: number;
   half_mode?: string;

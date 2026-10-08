@@ -95,10 +95,10 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
       >
         <div style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
           <span style={{ color: "var(--ink-muted)" }}>Grid:</span>
-          <span className="mono" style={{ fontWeight: 600, color: "var(--ink)" }}>
-            {num(params.step)} pts
+          <span className="mono" style={{ fontWeight: 600, color: params.dynamic_step ? "#38bdf8" : "var(--ink)" }}>
+            {params.dynamic_step ? `Dynamic (${num(params.step)} pts)` : `${num(params.step)} pts`}
           </span>
-          <InfoTooltip field="step" />
+          <InfoTooltip field={params.dynamic_step ? "dynamic_step" : "step"} />
         </div>
 
         <span style={{ color: "var(--border)" }}>•</span>
@@ -208,9 +208,11 @@ export function StrategyConditions({ params, provenance }: StrategyConditionsPro
             <div style={{ display: "grid", gap: 6, fontSize: 12.5 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
-                  Step interval <InfoTooltip field="step" />
+                  Step interval <InfoTooltip field={params.dynamic_step ? "dynamic_step" : "step"} />
                 </span>
-                <span className="mono" style={{ fontWeight: 600 }}>{num(params.step)} points</span>
+                <span className="mono" style={{ fontWeight: 600, color: params.dynamic_step ? "#38bdf8" : undefined }}>
+                  {params.dynamic_step ? `Dynamic (${num(params.step)} pts, ${params.dynamic_step_condors ?? 5} condors)` : `${num(params.step)} points`}
+                </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ color: "var(--ink-muted)", display: "inline-flex", alignItems: "center" }}>
