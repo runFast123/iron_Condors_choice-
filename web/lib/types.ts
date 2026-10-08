@@ -344,6 +344,18 @@ export interface Roll {
   to: string;
 }
 
+export interface CampaignStepInfo {
+  expiry: string;
+  when: string;
+  spot: number;
+  vix: number | null;
+  monthly_vol_pct: number | null;
+  expected_move: number | null;
+  target_condors: number;
+  raw_step: number | null;
+  step: number;
+}
+
 export interface Dataset {
   provenance: Provenance;
   params: Params;
@@ -352,6 +364,7 @@ export interface Dataset {
   netting: Netting;
   campaigns?: number;
   rolls?: Roll[];
+  campaign_steps?: CampaignStepInfo[];
   condors: Condor[];
   equity: EquityPoint[];
   payoff: { spot: number; pnl: number }[];

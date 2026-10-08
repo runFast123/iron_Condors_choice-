@@ -283,6 +283,7 @@ def serialise(result: BacktestResult, provenance: dict) -> dict:
         "equity": curve,
         "payoff": payoff,
         "strike_matrix": result.strike_matrix(),
+        "campaign_steps": getattr(result, "campaign_steps", []),
         "triggers": [
             {
                 "level": t.level,

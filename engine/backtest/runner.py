@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -150,6 +151,8 @@ class BacktestResult:
     warnings: list[str] = field(default_factory=list)
     # (when, expiry left behind, expiry rolled into)
     rolls: list[tuple[dt.datetime, dt.date, dt.date]] = field(default_factory=list)
+    # Step sizing applied per monthly campaign:
+    campaign_steps: list[dict[str, Any]] = field(default_factory=list)
     # How the VIX rule shaped the run. Empty when the strategy has no limit.
     vix_gate: dict = field(default_factory=dict)
 
@@ -514,6 +517,20 @@ class Backtest:
                         )
                         campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
                         ladder.reset(config=campaign_strategy)
+                        mvol = (vix_val / math.sqrt(12.0)) if vix_val is not None else None
+                        exp_mv = (spot * mvol / 100.0) if mvol is not None else None
+                        raw_st = (exp_mv / float(target_condors)) if exp_mv is not None else None
+                        result.campaign_steps.append({
+                            "expiry": campaign_expiry.isoformat(),
+                            "when": when.isoformat(),
+                            "spot": round(spot, 2),
+                            "vix": round(vix_val, 2) if vix_val is not None else None,
+                            "monthly_vol_pct": round(mvol, 2) if mvol is not None else None,
+                            "expected_move": round(exp_mv, 1) if exp_mv is not None else None,
+                            "target_condors": target_condors,
+                            "raw_step": round(raw_st, 1) if raw_st is not None else None,
+                            "step": round(dyn_step, 0),
+                        })
                         if dyn_step != params.strategy.step and vix_val is not None:
                             result.warnings.append(
                                 f"Campaign {campaign_expiry}: dynamic VIX step {dyn_step:,.0f} pts applied "
@@ -539,6 +556,20 @@ class Backtest:
                             strike_step=params.strategy.strike_step,
                         )
                         campaign_strategy = scale_strategy_step(params.strategy, dyn_step)
+                        mvol = (vix_val / math.sqrt(12.0)) if vix_val is not None else None
+                        exp_mv = (spot * mvol / 100.0) if mvol is not None else None
+                        raw_st = (exp_mv / float(target_condors)) if exp_mv is not None else None
+                        result.campaign_steps.append({
+                            "expiry": expiry.isoformat(),
+                            "when": when.isoformat(),
+                            "spot": round(spot, 2),
+                            "vix": round(vix_val, 2) if vix_val is not None else None,
+                            "monthly_vol_pct": round(mvol, 2) if mvol is not None else None,
+                            "expected_move": round(exp_mv, 1) if exp_mv is not None else None,
+                            "target_condors": target_condors,
+                            "raw_step": round(raw_st, 1) if raw_st is not None else None,
+                            "step": round(dyn_step, 0),
+                        })
 
                     if params.roll_to_next_expiry:
                         ladder.reset(config=campaign_strategy)

@@ -10,8 +10,8 @@ import { BacktestHistoryComparison } from "@/components/BacktestHistoryCompariso
 import { engine, engineConfigured } from "@/lib/engine";
 import { getSessionToken } from "@/lib/session";
 import Link from "next/link";
-import { Fragment } from "react";
-import type { Condor, EquityPoint } from "@/lib/types";
+import { Fragment, type ReactNode } from "react";
+import type { Condor, EquityPoint, CampaignStepInfo } from "@/lib/types";
 
 /** The latest job, or null — never a reason to fail the whole page. */
 async function latestJob() {
@@ -304,9 +304,54 @@ export default async function Overview({
           />
         )}
 
+        {dataset.campaign_steps && dataset.campaign_steps.length > 0 && (
+          <Card
+            title="Monthly Dynamic VIX Grid Calculations"
+            hint="Step sizes derived from India VIX and spot at the start of each monthly campaign."
+          >
+            <div className="scroll-x">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Campaign Expiry</th>
+                    <th>Anchor Date</th>
+                    <th style={{ textAlign: "right" }}>NIFTY Spot</th>
+                    <th style={{ textAlign: "right" }}>India VIX</th>
+                    <th style={{ textAlign: "right" }}>1-Mo Vol %</th>
+                    <th style={{ textAlign: "right" }}>Expected Move</th>
+                    <th style={{ textAlign: "right" }}>Target Condors</th>
+                    <th style={{ textAlign: "right" }}>Raw Step</th>
+                    <th style={{ textAlign: "right" }}>Applied Grid Step</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dataset.campaign_steps.map((s) => (
+                    <tr key={s.expiry}>
+                      <td style={{ fontWeight: 600 }}>{shortDate(s.expiry)}</td>
+                      <td style={{ color: "var(--ink-2)" }}>{shortDate(s.when)}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{num(s.spot)}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{s.vix != null ? s.vix.toFixed(2) : "—"}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{s.monthly_vol_pct != null ? `${s.monthly_vol_pct.toFixed(2)}%` : "—"}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{s.expected_move != null ? `${num(s.expected_move)} pts` : "—"}</td>
+                      <td className="tnum" style={{ textAlign: "right" }}>{s.target_condors} / side</td>
+                      <td className="tnum" style={{ textAlign: "right", color: "var(--ink-muted)" }}>{s.raw_step != null ? `${num(s.raw_step)} pts` : "—"}</td>
+                      <td className="tnum" style={{ textAlign: "right", fontWeight: 700 }}>
+                        <Badge tone="brand">{num(s.step)} points</Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 12, padding: "8px 12px", background: "var(--surface-2)", borderRadius: 6, fontSize: 11.5, color: "var(--ink-2)" }}>
+              <strong>Calculation Formula:</strong> 1-Mo Vol % = VIX / &radic;12 &nbsp;&bull;&nbsp; Expected Move = Spot &times; Vol % &nbsp;&bull;&nbsp; Raw Step = Expected Move &divide; Target Condors &nbsp;&bull;&nbsp; Applied Step = max(100, round(Raw Step / 50) &times; 50).
+            </div>
+          </Card>
+        )}
+
         <Card
           title="Condors opened"
-          hint={`${condors.length} condors opened. Each row is one 100-point step; a shaded row marks where one expiry's campaign ends and the next begins.`}
+          hint={`${condors.length} condors opened. Each row is one step; a shaded row marks where one expiry's campaign ends and the next begins.`}
           pad={0}
         >
           <div className="scroll-x">
@@ -341,7 +386,7 @@ export default async function Overview({
                           whiteSpace: "normal",
                         }}
                       >
-                        {campaignNote(c, i === 0 ? null : condors[i - 1], equity)}
+                        {campaignNote(c, i === 0 ? null : condors[i - 1], equity, dataset.campaign_steps)}
                       </td>
                     </tr>
                   )}
@@ -411,15 +456,35 @@ function spotAt(equity: EquityPoint[], iso: string): number | null {
  * NIFTY stood when the old contracts expired, because offsetting only works
  * within one expiry.
  */
-function campaignNote(first: Condor, previous: Condor | null, equity: EquityPoint[]): string {
+function campaignNote(
+  first: Condor,
+  previous: Condor | null,
+  equity: EquityPoint[],
+  campaignSteps?: CampaignStepInfo[],
+): ReactNode {
   const spot = spotAt(equity, first.entry_time);
   const where = spot != null ? ` (NIFTY ${num(Math.round(spot))})` : "";
+  const stepInfo = campaignSteps?.find((s) => s.expiry === first.expiry);
+  const dynText = stepInfo ? (
+    <span style={{ marginLeft: 8, color: "var(--brand)", fontWeight: 600 }}>
+      &bull; Dynamic Step {num(stepInfo.step)} pts (VIX {stepInfo.vix != null ? stepInfo.vix.toFixed(2) : "—"} &rarr; 1-Mo move {stepInfo.expected_move != null ? num(stepInfo.expected_move) : "—"} pts &divide; {stepInfo.target_condors} = {stepInfo.raw_step != null ? num(stepInfo.raw_step) : "—"} pts)
+    </span>
+  ) : null;
+
   if (previous == null) {
-    return `Campaign for the ${shortDate(first.expiry)} expiry: anchored at ${num(first.level)}${where} on ${shortDate(first.entry_time)}.`;
+    return (
+      <>
+        Campaign for the {shortDate(first.expiry)} expiry: anchored at {num(first.level)}{where} on {shortDate(first.entry_time)}.
+        {dynText}
+      </>
+    );
   }
   return (
-    `New campaign for the ${shortDate(first.expiry)} expiry: the ${shortDate(previous.expiry)} contracts expired, ` +
-    `so it re-anchored at ${num(first.level)}${where} on ${shortDate(first.entry_time)}. Levels count from there.`
+    <>
+      New campaign for the {shortDate(first.expiry)} expiry: the {shortDate(previous.expiry)} contracts expired,{" "}
+      so it re-anchored at {num(first.level)}{where} on {shortDate(first.entry_time)}. Levels count from there.
+      {dynText}
+    </>
   );
 }
 
