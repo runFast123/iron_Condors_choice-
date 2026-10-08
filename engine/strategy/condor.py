@@ -290,26 +290,10 @@ def compute_dynamic_step(
 
 
 def scale_strategy_step(config: StrategyConfig, new_step: float) -> StrategyConfig:
-    """Scale step and offsets proportionally to preserve the 2-step netting property."""
+    """Update only the ladder step, keeping short and long offsets unchanged (e.g. 200 and 400)."""
     if abs(config.step - new_step) < 1e-6:
         return config
-
-    base_step = config.step if config.step > 0 else 100.0
-    short_ratio = config.short_offset / base_step
-    long_ratio = config.long_offset / base_step
-    strike_step = getattr(config, "strike_step", 50.0)
-
-    new_short = round_to_strike(new_step * short_ratio, strike_step)
-    new_long = round_to_strike(new_step * long_ratio, strike_step)
-    if new_long <= new_short:
-        new_long = new_short + new_step
-
-    return replace(
-        config,
-        step=new_step,
-        short_offset=new_short,
-        long_offset=new_long,
-    )
+    return replace(config, step=new_step)
 
 
 def build_legs(level: float, config: StrategyConfig) -> list[Leg]:

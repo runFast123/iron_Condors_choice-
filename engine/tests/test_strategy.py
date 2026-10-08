@@ -420,22 +420,22 @@ def test_compute_dynamic_step_exact_formula():
     assert high_step == 300.0
 
 
-def test_scale_strategy_step_preserves_netting_and_offsets():
+def test_scale_strategy_step_updates_only_step_preserving_offsets():
     from engine.strategy.condor import scale_strategy_step, StrategyConfig, build_legs
     base = StrategyConfig(step=100.0, short_offset=200.0, long_offset=400.0)
     scaled = scale_strategy_step(base, new_step=150.0)
     assert scaled.step == 150.0
-    assert scaled.short_offset == 300.0
-    assert scaled.long_offset == 600.0
-    assert scaled.long_offset - scaled.short_offset == 300.0  # exactly 2 steps
+    # User requirement: offsets remain unchanged at 200 and 400
+    assert scaled.short_offset == 200.0
+    assert scaled.long_offset == 400.0
+    assert scaled.long_offset - scaled.short_offset == 200.0  # 200-pt wing width unchanged
 
-    # Check legs cancel:
-    legs_l = build_legs(24000.0, scaled)
-    legs_l_minus_2 = build_legs(24000.0 - 2 * 150.0, scaled)
-    long_put_l = next(l for l in legs_l if l.right == "PE" and l.side.value == "BUY")
-    assert long_put_l.strike == 23400.0
-    short_put_l2 = next(l for l in legs_l_minus_2 if l.right == "PE" and l.side.value == "SELL")
-    assert short_put_l2.strike == 23400.0
-    assert long_put_l.strike == short_put_l2.strike  # Cancels to zero!
+    # Check legs constructed at level 24,000 use 200 and 400 offsets:
+    legs = build_legs(24000.0, scaled)
+    strikes = {l.right + l.side.value: l.strike for l in legs}
+    assert strikes["PEBUY"] == 23600.0   # 24000 - 400
+    assert strikes["PESELL"] == 23800.0  # 24000 - 200
+    assert strikes["CESELL"] == 24200.0  # 24000 + 200
+    assert strikes["CEBUY"] == 24400.0   # 24000 + 400
 
 

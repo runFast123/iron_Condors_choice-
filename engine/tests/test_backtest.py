@@ -267,6 +267,10 @@ def test_dynamic_step_backtest_applies_vix_step():
     assert 23850.0 in levels
     assert 23700.0 in levels
     assert abs(levels[0] - levels[1]) == 150.0
+    # User requirement: offsets remain unchanged at 200 and 400
+    assert result.condors[0].config.short_offset == 200.0
+    assert result.condors[0].config.long_offset == 400.0
+    assert result.condors[0].config.step == 150.0
     assert any("dynamic VIX step 150 pts applied" in w for w in result.warnings)
 
 

@@ -91,7 +91,7 @@ export default async function AboutPage() {
               <div className="mono" style={{ margin: "6px 0", padding: "6px 12px", background: "var(--surface)", borderRadius: 4, fontSize: 11.5 }}>
                 Expected Move = Spot &times; (VIX / &radic;12 / 100) &nbsp;&nbsp;|&nbsp;&nbsp; Step = max(100, round((Expected Move / N) / 50) &times; 50)
               </div>
-              Where <em>N</em> is the target condors per side (default 5). For example, at spot 24,335 and VIX 11.10: 11.10 / &radic;12 = 3.21%, 24,335 &times; 3.21% = 781 points. Divided by 5 condors = 156 pts &rarr; rounded to <strong>150 points</strong>! The wing offsets scale proportionally (Short = 2 &times; Step = 300, Long = 4 &times; Step = 600), preserving exact two-way strike netting while preventing over-clustering in high-volatility regimes.
+              Where <em>N</em> is the target condors per side (default 5). For example, at spot 24,335 and VIX 11.10: 11.10 / &radic;12 = 3.21%, 24,335 &times; 3.21% = 781 points. Divided by 5 condors = 156 pts &rarr; rounded to <strong>150 points</strong>! Only the moving grid step dynamically adjusts (e.g. 150 points), while the short strike offset (&plusmn;200 points) and long protection offset (&plusmn;400 points) remain fixed as configured, keeping the wing width at a consistent 200 points across all rungs while spacing out entries during higher volatility regimes.
             </li>
           </ul>
         </Card>

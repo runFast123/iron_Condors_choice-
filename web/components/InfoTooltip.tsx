@@ -153,7 +153,7 @@ export const FIELD_EXPLANATIONS: Record<string, InfoExplanation> = {
     howToUse:
       "Prevents piling on too many tight condors in high-volatility months (which causes massive drawdowns during 1,000+ pt trends). Spreads out rungs when VIX expands and tightens them when VIX cools.",
     example:
-      "At spot 24,335 and VIX 11.10: 11.10 / √12 = 3.21%. 24,335 × 3.21% = 781 pts expected move. 781 / 5 condors = 156 pts → 150 pts dynamic step.",
+      "At spot 24,335 and VIX 11.10: 11.10 / √12 = 3.21%. 24,335 × 3.21% = 781 pts expected move. 781 / 5 condors = 156 pts → 150 pts dynamic step. Short (200 pts) and Long (400 pts) offsets remain fixed.",
   },
   dynamic_condors: {
     title: "Target Condors per Side",

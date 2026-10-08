@@ -579,7 +579,7 @@ class Backtest:
                     )
             # The contract's own lot size, so quantities, costs, max loss and
             # P&L are in the units that contract actually traded in.
-            strategy = params.strategy
+            strategy = campaign_strategy
             if params.lot_size_for is not None and expiry is not None:
                 size = params.lot_size_for(expiry)
                 if size != strategy.lot_size:
@@ -674,7 +674,7 @@ class Backtest:
                     for fl in filled
                 ) + sum(params.costs.slippage(fl.leg.qty) for fl in filled)
 
-                kind, k = _kind_for(trigger.level, ladder, params.strategy)
+                kind, k = _kind_for(trigger.level, ladder, strategy)
                 unit_type = Condor if kind is UnitKind.CONDOR else VerticalSpread
                 condor = unit_type(
                     level=trigger.level,
@@ -699,7 +699,7 @@ class Backtest:
                             (when, trigger.level, f"invalid condor credit {condor.credit:.2f} (max allowed {max_allowed_credit:.2f})")
                         )
                         continue
-                refusal = entry_refusal(condor, when.date(), params.strategy)
+                refusal = entry_refusal(condor, when.date(), strategy)
                 if refusal is not None:
                     # Recorded, not silent: a filter that quietly thins the
                     # ladder is indistinguishable from one that is broken.
