@@ -290,3 +290,28 @@ def test_a_job_belongs_to_its_user():
     job = jobs.start("alice", "plan", {}, lambda job: {"ok": True})
     assert jobs.get("bob", job.job_id) is None
     assert jobs.get("alice", job.job_id) is job
+
+
+def test_replay_merged_settings_syncs_campaign_stop_and_trailing_sl_aliases():
+    base = {
+        **SETTINGS,
+        "stop_loss": 25_000.0,
+        "campaign_stop_loss": 25_000.0,
+        "trailing_sl": 0.15,
+        "campaign_trailing_sl_pct": 0.15,
+        "trailing_sl_trigger": 75_000.0,
+        "campaign_trailing_sl_trigger": 75_000.0,
+    }
+    # Editing stop_loss and trailing_sl via UI keys updates the campaign keys
+    edited = replay.merged_settings(base, {"stop_loss": 40_000.0, "trailing_sl": 0.25, "trailing_sl_trigger": 0.0})
+    params = replay.backtest_params(edited, CAMPAIGN)
+    assert params["campaign_stop_loss"] == 40_000.0
+    assert params["campaign_trailing_sl_pct"] == 0.25
+    assert params["campaign_trailing_sl_trigger"] == 0.0
+
+    # Clearing stop_loss and trailing_sl to None disables them even if base had them
+    cleared = replay.merged_settings(base, {"stop_loss": None, "trailing_sl": None})
+    cleared_params = replay.backtest_params(cleared, CAMPAIGN)
+    assert cleared_params["campaign_stop_loss"] is None
+    assert cleared_params["campaign_trailing_sl_pct"] is None
+

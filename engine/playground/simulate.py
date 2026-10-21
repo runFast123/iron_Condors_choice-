@@ -429,7 +429,11 @@ def plan(
             "sessions_left": sessions_left, "paths": paths, "seed": seed,
             "realised_so_far": round(book.realised, 2), "open_positions": len(book.open_units),
             "fresh_campaign": book.ladder_state is None,
-            "entries_paused_by_vix": not vix_allows_entries(vix * 100.0, config.max_entry_vix, False),
+            "entries_paused_by_vix": not vix_allows_entries(
+                vix * 100.0,
+                config.max_entry_vix,
+                bool((book.ladder_state or {}).get("paused", False)),
+            ),
             "daily_loss_limit": abs(daily_loss_limit) if daily_loss_limit else None,
             "day_pnl": round(book.day_pnl, 2), "halted_today": book.halted_today,
             "history_sessions": len(sessions),

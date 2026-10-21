@@ -4,8 +4,13 @@ import { getDataset } from "@/lib/data";
 import { inr, num, pct } from "@/lib/format";
 import { Badge, Card, PageHeader } from "@/components/ui";
 
-export default async function AboutPage() {
-  const { params, netting } = await getDataset();
+export default async function AboutPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const { params, netting } = await getDataset(resolvedParams.run || null);
   const L = 24000;
 
   const tslVal =

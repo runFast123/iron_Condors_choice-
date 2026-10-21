@@ -1013,8 +1013,10 @@ def _strategy_config(
         max_up=body.max_up,
         strike_step=strike_step,
         take_profit_pct=body.take_profit,
-        stop_loss_mult=body.campaign_stop_loss or body.stop_loss,
-        campaign_stop_loss=body.campaign_stop_loss or body.stop_loss,
+        stop_loss_mult=None,
+        campaign_stop_loss=(
+            body.campaign_stop_loss if body.campaign_stop_loss is not None else body.stop_loss
+        ),
         campaign_trailing_sl_pct=(
             body.campaign_trailing_sl_pct / 100.0 if body.campaign_trailing_sl_pct is not None and body.campaign_trailing_sl_pct > 1.0
             else body.campaign_trailing_sl_pct if body.campaign_trailing_sl_pct is not None
@@ -1024,10 +1026,16 @@ def _strategy_config(
             else body.trailing_sl if body.trailing_sl is not None
             else None
         ),
-        campaign_trailing_sl=body.campaign_trailing_sl or body.trailing_sl,
-        campaign_trailing_sl_trigger=body.campaign_trailing_sl_trigger or body.trailing_sl_trigger,
-        trailing_sl_mult=body.campaign_trailing_sl or body.trailing_sl,
-        trailing_sl_trigger_pct=body.campaign_trailing_sl_trigger or body.trailing_sl_trigger,
+        campaign_trailing_sl=(
+            body.campaign_trailing_sl if body.campaign_trailing_sl is not None else body.trailing_sl
+        ),
+        campaign_trailing_sl_trigger=(
+            body.campaign_trailing_sl_trigger
+            if body.campaign_trailing_sl_trigger is not None
+            else body.trailing_sl_trigger
+        ),
+        trailing_sl_mult=None,
+        trailing_sl_trigger_pct=None,
         max_entry_vix=body.max_entry_vix,
         dynamic_step=body.dynamic_step,
         dynamic_step_condors=body.dynamic_step_condors,
@@ -1735,11 +1743,32 @@ def playground_plan(
     if "daily_loss_limit" in body.settings:
         value = body.settings["daily_loss_limit"]
         loss_limit = None if value in (None, "", 0) else abs(float(value))
-    if not hasattr(runner.strategy, "full_band_steps"):
-        for key in ("full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads"):
+    hic_keys = ("full_band_steps", "half_mode", "debit_shift", "max_put_spreads", "max_call_spreads")
+    wants_hic = (
+        body.settings.get("strategy") == HIC
+        or hasattr(runner.strategy, "full_band_steps")
+        or any(k in body.settings for k in hic_keys)
+    )
+    if not wants_hic:
+        for key in hic_keys:
             changes.pop(key, None)
     try:
-        config = _replace(runner.strategy, **changes)
+        if wants_hic and not isinstance(runner.strategy, HicConfig):
+            from dataclasses import asdict as _asdict, fields as _fields
+            base_fields = {f.name for f in _fields(StrategyConfig)}
+            base_kwargs = {k: v for k, v in _asdict(runner.strategy).items() if k in base_fields}
+            base_kwargs.update({k: v for k, v in changes.items() if k in base_fields})
+            base_kwargs["direction"] = "both"
+            base_kwargs["anchor_mode"] = None
+            hic_kwargs = {k: changes[k] for k in hic_keys if k in changes and changes[k] is not None}
+            config = HicConfig(**base_kwargs, **hic_kwargs)
+            config = _replace(
+                config,
+                max_down=min(config.max_down or config.max_down_levels, config.max_down_levels),
+                max_up=min(config.max_up or config.max_up_levels, config.max_up_levels),
+            )
+        else:
+            config = _replace(runner.strategy, **changes)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Those settings do not make a valid strategy: {exc}") from exc
 
@@ -1779,7 +1808,13 @@ def playground_plan(
         out = pg_simulate.plan(market=market, config=config, book=book, spot=float(spot),
                                vix=float(vix) / 100.0, paths=body.paths, daily_loss_limit=loss_limit,
                                progress=progress)
-        out["settings"] = {**(runner.settings()), **changes, "daily_loss_limit": loss_limit}
+        merged_settings = {**(runner.settings()), **changes, "daily_loss_limit": loss_limit}
+        if isinstance(config, HicConfig):
+            merged_settings["strategy"] = HIC
+            merged_settings["direction"] = config.direction
+            merged_settings["max_down"] = config.max_down
+            merged_settings["max_up"] = config.max_up
+        out["settings"] = merged_settings
         return out
 
     job = playground_jobs.start(session.user_id, "plan",

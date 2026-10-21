@@ -538,3 +538,70 @@ def test_forward_runner_trailing_stop_status_and_peak():
     assert condor.peak_pnl == 2000.0
 
 
+def test_forward_runner_enforces_campaign_stop_loss():
+    import datetime as dt
+    from engine.pricing.costs import ZERO_COST
+    from engine.forward.runner import ForwardRunner, CondorStatus, IST
+    from engine.strategy.condor import StrategyConfig, Condor, FilledLeg, Leg, Side, PriceSource
+
+    runner = ForwardRunner.__new__(ForwardRunner)
+    runner.strategy = StrategyConfig(campaign_stop_loss=5_000.0, lots=1, lot_size=65)
+    runner.expiry = dt.date(2026, 3, 26)
+    runner.campaign_stopped = False
+    runner.campaign_stop_reason = None
+    runner.peak_campaign_capital = 0.0
+    legs = [
+        FilledLeg(Leg("PE", Side.BUY, 23_600, 65), 10.0, PriceSource.CHOICE, token=1),
+        FilledLeg(Leg("PE", Side.SELL, 23_800, 65), 50.0, PriceSource.CHOICE, token=2),
+        FilledLeg(Leg("CE", Side.SELL, 24_200, 65), 50.0, PriceSource.CHOICE, token=3),
+        FilledLeg(Leg("CE", Side.BUY, 24_400, 65), 10.0, PriceSource.CHOICE, token=4),
+    ]
+    condor = Condor(
+        level=24_000, entry_time=dt.datetime.now(tz=IST), expiry=runner.expiry,
+        legs=legs, config=runner.strategy, index=0,
+    )
+    runner.condors = [condor]
+    runner.fills = []
+    runner.events = []
+    runner.realised = 0.0
+    runner.last_mtm = {}
+    runner.last_marks = {}
+    runner.mode = "paper"
+    runner.costs = ZERO_COST
+    runner.last_spot_ts = None
+    runner.legs_on_real_depth = 0
+    runner.legs_on_modelled_spread = 0
+    runner.total_slippage = 0.0
+    runner.emit = lambda *a, **k: None
+
+    class MockQuote:
+        def __init__(self, mid: float):
+            self.mid = mid
+            self.as_of = None
+
+    class MockMarket:
+        def quotes(self, contracts):
+            # Short PE balloons from 50 to 180 -> loss > 5,000
+            return {
+                1: MockQuote(20.0),
+                2: MockQuote(180.0),
+                3: MockQuote(10.0),
+                4: MockQuote(2.0),
+            }
+
+    class MockFillModel:
+        def exit_fill(self, quote, side):
+            from engine.forward.runner import FillPrice
+            return FillPrice(price=quote.mid, reference=quote.mid, slippage=0.0, spread_modelled=False)
+
+    runner.market = MockMarket()
+    runner.fill_model = MockFillModel()
+    runner._contract = lambda expiry, strike, right: type("C", (), {"token": 1})()
+
+    runner._mark_all()
+    assert runner.campaign_stopped is True
+    assert condor.status is CondorStatus.CLOSED_STOP
+    assert "campaign stop-loss" in (condor.exit_reason or "")
+
+
+

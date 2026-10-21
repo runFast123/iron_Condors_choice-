@@ -5,8 +5,13 @@ import { num, pct, inr } from "@/lib/format";
 import { Card, PageHeader, ProvenanceBanner, Stat, StatGrid } from "@/components/ui";
 import { StrikeMatrix } from "@/components/charts/StrikeMatrix";
 
-export default async function LadderPage() {
-  const { strike_matrix, condors, netting, params, provenance, metrics } = await getDataset();
+export default async function LadderPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const { strike_matrix, condors, netting, params, provenance, metrics } = await getDataset(resolvedParams.run || null);
 
   return (
     <>

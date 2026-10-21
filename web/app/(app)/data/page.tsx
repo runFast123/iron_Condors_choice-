@@ -6,8 +6,13 @@ import { getDataset } from "@/lib/data";
 import { dateTime, num, pct } from "@/lib/format";
 import { AwaitingConnection, Badge, Card, Empty, PageHeader, Stat, StatGrid } from "@/components/ui";
 
-export default async function DataHealthPage() {
-  const { provenance, warnings, skipped, triggers } = await getDataset();
+export default async function DataHealthPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const { provenance, warnings, skipped, triggers } = await getDataset(resolvedParams.run || null);
   const p = provenance.provider;
   const awaiting = (provenance.awaiting_connection ?? false);
   const failures = provenance.failures ?? [];

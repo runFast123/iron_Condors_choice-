@@ -466,8 +466,12 @@ class PositionUnit:
         if not self.is_open:
             return None
         tp = self.config.take_profit_pct
-        sl = self.config.stop_loss_mult
-        tsl = self.config.trailing_sl_mult
+        sl = None if self.config.campaign_stop_loss is not None else self.config.stop_loss_mult
+        tsl = (
+            None
+            if (self.config.campaign_trailing_sl_pct is not None or self.config.campaign_trailing_sl is not None)
+            else self.config.trailing_sl_mult
+        )
         if tp is None and sl is None and tsl is None:
             return None
         # Against `risk_reference`, not `credit`. They are the same number for

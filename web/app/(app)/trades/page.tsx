@@ -4,8 +4,13 @@ import { getDataset } from "@/lib/data";
 import { Card, PageHeader, ProvenanceBanner } from "@/components/ui";
 import { CondorBlotter } from "@/components/CondorBlotter";
 
-export default async function TradesPage() {
-  const { condors, provenance, metrics } = await getDataset();
+export default async function TradesPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const { condors, provenance, metrics } = await getDataset(resolvedParams.run || null);
   const legCount = condors.reduce((n, c) => n + c.legs.length, 0);
 
   return (

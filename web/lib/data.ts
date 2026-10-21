@@ -17,6 +17,14 @@ export async function getDataset(runId?: string | null): Promise<Dataset> {
     const data = await engine.backtestDataset(token, runId);
     return data as unknown as Dataset;
   } catch {
+    if (runId) {
+      try {
+        const latest = await engine.backtestDataset(token);
+        return latest as unknown as Dataset;
+      } catch {
+        /* fall through to seed */
+      }
+    }
     // A dead engine must not take the page down with it.
     return fallback;
   }

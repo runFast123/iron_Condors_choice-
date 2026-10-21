@@ -240,6 +240,12 @@ class ForwardRunner:
     risk_day_base: float | None = None
     last_total: float | None = None
     halted_on: dt.date | None = None
+    # Baseline grid step before any dynamic VIX scaling, and active campaign
+    # stop-loss / trailing stop-loss state.
+    base_step: float | None = None
+    campaign_stopped: bool = False
+    campaign_stop_reason: str | None = None
+    peak_campaign_capital: float = 0.0
     # The last snapshot, for a reader arriving while a tick holds the lock.
     _snapshot_cache: dict | None = None
 
@@ -264,6 +270,10 @@ class ForwardRunner:
     ) -> None:
         self.market = market
         self.strategy = strategy
+        self.base_step = float(strategy.step)
+        self.campaign_stopped = False
+        self.campaign_stop_reason = None
+        self.peak_campaign_capital = 0.0
         # Paper is the only mode this platform has. There is no order-placement
         # path to switch into, which is why no arming step exists either.
         self.mode = "paper"
@@ -708,6 +718,7 @@ class ForwardRunner:
         for token, quote in quotes.items():
             self.last_marks[token] = quote.mid
 
+        all_leg_quotes: dict[int, dict[Leg, Quote]] = {}
         for condor in open_condors:
             marks: dict[Leg, float] = {}
             leg_quotes: dict[Leg, Quote] = {}
@@ -718,12 +729,102 @@ class ForwardRunner:
                     leg_quotes[fl.leg] = quote
             if len(marks) == len(condor.legs):
                 out[condor.index] = condor.mtm(marks)
+                all_leg_quotes[condor.index] = leg_quotes
                 reason = condor.exit_signal(marks)
                 if reason:
                     self._close(condor, leg_quotes, reason)
                     out.pop(condor.index, None)
+
+        self._check_campaign_exits(out, all_leg_quotes)
         self.last_mtm = out
         return out
+
+    def _campaign_sl(self) -> float | None:
+        return getattr(self.strategy, "campaign_stop_loss", None)
+
+    def _campaign_tsl_pct(self) -> float | None:
+        val = (
+            getattr(self.strategy, "campaign_trailing_sl_pct", None)
+            if getattr(self.strategy, "campaign_trailing_sl_pct", None) is not None
+            else getattr(self.strategy, "campaign_trailing_sl", None)
+        )
+        if val is not None and 1.0 < val <= 100.0:
+            val = val / 100.0
+        return val
+
+    def _campaign_tsl_hurdle(self) -> float:
+        val = getattr(self.strategy, "campaign_trailing_sl_trigger", None)
+        return float(val) if val is not None else 0.0
+
+    def _check_campaign_exits(
+        self,
+        out: dict[int, float],
+        all_leg_quotes: dict[int, dict[Leg, Quote]],
+    ) -> None:
+        """Evaluate monthly campaign stop-loss and campaign trailing SL across
+        the active expiry campaign, mirroring the backtest runner."""
+        campaign_sl = self._campaign_sl()
+        campaign_tsl_pct = self._campaign_tsl_pct()
+        if (
+            (campaign_sl is None and campaign_tsl_pct is None)
+            or self.expiry is None
+            or self.campaign_stopped
+        ):
+            return
+        active_condors = [c for c in self.condors if c.expiry == self.expiry]
+        open_campaign = [c for c in active_condors if c.is_open]
+        if not open_campaign or any(c.index not in out for c in open_campaign):
+            return
+
+        camp_realised = sum(c.realised_pnl() for c in active_condors if not c.is_open)
+        camp_unrealised = sum(out[c.index] for c in open_campaign)
+        camp_total = camp_realised + camp_unrealised
+        current_total_capital = self.realised + camp_unrealised
+
+        triggered_reason: str | None = None
+        triggered_status: CondorStatus = CondorStatus.CLOSED_STOP
+
+        peak_cap = getattr(self, "peak_campaign_capital", 0.0)
+        hurdle = self._campaign_tsl_hurdle()
+        if campaign_tsl_pct is not None and peak_cap > 0 and peak_cap >= hurdle:
+            tsl_pullback = peak_cap * campaign_tsl_pct
+            tsl_threshold = peak_cap - tsl_pullback
+            if current_total_capital <= tsl_threshold:
+                triggered_reason = (
+                    f"campaign trailing-stop: capital ₹{current_total_capital:,.0f} hit TSL limit ₹{tsl_threshold:,.0f} "
+                    f"({campaign_tsl_pct * 100:.0f}% pullback of ₹{tsl_pullback:,.0f} from peak campaign capital ₹{peak_cap:,.0f})"
+                )
+                triggered_status = CondorStatus.CLOSED_TRAILING_STOP
+
+        if triggered_reason is None and campaign_sl is not None:
+            credits = [c.credit for c in active_condors if c.credit > 0]
+            ref_crd = credits[0] if credits else 8000.0
+            sl_threshold = campaign_sl if campaign_sl > 20 else campaign_sl * ref_crd
+            if camp_total <= -sl_threshold:
+                triggered_reason = (
+                    f"campaign stop-loss: monthly loss -₹{abs(camp_total):,.0f} hit limit -₹{sl_threshold:,.0f}"
+                )
+                triggered_status = CondorStatus.CLOSED_STOP
+
+        if triggered_reason is not None:
+            self.campaign_stopped = True
+            self.campaign_stop_reason = triggered_reason
+            closed_count = 0
+            for c in open_campaign:
+                quotes_for_c = all_leg_quotes.get(c.index)
+                if quotes_for_c:
+                    self._close(c, quotes_for_c, triggered_reason, status=triggered_status)
+                    if not c.is_open:
+                        out.pop(c.index, None)
+                        closed_count += 1
+            self.emit(
+                "warn",
+                f"Campaign {self.expiry}: {triggered_reason}. Squared off {closed_count} open position(s) "
+                "and halted new entries for this expiry.",
+                expiry=self.expiry.isoformat(),
+                reason=triggered_reason,
+                closed=closed_count,
+            )
 
     def _close(
         self, condor: Condor, quotes: dict[Leg, Quote], reason: str,
@@ -778,6 +879,8 @@ class ForwardRunner:
             )
         condor.close(now, reason, status, exit_costs)
         self.realised += condor.realised_pnl()
+        if self.realised > getattr(self, "peak_campaign_capital", 0.0):
+            self.peak_campaign_capital = self.realised
         self.emit(
             "trade", f"Closed condor at {condor.level:,.0f}",
             level=condor.level, reason=reason, pnl=round(condor.realised_pnl(), 2),
@@ -1044,11 +1147,14 @@ class ForwardRunner:
         if not self._settle_expiry(now, spot, expired):
             return                      # already explained; try again next tick
         self.expiry = None
+        self.campaign_stopped = False
+        self.campaign_stop_reason = None
         if getattr(self.strategy, "dynamic_step", False) and spot > 0:
+            baseline = self.base_step or 100.0
             dyn_step = compute_dynamic_step(
                 spot, self.last_vix,
                 target_condors=getattr(self.strategy, "dynamic_step_condors", 5),
-                baseline_step=self.strategy.step,
+                baseline_step=baseline,
                 strike_step=self.strategy.strike_step,
             )
             self.strategy = scale_strategy_step(self.strategy, dyn_step)
@@ -1071,6 +1177,8 @@ class ForwardRunner:
             if unit.is_open and unit.expiry == expired:
                 self._settle(unit, now, settlement, note)
                 self.realised += unit.realised_pnl()
+                if self.realised > getattr(self, "peak_campaign_capital", 0.0):
+                    self.peak_campaign_capital = self.realised
                 self.last_mtm.pop(unit.index, None)
                 settled += 1
                 self.emit(
@@ -1078,6 +1186,11 @@ class ForwardRunner:
                     level=unit.level, reason=unit.exit_reason,
                     pnl=round(unit.realised_pnl(), 2),
                 )
+
+        if self.realised > getattr(self, "peak_campaign_capital", 0.0):
+            self.peak_campaign_capital = self.realised
+        elif self._campaign_tsl_pct() is not None:
+            self.peak_campaign_capital = self.realised
 
         self.emit(
             "info",
@@ -1102,8 +1215,15 @@ class ForwardRunner:
         if rolled is None:
             return
         still_open = sum(1 for u in self.condors if u.is_open and u.expiry == rolled)
+        if not still_open:
+            if self.realised > getattr(self, "peak_campaign_capital", 0.0):
+                self.peak_campaign_capital = self.realised
+            elif self._campaign_tsl_pct() is not None:
+                self.peak_campaign_capital = self.realised
         self.settling = rolled if still_open else None
         self.expiry = None
+        self.campaign_stopped = False
+        self.campaign_stop_reason = None
         self.ladder.reset()
         self.emit(
             "info",
@@ -1329,15 +1449,6 @@ class ForwardRunner:
             self.emit("info", f"Trading expiry {self.expiry:%d-%b-%Y}", expiry=self.expiry.isoformat())
 
         allowed = self._vix_allows_entries(now)
-        if self.ladder.anchor is None and getattr(self.strategy, "dynamic_step", False) and spot > 0:
-            dyn_step = compute_dynamic_step(
-                spot, self.last_vix,
-                target_condors=getattr(self.strategy, "dynamic_step_condors", 5),
-                baseline_step=self.strategy.step,
-                strike_step=self.strategy.strike_step,
-            )
-            self.strategy = scale_strategy_step(self.strategy, dyn_step)
-            self.ladder.reset(config=self.strategy)
         passed_before = len(self.ladder.passed)
         # No usable India VIX reading yet: nothing is decided this tick, and the
         # ladder is left exactly where it was for the next one. On a longer
@@ -1346,6 +1457,22 @@ class ForwardRunner:
         decision = None
         if allowed is not None:
             decision = spot if self.bar_minutes <= 1 else self._bar_close(now, spot)
+        if (
+            self.ladder.anchor is None
+            and allowed
+            and decision is not None
+            and decision > 0
+            and getattr(self.strategy, "dynamic_step", False)
+        ):
+            baseline = self.base_step or 100.0
+            dyn_step = compute_dynamic_step(
+                decision, self.last_vix,
+                target_condors=getattr(self.strategy, "dynamic_step_condors", 5),
+                baseline_step=baseline,
+                strike_step=self.strategy.strike_step,
+            )
+            self.strategy = scale_strategy_step(self.strategy, dyn_step)
+            self.ladder.reset(config=self.strategy)
         fresh = [] if decision is None else self.ladder.on_price(decision, now, entries_allowed=allowed)
         passed = self.ladder.passed[passed_before:]
         if passed:
@@ -1355,8 +1482,25 @@ class ForwardRunner:
                 + " while new positions were paused; not opened",
                 levels=[p.level for p in passed],
             )
+        # Pre-entry campaign SL/TSL check: if open condors in the current
+        # campaign have already breached the campaign stop on this tick,
+        # square them off before opening any new rungs.
+        if (
+            fresh
+            and not self.campaign_stopped
+            and (self._campaign_sl() is not None or self._campaign_tsl_pct() is not None)
+            and any(c.is_open and c.expiry == self.expiry for c in self.condors)
+        ):
+            self._mark_all()
         halted = self.entries_halted(now.date())
         for trigger in fresh:
+            if self.campaign_stopped:
+                self.emit(
+                    "warn",
+                    f"Level {trigger.level:,.0f} not opened: campaign stop active ({self.campaign_stop_reason})",
+                    level=trigger.level,
+                )
+                continue
             if halted:
                 self.emit(
                     "warn",
@@ -1840,6 +1984,10 @@ class ForwardRunner:
             "risk_day_base": self.risk_day_base,
             "last_total": self.last_total,
             "halted_on": self.halted_on.isoformat() if self.halted_on else None,
+            "base_step": self.base_step,
+            "campaign_stopped": self.campaign_stopped,
+            "campaign_stop_reason": self.campaign_stop_reason,
+            "peak_campaign_capital": self.peak_campaign_capital,
             "vix_problem": self.vix_problem,
             "condors": [self._condor_state(c) for c in self.condors],
             "fills": [asdict(f) for f in self.fills],
@@ -1925,6 +2073,15 @@ class ForwardRunner:
         runner.risk_day_base = _float_or_none(state.get("risk_day_base"))
         runner.last_total = _float_or_none(state.get("last_total"))
         runner.halted_on = _parse_date(state.get("halted_on"))
+        runner.base_step = _float_or_none(state.get("base_step")) or (
+            100.0 if getattr(strategy, "dynamic_step", False) else float(strategy.step)
+        )
+        runner.campaign_stopped = bool(state.get("campaign_stopped", False))
+        runner.campaign_stop_reason = state.get("campaign_stop_reason")
+        saved_peak = _float_or_none(state.get("peak_campaign_capital"))
+        runner.peak_campaign_capital = (
+            saved_peak if saved_peak is not None else max(0.0, runner.realised)
+        )
         runner.legs_on_real_depth = int(state.get("legs_on_real_depth") or 0)
         runner.legs_on_modelled_spread = int(state.get("legs_on_modelled_spread") or 0)
         runner.total_slippage = float(state.get("total_slippage") or 0.0)

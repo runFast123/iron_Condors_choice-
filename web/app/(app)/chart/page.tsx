@@ -24,8 +24,13 @@ function strikesOf(unit: Condor | undefined): Record<string, number | null> {
   return out;
 }
 
-export default async function ChartPage() {
-  const { equity, triggers, params, provenance, condors } = await getDataset();
+export default async function ChartPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const { equity, triggers, params, provenance, condors } = await getDataset(resolvedParams.run || null);
   // A level can be traded again in a later expiry campaign, so the entry time
   // is part of the key -- the position and the trigger share it exactly.
   const openedAt = new Map(condors.map((c) => [`${c.level}|${c.entry_time}`, c]));

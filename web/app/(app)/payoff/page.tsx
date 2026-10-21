@@ -18,9 +18,14 @@ function formatBreakevens(points: number[] | undefined): string {
   return points.map((p) => num(p, 0)).join(" / ");
 }
 
-export default async function PayoffPage() {
+export default async function PayoffPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ run?: string }>;
+}) {
+  const resolvedParams = searchParams ? await searchParams : {};
   const { payoff, equity, condors, params, provenance, metrics, payoff_campaign } =
-    await getDataset();
+    await getDataset(resolvedParams.run || null);
   const lastSpot = [...equity].reverse().find((p) => p.spot != null)?.spot ?? null;
 
   const best = payoff.reduce((a, b) => (b.pnl > a.pnl ? b : a), payoff[0]);

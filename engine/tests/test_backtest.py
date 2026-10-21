@@ -274,6 +274,37 @@ def test_dynamic_step_backtest_applies_vix_step():
     assert any("dynamic VIX step 150 pts applied" in w for w in result.warnings)
 
 
+def test_dynamic_step_respects_strategy_condors_count():
+    params = BacktestParams(
+        strategy=cfg(step=100.0, dynamic_step=True, dynamic_step_condors=3),
+        costs=ZERO_COST,
+    )
+    engine = Backtest(params, model_provider(), weekly_expiry_resolver([EXPIRY], min_dte=1))
+    path = spot_path([24_000] * 5, minutes=60)
+    result = engine.run(path, vix=[11.10] * len(path))
+    assert result.condors[0].config.step == 250.0
+
+
+def test_campaign_tsl_does_not_leak_into_per_rung_trailing_stop():
+    """Campaign TSL with 0 hurdle must not close individual condors on a 15%
+    single-condor pullback when peak campaign capital is still 0."""
+    strategy = cfg(
+        step=100.0,
+        campaign_trailing_sl_pct=0.15,
+        campaign_trailing_sl=0.15,
+        campaign_trailing_sl_trigger=0.0,
+        trailing_sl_mult=0.15,
+        trailing_sl_trigger_pct=0.0,
+    )
+    condor = _condor_at_24000(strategy) if " _condor_at_24000" in globals() else None
+    params = BacktestParams(strategy=strategy, costs=ZERO_COST)
+    # Single campaign: peak_campaign_capital is 0 until a condor closes/settles.
+    spots = [24_000] * 35 + [23_850] * 5
+    result = run(spots, params=params, minutes=60)
+    assert all(c.status is not CondorStatus.CLOSED_TRAILING_STOP for c in result.condors)
+    assert condor is None
+
+
 def test_slippage_is_charged_on_the_way_out_as_well_as_in():
     """Charging it only on entry understated the round trip by about half,
     which flatters exactly the configurations that trade most."""

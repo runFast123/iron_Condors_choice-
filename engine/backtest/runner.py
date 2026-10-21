@@ -98,7 +98,7 @@ class BacktestParams:
     campaign_trailing_sl: float | None = None
     campaign_trailing_sl_trigger: float | None = None
     dynamic_step: bool = False
-    dynamic_step_condors: int = 5
+    dynamic_step_condors: int | None = None
 
 
 def _kind_for(level: float, ladder: Ladder, config) -> tuple[UnitKind, int | None]:
@@ -431,15 +431,17 @@ class Backtest:
         # Monthly Campaign stop loss & trailing SL state
         campaign_sl = (
             params.campaign_stop_loss
-            or getattr(params.strategy, "campaign_stop_loss", None)
-            or getattr(params.strategy, "stop_loss_mult", None)
+            if params.campaign_stop_loss is not None
+            else getattr(params.strategy, "campaign_stop_loss", None)
         )
         campaign_tsl_pct = (
             params.campaign_trailing_sl_pct
-            or getattr(params.strategy, "campaign_trailing_sl_pct", None)
-            or params.campaign_trailing_sl
-            or getattr(params.strategy, "campaign_trailing_sl", None)
-            or getattr(params.strategy, "trailing_sl_mult", None)
+            if params.campaign_trailing_sl_pct is not None
+            else getattr(params.strategy, "campaign_trailing_sl_pct", None)
+            if getattr(params.strategy, "campaign_trailing_sl_pct", None) is not None
+            else params.campaign_trailing_sl
+            if params.campaign_trailing_sl is not None
+            else getattr(params.strategy, "campaign_trailing_sl", None)
         )
         if campaign_tsl_pct is not None:
             if campaign_tsl_pct > 1.0 and campaign_tsl_pct <= 100.0:
@@ -454,8 +456,6 @@ class Backtest:
         )
 
         peak_campaign_capital: float = 0.0
-        strategy_tsl_halted: bool = False
-        strategy_tsl_reason: str | None = None
 
         is_dynamic = params.dynamic_step or getattr(params.strategy, "dynamic_step", False)
         target_condors = getattr(params, "dynamic_step_condors", None) or getattr(params.strategy, "dynamic_step_condors", 5)
@@ -780,7 +780,7 @@ class Backtest:
                     holding_days.append((when - condor.entry_time).total_seconds() / 86_400)
 
             # Campaign-level Stop Loss & Trailing SL across active monthly campaign
-            if (campaign_sl is not None or campaign_tsl_pct is not None) and campaign_expiry is not None and not campaign_stopped and not strategy_tsl_halted:
+            if (campaign_sl is not None or campaign_tsl_pct is not None) and campaign_expiry is not None and not campaign_stopped:
                 active_campaign_condors = [c for c in condors if c.expiry == campaign_expiry]
                 open_campaign_condors = [c for c in active_campaign_condors if c.is_open]
                 if open_campaign_condors:
@@ -808,8 +808,6 @@ class Backtest:
                                 f"({campaign_tsl_pct * 100:.0f}% pullback of ₹{tsl_pullback:,.0f} from peak campaign capital ₹{peak_campaign_capital:,.0f})"
                             )
                             triggered_status = CondorStatus.CLOSED_TRAILING_STOP
-                            strategy_tsl_halted = True
-                            strategy_tsl_reason = triggered_reason
 
                     # 2. Fixed Monthly Campaign Stop Loss
                     if triggered_reason is None and campaign_sl is not None:
