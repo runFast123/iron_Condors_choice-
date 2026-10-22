@@ -656,6 +656,22 @@ export function ForwardControl({
               >
                 <span style={{ display: "flex", gap: 7, alignItems: "center" }}>
                   <span style={{ fontWeight: 700 }}>{r.label}</span>
+                  {r.shared && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "var(--brand)",
+                        background: "var(--brand-soft)",
+                        border: "1px solid var(--brand)",
+                        borderRadius: 3,
+                        padding: "0 4px",
+                        lineHeight: 1.3,
+                      }}
+                    >
+                      shared
+                    </span>
+                  )}
                   {r.waiting ? (
                     <span style={{ fontSize: 10.5, color: "var(--warn)" }}>waiting</span>
                   ) : !r.running ? (
@@ -1450,13 +1466,31 @@ export function ForwardControl({
               <Metric label="Last tick" value={session?.last_tick ? dateTime(session.last_tick).split(", ")[1] ?? "—" : "—"} />
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               {/* Arrow, not a bare reference: onClick hands the handler a
                   MouseEvent, which would arrive as the run name. */}
-              {running && (
+              {running && !session?.readonly && (
                 <button onClick={() => stop()} disabled={busy !== null} className="btn-danger">
                   {busy === "stopping" ? "Stopping…" : `Stop ${runs.length > 1 ? runKey : "run"}`}
                 </button>
+              )}
+              {session?.readonly && (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 12,
+                    color: "var(--brand)",
+                    background: "var(--brand-soft)",
+                    border: "1px solid var(--brand)",
+                    borderRadius: "var(--radius)",
+                    padding: "6px 12px",
+                    fontWeight: 500,
+                  }}
+                >
+                  Viewing shared run (read-only)
+                </span>
               )}
 
               <button onClick={refresh} className="btn-quiet">

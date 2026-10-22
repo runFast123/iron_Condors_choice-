@@ -1414,7 +1414,9 @@ def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
     stands.
     """
     out = []
+    seen_keys: set[str] = set()
     for run_key, runner in session.runners().items():
+        seen_keys.add(run_key)
         snap = runner.snapshot()
         pnl = snap.get("pnl") or {}
         ladder = snap.get("ladder") or {}
@@ -1437,15 +1439,45 @@ def _run_summaries(session: UserSession) -> list[dict[str, Any]]:
     # Recently stopped runs too, listed as stopped, so one is never simply
     # gone from the page.
     for run_key, row in _stopped_rows(session).items():
+        seen_keys.add(run_key)
         summary = _stopped_summary(session, run_key, row)
         if summary is not None:
             out.append(summary)
     # Runs waiting to be resumed: not stopped, so not listed as stopped.
     for run_key, row in _waiting_rows(session).items():
+        seen_keys.add(run_key)
         summary = _stopped_summary(session, run_key, row)
         if summary is not None:
             summary.update(stopped_reason=None, waiting=True, wait_reason=_waiting_reason(session, run_key))
             out.append(summary)
+    # Shared active forward runs from other sessions on this engine
+    with registry._lock:
+        other_sessions = [s for s in registry._sessions.values() if s.user_id != session.user_id]
+    for other in other_sessions:
+        for run_key, runner in other.runners().items():
+            if run_key not in seen_keys:
+                seen_keys.add(run_key)
+                snap = runner.snapshot()
+                pnl = snap.get("pnl") or {}
+                ladder = snap.get("ladder") or {}
+                out.append({
+                    "run_key": run_key,
+                    "label": runner.run_label or run_key,
+                    "strategy": runner.strategy_id,
+                    "running": runner.stopped_reason is None,
+                    "stopped_reason": runner.stopped_reason,
+                    "ticking": runner.is_ticking,
+                    "started_at": runner.started_at.isoformat(),
+                    "last_tick": snap.get("session", {}).get("last_tick"),
+                    "expiry": snap.get("session", {}).get("expiry"),
+                    "direction": ladder.get("direction"),
+                    "lots": runner.strategy.lots,
+                    "daily_loss_limit": runner.daily_loss_limit,
+                    "pnl": pnl,
+                    "open_condors": pnl.get("open_condors", 0),
+                    "shared": True,
+                    "owner_id": other.user_id,
+                })
     # Live runs first, then waiting, then stopped; each group newest first.
     out.sort(key=lambda r: r["started_at"], reverse=True)
     out.sort(key=lambda r: 0 if r["running"] else 1 if r.get("waiting") else 2)
@@ -1489,10 +1521,28 @@ def forward_state(
         run_key = DEFAULT_RUN_KEY
     elif runners:
         run_key = next(iter(runners))
+    elif DEFAULT_RUN_KEY in waiting:
+        run_key = DEFAULT_RUN_KEY
+    elif waiting:
+        run_key = next(iter(waiting))
     else:
-        run_key = DEFAULT_RUN_KEY if DEFAULT_RUN_KEY in waiting else next(iter(waiting), DEFAULT_RUN_KEY)
+        shared_keys = []
+        with registry._lock:
+            for other in registry._sessions.values():
+                if other.user_id != session.user_id:
+                    shared_keys.extend(other.runners().keys())
+        run_key = shared_keys[0] if shared_keys else DEFAULT_RUN_KEY
 
     runner = runners.get(run_key)
+    is_shared = False
+    if runner is None and run_key not in waiting:
+        with registry._lock:
+            for other in registry._sessions.values():
+                if other.user_id != session.user_id and run_key in other.runners():
+                    runner = other.runner_for(run_key)
+                    is_shared = True
+                    break
+
     state = runner.snapshot() if runner is not None else None
     if state is None:
         # Not driven: serve what it last looked like, marked stopped -- or
@@ -1523,6 +1573,12 @@ def forward_state(
                     record["state"], strategy_id=record["strategy_id"],
                     name=record["run_label"] or run_key,
                 )
+    elif is_shared:
+        info = dict(state.get("session") or {})
+        info["shared"] = True
+        info["readonly"] = True
+        state = {**state, "session": info}
+
     return {
         "run_key": run_key,
         "running": runner is not None and runner.stopped_reason is None,
@@ -1551,6 +1607,14 @@ def forward_ticks(
         # A stopped run's chart is still worth seeing.
         row = _stopped_rows(session).get(run_key)
         session_id = row["session_id"] if row is not None else None
+    if session_id is None:
+        with registry._lock:
+            for other in registry._sessions.values():
+                if other.user_id != session.user_id and run_key in other.runners():
+                    shared_r = other.runner_for(run_key)
+                    if shared_r is not None:
+                        session_id = shared_r.session_id
+                        break
     if not session_id:
         return {"ticks": []}
     return {"ticks": store.ticks(session_id, limit=max(1, min(limit, 5_000)))}
@@ -1574,6 +1638,12 @@ def forward_campaign(
     the campaign's first position to its expiry.
     """
     runner = session.runner_for(run_key)
+    if runner is None:
+        with registry._lock:
+            for other in registry._sessions.values():
+                if other.user_id != session.user_id and run_key in other.runners():
+                    runner = other.runner_for(run_key)
+                    break
     state = runner.snapshot() if runner is not None else _saved_snapshot(session, run_key)
     campaigns = (state or {}).get("campaigns") or []
     campaign = next((c for c in campaigns if c["expiry"] == expiry), None)

@@ -141,6 +141,9 @@ export interface ForwardRunSummary {
   /** Not stopped: waiting for a Choice session to be resumed, e.g. after a restart on a closed day. */
   waiting?: boolean;
   wait_reason?: string | null;
+  /** Whether this run is shared from another active session on the engine. */
+  shared?: boolean;
+  owner_id?: string;
 }
 
 function runQuery(run?: string): string {

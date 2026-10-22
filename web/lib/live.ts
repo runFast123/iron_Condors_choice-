@@ -21,6 +21,10 @@ export interface LiveSession {
   resume_blocked?: string | null;
   /** A waiting run only: why, and what will bring it back. */
   wait_reason?: string | null;
+  /** Whether this run is shared from another active session. */
+  shared?: boolean;
+  /** Whether this view is read-only. */
+  readonly?: boolean;
 }
 
 /** One expiry's campaign within a run. The run's total mixes every campaign;
