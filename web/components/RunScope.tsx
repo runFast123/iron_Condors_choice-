@@ -62,6 +62,23 @@ export function RunScope({
                 }}
               >
                 {r.label}
+                {r.shared && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: "var(--brand)",
+                      background: "var(--brand-soft)",
+                      border: "1px solid var(--brand)",
+                      borderRadius: 3,
+                      padding: "0 4px",
+                      marginLeft: 5,
+                      lineHeight: 1.3,
+                    }}
+                  >
+                    shared
+                  </span>
+                )}
                 {!r.running && (
                   <span style={{ fontWeight: 400, color: r.waiting ? "var(--warn)" : "var(--ink-muted)", marginLeft: 5, fontSize: 11 }}>
                     {r.waiting ? "waiting" : "stopped"}

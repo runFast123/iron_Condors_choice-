@@ -585,7 +585,8 @@ export function ForwardControl({
 
   // A waiting run is still live: it resumes by itself and keeps its name and its place.
   const liveRuns = runs.filter((r) => r.running || r.waiting);
-  const atCap = liveRuns.length >= maxRuns;
+  const ownedLiveRuns = runs.filter((r) => (r.running || r.waiting) && !r.shared);
+  const atCap = ownedLiveRuns.length >= maxRuns;
   // The name the form would start under, and whether a live run holds it. A
   // start under a taken name starts nothing, so it is said here, before.
   const wantedKey = runKeyFor(runName) || strategy;
@@ -705,7 +706,7 @@ export function ForwardControl({
               gap: 10, alignItems: "center", fontSize: 11.5, color: "var(--ink-muted)",
             }}
           >
-            {liveRuns.length} of {maxRuns} running
+            {ownedLiveRuns.length} of {maxRuns} running
             <button
               type="button"
               onClick={() => setStarting((v) => !v)}
